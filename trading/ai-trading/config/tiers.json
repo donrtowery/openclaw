@@ -1,0 +1,30 @@
+{
+  "tiers": {
+    "1": {
+      "name": "Blue Chips",
+      "symbols": ["ETHUSDT", "SOLUSDT", "XRPUSDT", "AVAXUSDT", "DOTUSDT"],
+      "stopLossPercent": 15,
+      "dcaLevels": 2,
+      "dca1": { "triggerPercent": 5, "amount": 300 },
+      "dca2": { "triggerPercent": 10, "amount": 300 }
+    },
+    "2": {
+      "name": "Established",
+      "symbols": ["LINKUSDT", "ADAUSDT", "ATOMUSDT", "NEARUSDT", "POLUSDT", "OPUSDT", "ARBUSDT", "SUIUSDT", "AAVEUSDT", "UNIUSDT", "LDOUSDT", "FILUSDT", "ICPUSDT", "THETAUSDT"],
+      "stopLossPercent": 10,
+      "dcaLevels": 1,
+      "dca1": { "triggerPercent": 5, "amount": 300 }
+    },
+    "3": {
+      "name": "Speculative",
+      "symbols": ["RENDERUSDT", "JUPUSDT", "GALAUSDT", "XTZUSDT", "GRTUSDT", "SANDUSDT"],
+      "stopLossPercent": 5,
+      "dcaLevels": 0
+    }
+  },
+  "takeProfit": {
+    "tp1": { "percent": 5, "sellPercent": 50 },
+    "tp2": { "percent": 8, "sellPercent": 30 },
+    "tp3": { "percent": 12, "sellPercent": 20 }
+  }
+}

@@ -8,12 +8,13 @@ services:
       CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY}
       CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY}
       CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE}
+      gateway.trustedProxies: "172.18.0.0/16"
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
     ports:
-      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
-      - "${OPENCLAW_BRIDGE_PORT:-18790}:18790"
+      - "127.0.0.1:${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+      - "127.0.0.1:${OPENCLAW_BRIDGE_PORT:-18790}:18790"
     init: true
     restart: unless-stopped
     command:
@@ -26,6 +27,11 @@ services:
         "--port",
         "18789",
       ]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
@@ -44,3 +50,113 @@ services:
     tty: true
     init: true
     entrypoint: ["node", "dist/index.js"]
+
+  openclaw-proxy:
+    image: nginx:alpine
+    depends_on:
+      - openclaw-gateway
+    volumes:
+      - ./nginx/openclaw.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:18788:80"
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  heartbeat:
+    image: node:18-alpine
+    working_dir: /app
+    command: node heartbeat.js
+    environment:
+      OLLAMA_ENDPOINT: http://100.74.17.84:11434
+    volumes:
+      - ./trading:/app
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+    ports:
+      - "127.0.0.1:18791:18791"
+    restart: unless-stopped
+    depends_on:
+      - openclaw-gateway
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  market-data:
+    image: node:18-alpine
+    working_dir: /app
+    command: node services/market-data-docker.js
+    volumes:
+      - ./trading:/app
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+      - ./.env.trading:/home/node/.openclaw/.env.trading:ro
+    restart: unless-stopped
+    depends_on:
+      - openclaw-gateway
+      - heartbeat
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  strategy:
+    image: node:18-alpine
+    working_dir: /app
+    command: node services/strategy-docker.js
+    volumes:
+      - ./trading:/app
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+    restart: unless-stopped
+    depends_on:
+      - openclaw-gateway
+      - heartbeat
+      - market-data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  risk-manager:
+    image: node:18-alpine
+    working_dir: /app
+    command: node services/risk-manager-docker.js
+    volumes:
+      - ./trading:/app
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+    restart: unless-stopped
+    depends_on:
+      - openclaw-gateway
+      - heartbeat
+      - market-data
+      - strategy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  execution:
+    image: node:18-alpine
+    working_dir: /app
+    command: node services/execution-docker.js
+    volumes:
+      - ./trading:/app
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+    restart: unless-stopped
+    depends_on:
+      - openclaw-gateway
+      - heartbeat
+      - market-data
+      - strategy
+      - risk-manager
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

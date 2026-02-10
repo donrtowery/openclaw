@@ -1,0 +1,29 @@
+{
+  "description": "Trading strategy configuration - Simple Moving Average Crossover",
+  "strategyType": "sma_crossover",
+  "parameters": {
+    "fastPeriod": 10,
+    "slowPeriod": 30,
+    "note": "Buy when fast MA crosses above slow MA, sell when it crosses below"
+  },
+  "filters": {
+    "minVolumeUSD": 100000,
+    "minPriceChangePercent": 0.5,
+    "note": "Only trade symbols with >$100k volume and >0.5% price movement"
+  },
+  "llm": {
+    "enabled": true,
+    "role": "analysis_only",
+    "endpoint": "https://api.anthropic.com/v1",
+    "model": "claude-haiku-4-5-20251001",
+    "apiKey": "${ANTHROPIC_API_KEY}",
+    "confirmationRequired": false,
+    "note": "LLM provides market analysis, does NOT execute trades directly"
+  },
+  "execution": {
+    "preferLimitOrders": true,
+    "limitOrderTimeoutMinutes": 5,
+    "slippageTolerancePercent": 0.5,
+    "note": "Use limit orders when possible, market orders as fallback"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "accountSize": 6000,
+  "activePool": 3000,
+  "dcaReserve": 3000,
+  "positionSize": 600,
+  "maxConcurrentPositions": 5,
+  "cooldownHours": 24,
+  "minimumHoldHours": 4,
+  "circuitBreaker": {
+    "maxConsecutiveLosses": 3,
+    "pauseDurationHours": 24
+  },
+  "confidenceThresholds": {
+    "minBuyConfidence": 0.7,
+    "minSellConfidence": 0.6,
+    "minDCAConfidence": 0.65,
+    "minTakeProfitConfidence": 0.5
+  },
+  "sms": {
+    "enabled": true,
+    "alertTypes": ["BUY", "SELL", "DCA", "TAKE_PROFIT", "CIRCUIT_BREAKER"],
+    "maxPerHour": 20,
+    "quietHours": false
+  }
+}

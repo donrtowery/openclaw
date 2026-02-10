@@ -1,0 +1,37 @@
+{
+  "description": "Risk management rules - ALL trades must pass these checks",
+  "positionSizing": {
+    "maxPositionSizePercent": 2.0,
+    "maxTotalExposurePercent": 10.0,
+    "minOrderValueUSD": 10.0,
+    "note": "Max 2% per position, 10% total exposure, $10 minimum order"
+  },
+  "stopLoss": {
+    "enabled": true,
+    "defaultPercent": 3.0,
+    "trailingEnabled": false,
+    "note": "3% stop loss on all positions"
+  },
+  "takeProfit": {
+    "enabled": true,
+    "defaultPercent": 6.0,
+    "note": "6% take profit target (2:1 risk/reward)"
+  },
+  "rateLimit": {
+    "maxOrdersPerHour": 10,
+    "maxOrdersPerDay": 50,
+    "note": "Prevent runaway trading"
+  },
+  "circuitBreaker": {
+    "enabled": true,
+    "consecutiveLosses": 3,
+    "maxDrawdownPercent": 5.0,
+    "cooldownMinutes": 60,
+    "note": "Stop trading after 3 losses in a row OR 5% drawdown, wait 1 hour"
+  },
+  "paperTrading": {
+    "enabled": true,
+    "startingBalanceUSD": 10000.0,
+    "note": "MUST test in paper mode before going live"
+  }
+}

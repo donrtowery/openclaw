@@ -1,0 +1,14 @@
+{
+  "enabled": true,
+  "description": "Allowlist of tradable symbols on BinanceUS",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "ADAUSDT",
+    "XRPUSDT"
+  ],
+  "candleInterval": "5m",
+  "maxConcurrentPositions": 3,
+  "notes": "Start with 5 coins, 5-minute candles, max 3 positions at a time"
+}

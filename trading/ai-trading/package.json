@@ -1,0 +1,15 @@
+{
+  "name": "openclaw-ai-trading",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "latest",
+    "binance-api-node": "^0.13.6",
+    "dotenv": "^17.2.4",
+    "express": "^4.18.2",
+    "node-cron": "^3.0.3",
+    "pg": "^8.13.0",
+    "technicalindicators": "^3.1.0",
+    "winston": "^3.11.0"
+  }
+}
