@@ -37,18 +37,33 @@ async function request(endpoint, params = {}, method = 'GET', signed = false) {
     headers: signed ? { 'X-MBX-APIKEY': API_KEY } : {},
   };
 
-  try {
-    const response = await fetch(url, options);
+  const MAX_RETRIES = 2;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetch(url, options);
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Binance API ${response.status}: ${error}`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        // Retry on 5xx server errors, not on 4xx client errors
+        if (response.status >= 500 && attempt < MAX_RETRIES) {
+          logger.warn(`[Binance] ${method} ${endpoint} returned ${response.status}, retrying (${attempt + 1}/${MAX_RETRIES})...`);
+          await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+          continue;
+        }
+        throw new Error(`Binance API ${response.status}: ${errorText}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      // Retry on network errors (timeouts, connection refused), not on parse errors
+      if (attempt < MAX_RETRIES && !error.message.startsWith('Binance API')) {
+        logger.warn(`[Binance] ${method} ${endpoint} failed: ${error.message}, retrying (${attempt + 1}/${MAX_RETRIES})...`);
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        continue;
+      }
+      logger.error(`[Binance] ${method} ${endpoint} failed: ${error.message}`);
+      throw error;
     }
-
-    return await response.json();
-  } catch (error) {
-    logger.error(`[Binance] ${method} ${endpoint} failed: ${error.message}`);
-    throw error;
   }
 }
 

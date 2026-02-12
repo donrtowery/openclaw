@@ -9,6 +9,9 @@ const previousIndicators = new Map();
 // Map<"SYMBOL:SIGNAL_TYPE", timestamp>
 const signalCooldowns = new Map();
 
+// First cycle after startup is calibration — populate previousIndicators without firing signals
+let isCalibrationCycle = true;
+
 // Cached symbol list (refreshed hourly, not every cycle)
 let cachedSymbols = null;
 let symbolsCacheTime = 0;
@@ -162,16 +165,17 @@ export async function runScanCycle(config) {
       const symbolRow = symbolMap.get(analysis.symbol);
       if (!symbolRow) continue;
 
-      // Save indicator snapshot to database
-      await saveIndicatorSnapshot(analysis.symbol, analysis);
       allSnapshots.push(analysis);
 
-      // Detect threshold crossings against previous values
-      const previous = previousIndicators.get(analysis.symbol);
-      let crossed = detectThresholdCrossings(analysis.symbol, analysis, previous, thresholds);
-
       // Store current as previous for next cycle
+      const previous = previousIndicators.get(analysis.symbol);
       previousIndicators.set(analysis.symbol, analysis);
+
+      // On calibration cycle, only populate previousIndicators — don't detect crossings
+      if (isCalibrationCycle) continue;
+
+      // Detect threshold crossings against previous values
+      let crossed = detectThresholdCrossings(analysis.symbol, analysis, previous, thresholds);
 
       // Filter out signals that are in cooldown
       if (crossed.length > 0) {
@@ -210,6 +214,28 @@ export async function runScanCycle(config) {
     }
   }
 
+  // End calibration mode after first cycle
+  if (isCalibrationCycle) {
+    isCalibrationCycle = false;
+    const duration = Date.now() - startTime;
+    logger.info(`[Scanner] Calibration cycle complete: ${symbols.length} symbols baselined in ${duration}ms`);
+    return {
+      symbols_scanned: symbols.length,
+      triggered: [],
+      snapshots: allSnapshots,
+      duration_ms: duration,
+    };
+  }
+
+  // Batch-save all indicator snapshots in one INSERT
+  if (allSnapshots.length > 0) {
+    try {
+      await saveIndicatorSnapshots(allSnapshots);
+    } catch (error) {
+      logger.error(`[Scanner] Failed to save indicator snapshots: ${error.message}`);
+    }
+  }
+
   const duration = Date.now() - startTime;
   logger.info(`[Scanner] Complete: ${symbols.length} symbols in ${duration}ms, ${triggeredSignals.length} triggered`);
 
@@ -222,36 +248,50 @@ export async function runScanCycle(config) {
 }
 
 /**
- * Save indicator snapshot to database for backtesting and learning
+ * Batch-save indicator snapshots to database for backtesting and learning.
+ * Single multi-row INSERT instead of N individual INSERTs.
  */
-async function saveIndicatorSnapshot(symbol, analysis) {
+async function saveIndicatorSnapshots(analyses) {
+  if (analyses.length === 0) return;
+
+  const COLS = 20;
+  const values = [];
+  const placeholders = [];
+
+  for (let i = 0; i < analyses.length; i++) {
+    const a = analyses[i];
+    const offset = i * COLS;
+    placeholders.push(`(${Array.from({ length: COLS }, (_, j) => `$${offset + j + 1}`).join(',')})`);
+    values.push(
+      a.symbol,
+      a.price,
+      a.rsi?.value ?? null,
+      a.macd?.macd ?? null,
+      a.macd?.signal ?? null,
+      a.macd?.histogram ?? null,
+      a.sma?.sma10 ?? null,
+      a.sma?.sma30 ?? null,
+      a.sma?.sma50 ?? null,
+      a.sma?.sma200 ?? null,
+      a.ema?.ema9 ?? null,
+      a.ema?.ema21 ?? null,
+      a.bollingerBands?.upper ?? null,
+      a.bollingerBands?.middle ?? null,
+      a.bollingerBands?.lower ?? null,
+      a.volume?.current ?? null,
+      a.volume?.ratio ?? null,
+      a.support?.[0] ?? null,
+      a.resistance?.[0] ?? null,
+      a.trend?.direction ?? null,
+    );
+  }
+
   await query(`
     INSERT INTO indicator_snapshots (
       symbol, price, rsi, macd, macd_signal, macd_histogram,
       sma10, sma30, sma50, sma200, ema9, ema21,
       bb_upper, bb_middle, bb_lower, volume_24h, volume_ratio,
       support_nearest, resistance_nearest, trend
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-  `, [
-    symbol,
-    analysis.price,
-    analysis.rsi?.value ?? null,
-    analysis.macd?.macd ?? null,
-    analysis.macd?.signal ?? null,
-    analysis.macd?.histogram ?? null,
-    analysis.sma?.sma10 ?? null,
-    analysis.sma?.sma30 ?? null,
-    analysis.sma?.sma50 ?? null,
-    analysis.sma?.sma200 ?? null,
-    analysis.ema?.ema9 ?? null,
-    analysis.ema?.ema21 ?? null,
-    analysis.bollingerBands?.upper ?? null,
-    analysis.bollingerBands?.middle ?? null,
-    analysis.bollingerBands?.lower ?? null,
-    analysis.volume?.current ?? null,
-    analysis.volume?.ratio ?? null,
-    analysis.support?.[0] ?? null,
-    analysis.resistance?.[0] ?? null,
-    analysis.trend?.direction ?? null,
-  ]);
+    ) VALUES ${placeholders.join(',')}
+  `, values);
 }

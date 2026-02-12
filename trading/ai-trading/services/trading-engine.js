@@ -4,7 +4,7 @@ dotenv.config();
 import { readFileSync } from 'fs';
 import { query } from '../db/connection.js';
 import { testConnection } from '../db/connection.js';
-import { testConnectivity, placeOrder, getCurrentPrice } from '../lib/binance.js';
+import { testConnectivity, placeOrder, getCurrentPrice, getAllPrices } from '../lib/binance.js';
 import { initScanner, runScanCycle } from '../lib/scanner.js';
 import { callHaikuBatch, callSonnet } from '../lib/claude.js';
 import { getNewsContext } from '../lib/brave-search.js';
@@ -28,6 +28,12 @@ let cycleCount = 0;
 
 // Symbol name lookup (filled on init)
 const symbolNames = new Map(); // ETHUSDT -> Ethereum
+
+// Per-cycle portfolio summary cache — invalidated after each trade execution
+let portfolioCache = null;
+
+// Sonnet deduplication — tracks last escalation time per symbol
+const lastSonnetEvaluation = new Map();
 
 // ── Startup ─────────────────────────────────────────────────
 
@@ -91,11 +97,25 @@ async function start() {
   }, intervalMs);
 }
 
+// ── Portfolio Cache ──────────────────────────────────────────
+
+async function getCachedPortfolio() {
+  if (!portfolioCache) {
+    portfolioCache = await getPortfolioSummary(tradingConfig);
+  }
+  return portfolioCache;
+}
+
+function invalidatePortfolioCache() {
+  portfolioCache = null;
+}
+
 // ── Main Scan Cycle ─────────────────────────────────────────
 
 async function runCycle() {
   cycleCount++;
   const cycleStart = Date.now();
+  invalidatePortfolioCache();
 
   logger.info(`[Engine] === Cycle ${cycleCount} ===`);
 
@@ -103,6 +123,18 @@ async function runCycle() {
   const cb = await checkCircuitBreaker();
   if (cb.is_active) {
     logger.warn(`[Engine] Circuit breaker ACTIVE (${cb.consecutive_losses} losses). Skipping cycle. Reactivates: ${cb.deactivates_at}`);
+    return;
+  }
+
+  // 1b. Check portfolio drawdown
+  const maxDrawdownPct = tradingConfig.circuit_breaker.max_drawdown_percent || 10;
+  const drawdownPortfolio = await getCachedPortfolio();
+  if (drawdownPortfolio.total_pnl_percent < -maxDrawdownPct) {
+    logger.warn(`[Engine] DRAWDOWN PROTECTION: total P&L ${drawdownPortfolio.total_pnl_percent.toFixed(2)}% exceeds -${maxDrawdownPct}% limit. Skipping cycle.`);
+    await queueEvent('DRAWDOWN_PAUSE', null, {
+      total_pnl_percent: drawdownPortfolio.total_pnl_percent,
+      max_drawdown_percent: maxDrawdownPct,
+    });
     return;
   }
 
@@ -118,6 +150,8 @@ async function runCycle() {
 
   const haikuResults = await callHaikuBatch(scanResult.triggered, tradingConfig);
 
+  // Filter to escalatable signals first, then process in parallel
+  const toEscalate = [];
   for (let i = 0; i < scanResult.triggered.length; i++) {
     const triggered = scanResult.triggered[i];
     const haikuResult = haikuResults[i];
@@ -142,14 +176,31 @@ async function runCycle() {
       }
     }
 
-    signalsEscalated++;
+    // Sonnet dedup — skip if recently evaluated (unless it's a SELL with open position)
+    const dedupMinutes = tradingConfig.escalation.sonnet_dedup_minutes || 30;
+    const lastEval = lastSonnetEvaluation.get(triggered.symbol);
+    if (lastEval && haikuResult.signal !== 'SELL' && (Date.now() - lastEval) < dedupMinutes * 60 * 1000) {
+      const minutesAgo = ((Date.now() - lastEval) / 60000).toFixed(0);
+      logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — Sonnet evaluated ${minutesAgo}m ago (dedup: ${dedupMinutes}m)`);
+      continue;
+    }
 
-    // Escalated — run through Sonnet
-    try {
-      const result = await processEscalatedSignal(triggered, haikuResult);
-      if (result.executed) tradesExecuted++;
-    } catch (error) {
-      logger.error(`[Engine] Error processing ${triggered.symbol}: ${error.message}`);
+    toEscalate.push({ triggered, haikuResult });
+  }
+
+  signalsEscalated = toEscalate.length;
+
+  // Process all escalated signals through Sonnet in parallel
+  if (toEscalate.length > 0) {
+    const results = await Promise.allSettled(
+      toEscalate.map(({ triggered, haikuResult }) => processEscalatedSignal(triggered, haikuResult))
+    );
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === 'fulfilled' && results[i].value.executed) {
+        tradesExecuted++;
+      } else if (results[i].status === 'rejected') {
+        logger.error(`[Engine] Error processing ${toEscalate[i].triggered.symbol}: ${results[i].reason?.message}`);
+      }
     }
   }
 
@@ -183,18 +234,22 @@ async function processEscalatedSignal(triggered, haikuResult) {
   const coinName = symbolNames.get(symbol) || symbol.replace('USDT', '');
 
   logger.info(`[Engine] ${symbol}: Escalated to Sonnet (${haikuResult.strength} ${haikuResult.signal} conf:${haikuResult.confidence})`);
+  lastSonnetEvaluation.set(symbol, Date.now());
 
   // Gather context for Sonnet
-  const [news, portfolio, learningRules] = await Promise.all([
+  const [news, cachedPortfolio, learningRules] = await Promise.all([
     getNewsContext(symbol, coinName),
-    getPortfolioSummary(tradingConfig),
+    getCachedPortfolio(),
     getLearningRules(),
   ]);
 
-  // Add circuit breaker info to portfolio
+  // Spread to avoid mutating the shared cache (parallel Sonnet calls)
   const cb = await checkCircuitBreaker();
-  portfolio.circuit_breaker_active = cb.is_active;
-  portfolio.consecutive_losses = cb.consecutive_losses;
+  const portfolio = {
+    ...cachedPortfolio,
+    circuit_breaker_active: cb.is_active,
+    consecutive_losses: cb.consecutive_losses,
+  };
 
   // Call Sonnet
   const decision = await callSonnet(haikuResult, triggered, news, portfolio, learningRules, tradingConfig);
@@ -265,23 +320,24 @@ async function executeBuy(decision, triggered) {
   }
 
   // Check available capital
-  const portfolio = await getPortfolioSummary(tradingConfig);
-  if (positionSizeUsd > portfolio.available_capital) {
-    logger.warn(`[Engine] ${symbol}: BUY rejected — insufficient capital ($${positionSizeUsd} > $${portfolio.available_capital.toFixed(2)} available)`);
+  const buyPortfolio = await getCachedPortfolio();
+  if (positionSizeUsd > buyPortfolio.available_capital) {
+    logger.warn(`[Engine] ${symbol}: BUY rejected — insufficient capital ($${positionSizeUsd} > $${buyPortfolio.available_capital.toFixed(2)} available)`);
     return { escalated: true, executed: false };
   }
 
-  // Execute
-  const currentPrice = await getCurrentPrice(symbol);
-  const quantity = positionSizeUsd / currentPrice;
-  const order = await placeOrder(symbol, 'BUY', quantity);
+  // Execute — use estimated quantity for order, but record actual fill values
+  const estimatedPrice = await getCurrentPrice(symbol);
+  const estimatedQty = positionSizeUsd / estimatedPrice;
+  const order = await placeOrder(symbol, 'BUY', estimatedQty);
   const fillPrice = order.price;
-  const fillQty = parseFloat(order.executedQty) || quantity;
-  const fillCost = fillPrice * fillQty;
+  const fillQty = parseFloat(order.executedQty) || estimatedQty;
+  const fillCost = parseFloat(order.cummulativeQuoteQty) || (fillPrice * fillQty);
 
   const positionId = await openPosition(
     symbol, tier, fillPrice, fillQty, fillCost,
-    decision.reasoning, decision.confidence, decision.decision_id
+    decision.reasoning, decision.confidence, decision.decision_id,
+    tradingConfig.account.paper_trading
   );
 
   await queueEvent('BUY', symbol, {
@@ -294,6 +350,7 @@ async function executeBuy(decision, triggered) {
     reasoning: decision.reasoning,
   });
 
+  invalidatePortfolioCache();
   logger.info(`[Engine] EXECUTED BUY: ${symbol} ${fillQty.toFixed(6)} @ $${fillPrice.toFixed(2)} ($${fillCost.toFixed(2)})`);
   sendAlert('BUY', symbol, { price: fillPrice, confidence: decision.confidence, reasoning: decision.reasoning }).catch(() => {});
   return { escalated: true, executed: true };
@@ -318,7 +375,8 @@ async function executeSell(decision, triggered) {
 
   const closeResult = await closePosition(
     position.id, fillPrice, exitPercent,
-    decision.reasoning, decision.confidence, decision.decision_id
+    decision.reasoning, decision.confidence, decision.decision_id,
+    tradingConfig.account.paper_trading
   );
 
   // Circuit breaker tracking
@@ -341,6 +399,7 @@ async function executeSell(decision, triggered) {
     reasoning: decision.reasoning,
   });
 
+  invalidatePortfolioCache();
   logger.info(`[Engine] EXECUTED ${eventType}: ${symbol} ${exitPercent}% @ $${fillPrice.toFixed(2)} | P&L: $${closeResult.pnl.toFixed(2)} (${closeResult.pnlPercent.toFixed(2)}%)`);
   sendAlert('SELL', symbol, { price: fillPrice, pnl: closeResult.pnl, pnl_percent: closeResult.pnlPercent }).catch(() => {});
   return { escalated: true, executed: true };
@@ -371,22 +430,23 @@ async function executeDCA(decision, triggered) {
   }
 
   // Check available capital
-  const portfolio = await getPortfolioSummary(tradingConfig);
-  if (dcaAmountUsd > portfolio.available_capital) {
+  const dcaPortfolio = await getCachedPortfolio();
+  if (dcaAmountUsd > dcaPortfolio.available_capital) {
     logger.warn(`[Engine] ${symbol}: DCA rejected — insufficient capital`);
     return { escalated: true, executed: false };
   }
 
-  const currentPrice = await getCurrentPrice(symbol);
-  const quantity = dcaAmountUsd / currentPrice;
-  const order = await placeOrder(symbol, 'BUY', quantity);
+  const estimatedPrice = await getCurrentPrice(symbol);
+  const estimatedQty = dcaAmountUsd / estimatedPrice;
+  const order = await placeOrder(symbol, 'BUY', estimatedQty);
   const fillPrice = order.price;
-  const fillQty = parseFloat(order.executedQty) || quantity;
-  const fillCost = fillPrice * fillQty;
+  const fillQty = parseFloat(order.executedQty) || estimatedQty;
+  const fillCost = parseFloat(order.cummulativeQuoteQty) || (fillPrice * fillQty);
 
   const dcaResult = await addToPosition(
     position.id, fillPrice, fillQty, fillCost,
-    decision.reasoning, decision.confidence
+    decision.reasoning, decision.confidence,
+    tradingConfig.account.paper_trading
   );
 
   await queueEvent('DCA', symbol, {
@@ -400,6 +460,7 @@ async function executeDCA(decision, triggered) {
     reasoning: decision.reasoning,
   });
 
+  invalidatePortfolioCache();
   logger.info(`[Engine] EXECUTED DCA: ${symbol} ${fillQty.toFixed(6)} @ $${fillPrice.toFixed(2)} | new avg: $${dcaResult.newAvgEntry.toFixed(2)}`);
   sendAlert('DCA', symbol, { price: fillPrice, new_avg_entry: dcaResult.newAvgEntry, cost: fillCost }).catch(() => {});
   return { escalated: true, executed: true };
@@ -416,9 +477,17 @@ async function runHourlyRiskCheck() {
 
   logger.info(`[Engine] Hourly risk check: ${openPositions.length} open position(s)`);
 
+  // Fetch all prices in one call instead of N individual calls
+  let priceMap = {};
+  try {
+    priceMap = await getAllPrices();
+  } catch (error) {
+    logger.error(`[Engine] Bulk price fetch failed for risk check: ${error.message}`);
+  }
+
   for (const pos of openPositions) {
     try {
-      const currentPrice = await getCurrentPrice(pos.symbol);
+      const currentPrice = priceMap[pos.symbol] || await getCurrentPrice(pos.symbol);
       const avgEntry = parseFloat(pos.avg_entry_price);
       const pnlPercent = ((currentPrice - avgEntry) / avgEntry * 100);
       const holdHours = (Date.now() - new Date(pos.entry_time).getTime()) / (1000 * 60 * 60);

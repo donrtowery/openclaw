@@ -52,12 +52,14 @@
   "escalation": {
     "min_confidence_to_escalate": 0.60,
     "min_strength_to_escalate": "MODERATE",
-    "note": "Haiku decides whether to escalate based on signal quality, not rigid cutoffs"
+    "sonnet_dedup_minutes": 30,
+    "note": "Haiku decides whether to escalate based on signal quality, not rigid cutoffs. sonnet_dedup_minutes prevents re-escalating same symbol too frequently."
   },
   "circuit_breaker": {
     "consecutive_losses_to_activate": 3,
     "cooldown_hours": 4,
-    "note": "Safety net only — pauses trading after 3 consecutive losses"
+    "max_drawdown_percent": 10,
+    "note": "Safety net — pauses trading after 3 consecutive losses OR total drawdown exceeds max_drawdown_percent"
   },
   "sms": {
     "enabled": true,

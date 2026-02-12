@@ -1,11 +1,11 @@
 import { query } from '../db/connection.js';
 import logger from './logger.js';
-import { getCurrentPrice } from './binance.js';
+import { getCurrentPrice, getAllPrices } from './binance.js';
 
 /**
  * Open a new position
  */
-export async function openPosition(symbol, tier, entryPrice, entrySize, entryCost, reasoning, confidence, decisionId) {
+export async function openPosition(symbol, tier, entryPrice, entrySize, entryCost, reasoning, confidence, decisionId, paperTrade = true) {
   const result = await query(`
     INSERT INTO positions (
       symbol, status, tier,
@@ -27,7 +27,7 @@ export async function openPosition(symbol, tier, entryPrice, entrySize, entryCos
   await query(`
     INSERT INTO trades (position_id, symbol, trade_type, price, size, cost, reasoning, confidence, paper_trade)
     VALUES ($1, $2, 'ENTRY', $3, $4, $5, $6, $7, $8)
-  `, [positionId, symbol, entryPrice, entrySize, entryCost, reasoning, confidence, true]);
+  `, [positionId, symbol, entryPrice, entrySize, entryCost, reasoning, confidence, paperTrade]);
 
   logger.info(`[Position] Opened #${positionId} ${symbol} @ $${entryPrice.toFixed(2)} (${entrySize.toFixed(6)} coins, $${entryCost.toFixed(2)})`);
 
@@ -37,7 +37,7 @@ export async function openPosition(symbol, tier, entryPrice, entrySize, entryCos
 /**
  * Add to existing position (DCA)
  */
-export async function addToPosition(positionId, dcaPrice, dcaSize, dcaCost, reasoning, confidence) {
+export async function addToPosition(positionId, dcaPrice, dcaSize, dcaCost, reasoning, confidence, paperTrade = true) {
   const posResult = await query('SELECT * FROM positions WHERE id = $1', [positionId]);
   if (posResult.rows.length === 0) throw new Error(`Position ${positionId} not found`);
 
@@ -57,7 +57,7 @@ export async function addToPosition(positionId, dcaPrice, dcaSize, dcaCost, reas
   await query(`
     INSERT INTO trades (position_id, symbol, trade_type, price, size, cost, reasoning, confidence, paper_trade)
     VALUES ($1, $2, 'DCA', $3, $4, $5, $6, $7, $8)
-  `, [positionId, pos.symbol, dcaPrice, dcaSize, dcaCost, reasoning, confidence, true]);
+  `, [positionId, pos.symbol, dcaPrice, dcaSize, dcaCost, reasoning, confidence, paperTrade]);
 
   logger.info(`[Position] DCA #${positionId} @ $${dcaPrice.toFixed(2)}, new avg: $${newAvgEntry.toFixed(2)}`);
 
@@ -67,7 +67,7 @@ export async function addToPosition(positionId, dcaPrice, dcaSize, dcaCost, reas
 /**
  * Close position (full or partial exit)
  */
-export async function closePosition(positionId, exitPrice, exitPercent, reasoning, confidence, decisionId) {
+export async function closePosition(positionId, exitPrice, exitPercent, reasoning, confidence, decisionId, paperTrade = true) {
   const posResult = await query('SELECT * FROM positions WHERE id = $1', [positionId]);
   if (posResult.rows.length === 0) throw new Error(`Position ${positionId} not found`);
 
@@ -121,7 +121,7 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
       exit_percent, pnl, pnl_percent, reasoning, confidence, paper_trade
     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
   `, [positionId, pos.symbol, tradeType, exitPrice, exitSize, exitValue,
-      exitPercent, pnl, pnlPercent, reasoning, confidence, true]);
+      exitPercent, pnl, pnlPercent, reasoning, confidence, paperTrade]);
 
   return { pnl, pnlPercent, isFull };
 }
@@ -168,9 +168,19 @@ export async function getPortfolioSummary(config) {
   let totalInvested = 0;
   let totalCurrentValue = 0;
 
+  // Fetch all prices in one API call instead of N individual calls
+  let priceMap = {};
+  if (openPositions.length > 0) {
+    try {
+      priceMap = await getAllPrices();
+    } catch (error) {
+      logger.error(`[Position] Bulk price fetch failed: ${error.message}`);
+    }
+  }
+
   for (const pos of openPositions) {
     try {
-      const currentPrice = await getCurrentPrice(pos.symbol);
+      const currentPrice = priceMap[pos.symbol] || await getCurrentPrice(pos.symbol);
       const currentValue = parseFloat(pos.current_size) * currentPrice;
       const invested = parseFloat(pos.total_cost);
 
