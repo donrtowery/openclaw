@@ -116,7 +116,7 @@ export async function callHaikuBatch(triggeredSignals, config) {
 
     const message = await anthropic.messages.create({
       model: HAIKU_MODEL,
-      max_tokens: 512 * Math.min(triggeredSignals.length, 5),
+      max_tokens: 512 * triggeredSignals.length,
       system: [{
         type: 'text',
         text: systemPrompt,
