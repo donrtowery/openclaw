@@ -1,298 +1,449 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { readFileSync, statSync } from 'fs';
 import { query } from '../db/connection.js';
+import { formatForClaude } from './technical-analysis.js';
 import logger from './logger.js';
+import dotenv from 'dotenv';
+dotenv.config();
 
-const MODEL = 'claude-haiku-4-5-20251001';
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
 
-// Haiku pricing per million tokens
-const INPUT_COST_PER_M = 1.00;
-const OUTPUT_COST_PER_M = 5.00;
+const HAIKU_MODEL = process.env.HAIKU_MODEL || 'claude-haiku-4-5-20251001';
+const SONNET_MODEL = process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250929';
 
-let anthropic = null;
+// Cache loaded prompt text to avoid repeated filesystem reads within the same cycle
+let haikuPromptCache = { text: null, mtime: 0 };
+let sonnetPromptCache = { text: null, mtime: 0 };
 
-function getAnthropicClient() {
-  if (!anthropic) {
-    anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  }
-  return anthropic;
-}
-
-const SYSTEM_PROMPT = `You are a crypto trading analyst using technical analysis. You receive RSI, MACD, SMA, EMA, Bollinger Bands, volume, and support/resistance data.
-
-Risk tiers:
-- Tier 1 (ETH, SOL, XRP, AVAX, DOT): Blue chips. 15% stop, 2 DCA levels (-5%, -10%), high conviction
-- Tier 2 (LINK, ADA, ATOM, NEAR, POL, OP, ARB, SUI, AAVE, UNI, LDO, FIL, ICP, THETA): Established. 10% stop, 1 DCA (-5%), medium conviction
-- Tier 3 (RENDER, JUP, GALA, XTZ, GRT, SAND): Speculative. 5% stop, no DCA, low conviction
-- TPs: +5% (sell 50%), +8% (sell 30%), +12% (sell 20%)
-- Position: $600, max 5 concurrent
-
-EXISTING POSITIONS:
-- HOLD if trend supports and no TP/SL hit
-- CLOSE if multiple indicators turn against (RSI overbought + MACD bearish + resistance)
-- DCA if at DCA trigger AND indicators show temporary dip (RSI oversold, support, declining volume)
-
-NEW ENTRIES — only BUY if 3+ conditions met:
-- RSI < 40 (approaching oversold)
-- MACD bullish crossover or positive momentum
-- Price near support level
-- Volume stable or increasing
-- Price not far below SMA200
-- Be conservative — better to miss than enter bad trade
-
-Always respond in valid JSON. Be concise.`;
-
-function calculateCost(inputTokens, outputTokens) {
-  return (inputTokens * INPUT_COST_PER_M + outputTokens * OUTPUT_COST_PER_M) / 1_000_000;
-}
-
-async function logAnalysis(checkType, symbols, decision, reasoning, inputTokens, outputTokens) {
-  const cost = calculateCost(inputTokens, outputTokens);
+function loadPrompt(path, cache) {
   try {
-    await query(
-      `INSERT INTO ai_analyses (check_type, symbols, decision, reasoning, tokens_input, tokens_output, cost_usd)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [checkType, symbols, decision, reasoning, inputTokens, outputTokens, cost]
-    );
-  } catch (err) {
-    logger.error(`Failed to log AI analysis: ${err.message}`);
-  }
-  return cost;
-}
-
-async function askClaude(userPrompt, maxTokens = 1500) {
-  const client = getAnthropicClient();
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: maxTokens,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: userPrompt }],
-  });
-
-  const text = response.content[0]?.text || '{}';
-  const inputTokens = response.usage?.input_tokens || 0;
-  const outputTokens = response.usage?.output_tokens || 0;
-
-  let parsed;
-  try {
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, text];
-    parsed = JSON.parse(jsonMatch[1].trim());
+    const stat = statSync(path);
+    if (cache.text && stat.mtimeMs === cache.mtime) {
+      return cache.text;
+    }
+    cache.text = readFileSync(path, 'utf8');
+    cache.mtime = stat.mtimeMs;
+    return cache.text;
   } catch {
-    logger.warn(`Claude returned non-JSON response, using raw text`);
-    parsed = { raw: text };
-  }
-
-  return { parsed, text, inputTokens, outputTokens };
-}
-
-function formatPositionsForPrompt(positions, prices) {
-  if (positions.length === 0) return 'No open positions.';
-
-  return positions.map(p => {
-    const entry = parseFloat(p.avg_entry_price);
-    const current = prices[p.symbol] || entry;
-    const pnlPct = ((current - entry) / entry * 100).toFixed(2);
-    const dca = p.dca_level > 0 ? ` DCA${p.dca_level}` : '';
-    const tps = [
-      p.tp1_hit ? 'TP1*' : 'TP1',
-      p.tp2_hit ? 'TP2*' : 'TP2',
-      p.tp3_hit ? 'TP3*' : 'TP3',
-    ].join('/');
-    return `${p.symbol}: entry=$${entry.toFixed(2)} now=$${current.toFixed(2)} P&L=${pnlPct}%${dca} SL=$${parseFloat(p.stop_loss_price).toFixed(2)} ${tps}`;
-  }).join('\n');
-}
-
-// ── Public API ─────────────────────────────────────────────
-
-/**
- * Hourly check — assess positions AND scan all symbols for entries.
- * @param {object[]} positions - Open positions
- * @param {object} prices - { symbol: price }
- * @param {object} circuitBreaker - { isPaused, consecutiveLosses }
- * @param {string} technicalSummary - Formatted TA for all 25 symbols
- * @returns {Promise<object>}
- */
-export async function lightCheck(positions, prices, circuitBreaker, technicalSummary, recentlyClosed = []) {
-  const posText = formatPositionsForPrompt(positions, prices);
-  const cbStatus = circuitBreaker.isPaused
-    ? `PAUSED (${circuitBreaker.consecutiveLosses} losses)`
-    : `Active (${circuitBreaker.consecutiveLosses} losses)`;
-
-  const heldSymbols = new Set(positions.map(p => p.symbol));
-  const canBuy = !circuitBreaker.isPaused && positions.length < 5;
-
-  const cooldownText = recentlyClosed.length > 0
-    ? `\nCOOLDOWN — Do NOT recommend buying these symbols (closed within 24h):\n${recentlyClosed.map(r => `- ${r.symbol} (closed ${r.hoursAgo}h ago, sold at $${r.exitPrice.toFixed(4)})`).join('\n')}\n`
-    : '';
-
-  const prompt = `HOURLY CHECK — monitor positions + scan for entries.
-
-Circuit breaker: ${cbStatus} | Positions: ${positions.length}/5
-${cooldownText}
-Open positions:
-${posText}
-
-Technical analysis (all 25 symbols):
-${technicalSummary}
-
-Tasks:
-1. For each open position: HOLD, CLOSE, or DCA with confidence 0.0-1.0
-2. ${canBuy ? 'Scan all symbols for BUY opportunities (exclude symbols already held and symbols on cooldown). Only recommend if confidence >= 0.7 and 3+ technical conditions met.' : 'At max positions or paused — no new entries.'}
-
-JSON response:
-{
-  "marketPhase": "BULL|BEAR|SIDEWAYS",
-  "existingPositions": [{"symbol":"...","action":"HOLD|CLOSE|DCA","confidence":0.0,"reasoning":"..."}],
-  "newEntries": [{"symbol":"...","action":"BUY","confidence":0.0,"reasoning":"..."}],
-  "summary": "..."
-}`;
-
-  try {
-    const { parsed, text, inputTokens, outputTokens } = await askClaude(prompt);
-    const symbols = [...heldSymbols];
-    const posDecisions = (parsed.existingPositions || []).map(d => `${d.symbol}:${d.action}`).join(', ');
-    const entries = (parsed.newEntries || []).map(e => `${e.symbol}(${e.confidence})`).join(', ');
-    const decision = `phase=${parsed.marketPhase || '?'} pos=[${posDecisions}] entries=[${entries}]`;
-    const cost = await logAnalysis('LIGHT', symbols, decision, text, inputTokens, outputTokens);
-
-    logger.info(`Light check: ${inputTokens + outputTokens} tokens, $${cost.toFixed(4)} — phase=${parsed.marketPhase} entries=[${entries}]`);
-
-    return {
-      checkType: 'LIGHT',
-      marketPhase: parsed.marketPhase || 'UNKNOWN',
-      decisions: parsed.existingPositions || [],
-      newEntries: parsed.newEntries || [],
-      summary: parsed.summary || '',
-      tokensUsed: inputTokens + outputTokens,
-      cost,
-    };
-  } catch (err) {
-    logger.error(`Light check failed: ${err.message}`);
-    return { checkType: 'LIGHT', marketPhase: 'UNKNOWN', decisions: [], newEntries: [], tokensUsed: 0, cost: 0 };
+    // Fallback: always read
+    return readFileSync(path, 'utf8');
   }
 }
 
 /**
- * 6-hourly deep check — same as light but adds news context.
- * @param {object[]} positions
- * @param {object} prices
- * @param {string} newsContext - Brave Search news
- * @param {object} circuitBreaker
- * @param {string} technicalSummary - Formatted TA for all 25 symbols
- * @returns {Promise<object>}
+ * Extract JSON from a response that may contain surrounding prose/markdown.
+ * Finds the outermost JSON array or object in the text.
  */
-export async function deepCheck(positions, prices, newsContext, circuitBreaker, technicalSummary, recentlyClosed = []) {
-  const posText = formatPositionsForPrompt(positions, prices);
-  const cbStatus = circuitBreaker.isPaused
-    ? `PAUSED (${circuitBreaker.consecutiveLosses} losses)`
-    : `Active (${circuitBreaker.consecutiveLosses} losses)`;
+export function extractJSON(text) {
+  // Strip markdown code fences first
+  const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
 
-  const heldSymbols = new Set(positions.map(p => p.symbol));
-  const canBuy = !circuitBreaker.isPaused && positions.length < 5;
+  // Try direct parse first (fast path)
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Fall through to bracket extraction
+  }
 
-  const cooldownText = recentlyClosed.length > 0
-    ? `\nCOOLDOWN — Do NOT recommend buying these symbols (closed within 24h):\n${recentlyClosed.map(r => `- ${r.symbol} (closed ${r.hoursAgo}h ago, sold at $${r.exitPrice.toFixed(4)})`).join('\n')}\n`
-    : '';
+  // Find the first [ or { and match its closing bracket
+  const arrayStart = cleaned.indexOf('[');
+  const objectStart = cleaned.indexOf('{');
 
-  const prompt = `DEEP CHECK — full analysis with news + technicals.
+  let start;
+  if (arrayStart === -1 && objectStart === -1) {
+    throw new Error('No JSON found in response');
+  } else if (arrayStart === -1) {
+    start = objectStart;
+  } else if (objectStart === -1) {
+    start = arrayStart;
+  } else {
+    start = Math.min(arrayStart, objectStart);
+  }
 
-Circuit breaker: ${cbStatus} | Positions: ${positions.length}/5
-${cooldownText}
-Open positions:
-${posText}
+  // Walk forward tracking bracket depth (all bracket types)
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{' || ch === '[') depth++;
+    if (ch === '}' || ch === ']') depth--;
+    if (depth === 0) {
+      return JSON.parse(cleaned.substring(start, i + 1));
+    }
+  }
 
-Technical analysis (all 25 symbols):
-${technicalSummary}
+  throw new Error('Unterminated JSON in response');
+}
 
-Market news & sentiment:
-${newsContext || 'No news available.'}
+/**
+ * Call Haiku to evaluate one or more signals in a single batched call.
+ * Uses prompt caching so the system prompt is only billed fully once per 5-min window.
+ *
+ * Cost savings:
+ * - Prompt caching: ~90% reduction on system prompt tokens after first call
+ * - Batching: 1 API call instead of N for N signals
+ * - formatForClaude: compact ~4-line format vs raw JSON (~75% fewer user tokens)
+ *
+ * Returns: array of { symbol, signal, strength, escalate, confidence, reasons, concerns, signal_id }
+ */
+export async function callHaikuBatch(triggeredSignals, config) {
+  if (triggeredSignals.length === 0) return [];
 
-Tasks:
-1. For each open position: HOLD, CLOSE, or DCA with confidence 0.0-1.0
-2. ${canBuy ? 'Scan all symbols for BUY opportunities (exclude held and symbols on cooldown). Require confidence >= 0.7, 3+ technical conditions, and no contradicting news.' : 'At max positions or paused — no new entries.'}
-3. Factor news into analysis — negative news (hacks, bans, crashes) reduces entry confidence, positive news (ETFs, adoption) increases it. When news contradicts technicals, favor caution.
+  const systemPrompt = loadPrompt('prompts/haiku-scanner.md', haikuPromptCache);
 
-JSON response:
-{
-  "marketPhase": "BULL|BEAR|SIDEWAYS",
-  "existingPositions": [{"symbol":"...","action":"HOLD|CLOSE|DCA","confidence":0.0,"reasoning":"..."}],
-  "newEntries": [{"symbol":"...","action":"BUY","confidence":0.0,"reasoning":"..."}],
-  "summary": "..."
-}`;
+  // Build one user message with all triggered signals
+  let userMessage = '';
+  if (triggeredSignals.length === 1) {
+    userMessage = formatHaikuInput(triggeredSignals[0]);
+  } else {
+    userMessage = `Evaluate the following ${triggeredSignals.length} signals. Return a JSON array with one evaluation object per signal.\n\n`;
+    for (let i = 0; i < triggeredSignals.length; i++) {
+      userMessage += `--- Signal ${i + 1} ---\n`;
+      userMessage += formatHaikuInput(triggeredSignals[i]);
+      userMessage += '\n';
+    }
+  }
 
   try {
-    const { parsed, text, inputTokens, outputTokens } = await askClaude(prompt, 2000);
-    const symbols = [...heldSymbols];
-    const posDecisions = (parsed.existingPositions || []).map(d => `${d.symbol}:${d.action}`).join(', ');
-    const entries = (parsed.newEntries || []).map(e => `${e.symbol}(${e.confidence})`).join(', ');
-    const decision = `phase=${parsed.marketPhase || '?'} pos=[${posDecisions}] entries=[${entries}]`;
-    const cost = await logAnalysis('DEEP', symbols, decision, text, inputTokens, outputTokens);
+    const startTime = Date.now();
 
-    logger.info(`Deep check: ${inputTokens + outputTokens} tokens, $${cost.toFixed(4)} — phase=${parsed.marketPhase} entries=[${entries}]`);
+    const message = await anthropic.messages.create({
+      model: HAIKU_MODEL,
+      max_tokens: 512 * Math.min(triggeredSignals.length, 5),
+      system: [{
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      }],
+      messages: [{ role: 'user', content: userMessage }],
+    });
 
-    return {
-      checkType: 'DEEP',
-      marketPhase: parsed.marketPhase || 'UNKNOWN',
-      decisions: parsed.existingPositions || [],
-      newEntries: parsed.newEntries || [],
-      summary: parsed.summary || '',
-      tokensUsed: inputTokens + outputTokens,
-      cost,
-    };
-  } catch (err) {
-    logger.error(`Deep check failed: ${err.message}`);
-    return { checkType: 'DEEP', marketPhase: 'UNKNOWN', decisions: [], newEntries: [], tokensUsed: 0, cost: 0 };
+    const responseText = message.content[0].text;
+    const inputTokens = message.usage.input_tokens;
+    const outputTokens = message.usage.output_tokens;
+    const cacheRead = message.usage.cache_read_input_tokens || 0;
+    const cacheCreation = message.usage.cache_creation_input_tokens || 0;
+    const duration = Date.now() - startTime;
+
+    logger.info(`[Haiku] ${triggeredSignals.length} signal(s) evaluated in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read, ${cacheCreation} created`);
+
+    // Parse response — could be single object or array
+    let parsed;
+    try {
+      parsed = extractJSON(responseText);
+    } catch {
+      logger.error(`[Haiku] JSON parse failed, response: ${responseText.substring(0, 500)}`);
+      // Return safe fallback for all signals
+      return triggeredSignals.map(sig => ({
+        symbol: sig.symbol,
+        signal: 'NONE',
+        strength: 'WEAK',
+        escalate: false,
+        confidence: 0,
+        reasons: ['Haiku response was not valid JSON'],
+        concerns: [],
+        signal_id: null,
+      }));
+    }
+
+    // Normalize to array
+    const results = Array.isArray(parsed) ? parsed : [parsed];
+
+    // Log each signal to database and attach signal_id
+    const output = [];
+    for (let i = 0; i < triggeredSignals.length; i++) {
+      const sig = triggeredSignals[i];
+      const result = results[i] || {
+        symbol: sig.symbol, signal: 'NONE', strength: 'WEAK',
+        escalate: false, confidence: 0, reasons: ['No response for this signal'], concerns: [],
+      };
+
+      const signalId = await logSignal(sig, result, inputTokens + outputTokens);
+
+      logger.info(`[Haiku] ${sig.symbol}: ${result.strength} ${result.signal} conf:${result.confidence} escalate:${result.escalate}`);
+
+      output.push({ ...result, signal_id: signalId });
+    }
+
+    return output;
+
+  } catch (error) {
+    logger.error('[Haiku] API error:', error.message);
+    throw error;
   }
 }
 
 /**
- * Alert check — tactical response to a price alert with TA context.
- * @param {object} alert
- * @param {object} position
- * @param {number} currentPrice
- * @param {object} circuitBreaker
- * @param {string} technicalSummary - Formatted TA for the alerted symbol
- * @returns {Promise<object>}
+ * Single-signal convenience wrapper (calls batch internally)
  */
-export async function alertCheck(alert, position, currentPrice, circuitBreaker, technicalSummary) {
-  const cbStatus = circuitBreaker.isPaused ? 'PAUSED' : 'Active';
+export async function callHaiku(triggeredSignal, config) {
+  const results = await callHaikuBatch([triggeredSignal], config);
+  return results[0];
+}
 
-  let posContext = 'No position in this symbol.';
-  if (position) {
-    const entry = parseFloat(position.avg_entry_price);
-    const pnl = ((currentPrice - entry) / entry * 100).toFixed(2);
-    posContext = `Position: entry=$${entry.toFixed(2)} now=$${currentPrice.toFixed(2)} P&L=${pnl}% DCA=${position.dca_level} SL=$${parseFloat(position.stop_loss_price).toFixed(2)}`;
-  }
+/**
+ * Call Sonnet for final trading decision.
+ * Uses prompt caching for the large system prompt (~12K).
+ *
+ * Returns: { action, symbol, confidence, position_details, reasoning, risk_assessment, alternative_considered, decision_id }
+ */
+export async function callSonnet(haikuSignal, triggeredSignal, newsContext, portfolioState, learningRules, config) {
+  const systemPrompt = loadPrompt('prompts/sonnet-decision.md', sonnetPromptCache);
 
-  const prompt = `ALERT CHECK — tactical decision needed.
-
-Circuit breaker: ${cbStatus}
-Alert: ${alert.alert_type} on ${alert.symbol} at $${parseFloat(alert.price).toFixed(2)}
-Current price: $${currentPrice.toFixed(2)}
-${posContext}
-
-Technical analysis:
-${technicalSummary || 'TA unavailable.'}
-
-Decide: HOLD, CLOSE, DCA, BUY, or IGNORE. Include confidence 0.0-1.0.
-
-JSON: {"action":"HOLD|CLOSE|DCA|BUY|IGNORE","confidence":0.0,"reasoning":"..."}`;
+  const userMessage = formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioState, learningRules);
 
   try {
-    const { parsed, text, inputTokens, outputTokens } = await askClaude(prompt);
-    const cost = await logAnalysis('ALERT', [alert.symbol], `${parsed.action || 'IGNORE'}(${parsed.confidence || 0})`, text, inputTokens, outputTokens);
+    const startTime = Date.now();
 
-    logger.info(`Alert check ${alert.symbol}: ${parsed.action}(${parsed.confidence}) — ${inputTokens + outputTokens} tokens, $${cost.toFixed(4)}`);
+    const message = await anthropic.messages.create({
+      model: SONNET_MODEL,
+      max_tokens: 2048,
+      system: [{
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      }],
+      messages: [{ role: 'user', content: userMessage }],
+    });
 
-    return {
-      checkType: 'ALERT',
-      action: parsed.action || 'IGNORE',
-      confidence: parsed.confidence || 0,
-      reasoning: parsed.reasoning || '',
-      tokensUsed: inputTokens + outputTokens,
-      cost,
-    };
-  } catch (err) {
-    logger.error(`Alert check failed for ${alert.symbol}: ${err.message}`);
-    return { checkType: 'ALERT', action: 'IGNORE', confidence: 0, reasoning: 'Error', tokensUsed: 0, cost: 0 };
+    const responseText = message.content[0].text;
+    const inputTokens = message.usage.input_tokens;
+    const outputTokens = message.usage.output_tokens;
+    const cacheRead = message.usage.cache_read_input_tokens || 0;
+    const duration = Date.now() - startTime;
+
+    logger.info(`[Sonnet] ${triggeredSignal.symbol} decided in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
+
+    let parsed;
+    try {
+      parsed = extractJSON(responseText);
+    } catch {
+      logger.error(`[Sonnet] JSON parse failed, response: ${responseText.substring(0, 500)}`);
+      parsed = {
+        action: 'PASS',
+        symbol: triggeredSignal.symbol,
+        confidence: 0,
+        position_details: null,
+        reasoning: 'Parse error — could not interpret Sonnet response',
+        risk_assessment: 'Unable to assess due to parse error',
+        alternative_considered: 'N/A',
+      };
+    }
+
+    // Enforce confidence safety net
+    parsed = enforceConfidenceThresholds(parsed, config);
+
+    // Log decision with full prompt snapshot (critical for future Haiku training)
+    const decisionId = await logDecision(haikuSignal.signal_id, parsed, userMessage, inputTokens + outputTokens);
+
+    logger.info(`[Sonnet] ${triggeredSignal.symbol}: ${parsed.action} conf:${parsed.confidence}`);
+    logger.info(`[Sonnet] Reasoning: ${(parsed.reasoning || '').substring(0, 150)}...`);
+
+    return { ...parsed, decision_id: decisionId };
+
+  } catch (error) {
+    logger.error('[Sonnet] API error:', error.message);
+    throw error;
   }
+}
+
+/**
+ * Format Haiku input using compact formatForClaude from technical-analysis.js.
+ * ~4 lines per symbol instead of ~15 lines of raw data = ~75% token savings.
+ */
+function formatHaikuInput(triggeredSignal) {
+  const { symbol, tier, analysis, thresholds_crossed, has_position, position } = triggeredSignal;
+
+  let msg = `${symbol} — Tier ${tier}\n`;
+  msg += `Triggered: ${thresholds_crossed.join(', ')}\n\n`;
+
+  // Compact technical data from proven v1 formatter
+  msg += formatForClaude(analysis);
+  msg += '\n';
+
+  // Add raw numbers Haiku needs that formatForClaude compresses
+  if (analysis.rsi) msg += `RSI: ${analysis.rsi.value}\n`;
+  if (analysis.macd) msg += `MACD histogram: ${analysis.macd.histogram}, crossover: ${analysis.macd.crossover}\n`;
+  if (analysis.sma?.sma200 != null) msg += `SMA200: ${analysis.sma.sma200}\n`;
+
+  if (has_position && position) {
+    const entryPrice = parseFloat(position.entry_price || position.avg_entry_price);
+    const pnlPercent = ((analysis.price - entryPrice) / entryPrice * 100).toFixed(2);
+    const holdHours = ((Date.now() - new Date(position.entry_time).getTime()) / (1000 * 60 * 60)).toFixed(1);
+
+    msg += `\nEXISTING POSITION:\n`;
+    msg += `  Entry: ${entryPrice.toFixed(2)} | Current P&L: ${pnlPercent}% | Hold: ${holdHours}h\n`;
+    msg += `  Size: ${parseFloat(position.current_size).toFixed(6)} | Invested: $${parseFloat(position.total_cost).toFixed(2)}\n`;
+  }
+
+  return msg;
+}
+
+/**
+ * Format Sonnet input — includes Haiku's assessment, technicals, news, portfolio, learning
+ */
+function formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioState, learningRules) {
+  let msg = `# SIGNAL EVALUATION REQUEST\n\n`;
+
+  // Haiku's assessment (compact, not full JSON dump)
+  msg += `## Haiku's Assessment\n`;
+  msg += `Signal: ${haikuSignal.signal} | Strength: ${haikuSignal.strength} | Confidence: ${haikuSignal.confidence}\n`;
+  msg += `Reasons: ${(haikuSignal.reasons || []).join('; ')}\n`;
+  if (haikuSignal.concerns?.length) {
+    msg += `Concerns: ${haikuSignal.concerns.join('; ')}\n`;
+  }
+  msg += '\n';
+
+  // Technical data (reuse compact Haiku input)
+  msg += `## Technical Data\n`;
+  msg += formatHaikuInput(triggeredSignal);
+  msg += '\n';
+
+  // News
+  msg += `## News Context\n`;
+  msg += newsContext || 'No recent news available.\n';
+  msg += '\n';
+
+  // Portfolio state
+  msg += `## Portfolio State\n`;
+  msg += `Open positions: ${portfolioState.open_count}/${portfolioState.max_positions}\n`;
+  msg += `Unrealized P&L: ${portfolioState.unrealized_pnl_percent?.toFixed(2) || '0.00'}%\n`;
+  msg += `Available capital: $${portfolioState.available_capital?.toFixed(2) || '0.00'}\n`;
+
+  if (portfolioState.total_trades > 0) {
+    msg += `Win rate: ${portfolioState.win_rate?.toFixed(1)}% (${portfolioState.total_trades} trades)\n`;
+  }
+
+  if (portfolioState.circuit_breaker_active) {
+    msg += `\nCIRCUIT BREAKER ACTIVE — ${portfolioState.consecutive_losses} consecutive losses\n`;
+  }
+  msg += '\n';
+
+  // Learning rules (top 5, brief)
+  if (learningRules?.length > 0) {
+    msg += `## Lessons from Past Trades\n`;
+    for (const rule of learningRules.slice(0, 5)) {
+      msg += `- ${rule.rule_text}`;
+      if (rule.win_rate && rule.sample_size) {
+        msg += ` (${rule.win_rate}% win rate, ${rule.sample_size} trades)`;
+      }
+      msg += '\n';
+    }
+    msg += '\n';
+  }
+
+  return msg;
+}
+
+/**
+ * Enforce confidence safety net — downgrades low-confidence actions
+ */
+function enforceConfidenceThresholds(decision, config) {
+  const thresholds = config.confidence_thresholds;
+  if (!thresholds) return decision;
+
+  if (decision.action === 'BUY' && decision.confidence < thresholds.sonnet_minimum_for_new_entry) {
+    logger.warn(`[Sonnet] BUY confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_new_entry}, downgrading to PASS`);
+    decision.action = 'PASS';
+    decision.reasoning += ` [Auto-downgraded: confidence below ${thresholds.sonnet_minimum_for_new_entry} threshold]`;
+  }
+
+  if (decision.action === 'SELL' && decision.confidence < thresholds.sonnet_minimum_for_exit) {
+    logger.warn(`[Sonnet] SELL confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_exit}, downgrading to HOLD`);
+    decision.action = 'HOLD';
+  }
+
+  if (decision.action === 'DCA' && decision.confidence < thresholds.sonnet_minimum_for_dca) {
+    logger.warn(`[Sonnet] DCA confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_dca}, downgrading to HOLD`);
+    decision.action = 'HOLD';
+  }
+
+  return decision;
+}
+
+/**
+ * Log Haiku signal to database
+ */
+async function logSignal(triggeredSignal, haikuResponse, tokensUsed) {
+  const analysis = triggeredSignal.analysis;
+  const result = await query(`
+    INSERT INTO signals (
+      symbol, triggered_by, price,
+      rsi, macd, macd_signal, macd_histogram,
+      sma10, sma30, sma50, sma200, ema9, ema21,
+      bb_upper, bb_middle, bb_lower,
+      volume_24h, volume_ratio,
+      support_nearest, resistance_nearest, trend,
+      signal_type, strength, confidence, reasoning, escalated, outcome
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+    RETURNING id
+  `, [
+    triggeredSignal.symbol,
+    triggeredSignal.thresholds_crossed,
+    analysis.price,
+    analysis.rsi?.value ?? null,
+    analysis.macd?.macd ?? null,
+    analysis.macd?.signal ?? null,
+    analysis.macd?.histogram ?? null,
+    analysis.sma?.sma10 ?? null,
+    analysis.sma?.sma30 ?? null,
+    analysis.sma?.sma50 ?? null,
+    analysis.sma?.sma200 ?? null,
+    analysis.ema?.ema9 ?? null,
+    analysis.ema?.ema21 ?? null,
+    analysis.bollingerBands?.upper ?? null,
+    analysis.bollingerBands?.middle ?? null,
+    analysis.bollingerBands?.lower ?? null,
+    analysis.volume?.current ?? null,
+    analysis.volume?.ratio ?? null,
+    analysis.support?.[0] ?? null,
+    analysis.resistance?.[0] ?? null,
+    analysis.trend?.direction ?? null,
+    haikuResponse.signal || 'NONE',
+    haikuResponse.strength || 'WEAK',
+    haikuResponse.confidence || 0,
+    JSON.stringify(haikuResponse.reasons || []),
+    haikuResponse.escalate || false,
+    'PENDING',
+  ]);
+
+  return result.rows[0].id;
+}
+
+/**
+ * Log Sonnet decision with full prompt snapshot for future Haiku training
+ */
+async function logDecision(signalId, sonnetResponse, promptSnapshot, tokensUsed) {
+  const result = await query(`
+    INSERT INTO decisions (
+      signal_id, symbol, action, confidence, reasoning, risk_assessment,
+      alternative_considered, prompt_snapshot, outcome,
+      recommended_entry_price, recommended_position_size,
+      recommended_exit_price, recommended_exit_percent
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    RETURNING id
+  `, [
+    signalId,
+    sonnetResponse.symbol,
+    sonnetResponse.action,
+    sonnetResponse.confidence,
+    sonnetResponse.reasoning || '',
+    sonnetResponse.risk_assessment || '',
+    sonnetResponse.alternative_considered || '',
+    promptSnapshot,
+    'PENDING',
+    sonnetResponse.position_details?.entry_price ?? null,
+    sonnetResponse.position_details?.position_size_coin ?? null,
+    sonnetResponse.position_details?.exit_price ?? null,
+    sonnetResponse.position_details?.exit_percent ?? null,
+  ]);
+
+  return result.rows[0].id;
 }

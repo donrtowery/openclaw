@@ -497,7 +497,7 @@ async function callSonnetForAnalysis(stats) {
     const message = await anthropic.messages.create({
       model: SONNET_MODEL,
       max_tokens: 8192,
-      system: [{ type: 'text', text: 'You are a trading performance analyst. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral', ttl: '1h' } }],
+      system: [{ type: 'text', text: 'You are a trading performance analyst. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: prompt }],
     });
 
