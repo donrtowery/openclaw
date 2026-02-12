@@ -40,7 +40,7 @@ async function run() {
   const escConvRate = totalEscalated > 0 ? (totalTraded / totalEscalated * 100).toFixed(1) : '0.0';
   logger.info(`[Learning] Escalation accuracy: ${totalEscalated} escalated → ${totalTraded} traded (${escConvRate}%), ${totalPassed} PASSed`);
   logger.info(`[Learning] PASS outcomes: ${parseInt(stats.pass_outcome_summary.correct_pass) || 0} CORRECT_PASS, ${parseInt(stats.pass_outcome_summary.missed_opportunity) || 0} MISSED_OPPORTUNITY`);
-  logger.info(`[Learning] PASS patterns (Sonnet rejects): ${stats.pass_patterns.length} | Missed escalation patterns: ${stats.missed_escalation_patterns.length}`);
+  logger.info(`[Learning] PASS patterns (Sonnet rejects, min 5 samples): ${stats.pass_patterns.length} | Missed escalation patterns: ${stats.missed_escalation_patterns.length}`);
   if (stats.pass_reasoning_themes.length > 0) {
     const themes = stats.pass_reasoning_themes.map(t => `${t.rejection_theme}(${t.cnt})`).join(', ');
     logger.info(`[Learning] PASS rejection themes: ${themes}`);
@@ -268,7 +268,7 @@ async function calculateStats() {
     WHERE s.escalated = true
       AND s.created_at > NOW() - INTERVAL '30 days'
     GROUP BY s.triggered_by, s.trend, s.strength
-    HAVING COUNT(*) >= 2
+    HAVING COUNT(*) >= 5
       AND (COUNT(CASE WHEN d.action = 'PASS' THEN 1 END)::numeric / COUNT(*) * 100) >= 70
     ORDER BY pass_rate DESC
   `);
@@ -444,6 +444,20 @@ async function callSonnetForAnalysis(stats) {
     prompt += '\n';
   }
 
+  // ── BILATERAL ACCURACY FRAMING ──
+  // Show Sonnet's own accuracy prominently so the model sees both sides
+  const correctPass = parseInt(stats.pass_outcome_summary.correct_pass) || 0;
+  const missedOpp = parseInt(stats.pass_outcome_summary.missed_opportunity) || 0;
+  const totalPassDecisions = correctPass + missedOpp;
+  const sonnetPassAccuracy = totalPassDecisions > 0 ? (correctPass / totalPassDecisions * 100).toFixed(1) : 'N/A';
+
+  prompt += `═══ BILATERAL ACCURACY — BOTH MODELS CAN BE WRONG ═══\n\n`;
+
+  prompt += `SONNET'S OWN ACCURACY:\n`;
+  prompt += `- Of ${totalPassDecisions} evaluated PASS decisions: ${correctPass} CORRECT_PASS, ${missedOpp} MISSED_OPPORTUNITY\n`;
+  prompt += `- Sonnet PASS accuracy: ${sonnetPassAccuracy}%\n`;
+  prompt += `- MISSED_OPPORTUNITY means SONNET was wrong to pass, NOT that Haiku was wrong to escalate\n\n`;
+
   // Haiku escalation accuracy
   if (stats.escalation_accuracy.length > 0) {
     const totalEsc = stats.escalation_accuracy.reduce((sum, r) => sum + parseInt(r.total_escalated), 0);
@@ -457,12 +471,28 @@ async function callSonnetForAnalysis(stats) {
     prompt += '\n';
   }
 
+  prompt += `HOW TO INTERPRET:\n`;
+  prompt += `- Haiku over-escalates → Sonnet correctly passes → reduce Haiku escalation for that pattern\n`;
+  prompt += `- Haiku escalates → Sonnet wrongly passes (MISSED_OPPORTUNITY) → Sonnet was wrong, NOT Haiku\n`;
+  prompt += `- Haiku doesn't escalate → price moves favorably → Haiku was too conservative\n`;
+  prompt += `- A healthy system has 15-30% escalation conversion rate. 100% conversion = too conservative.\n\n`;
+
   // Patterns Sonnet consistently passes on
   if (stats.pass_patterns.length > 0) {
-    prompt += `PATTERNS SONNET CONSISTENTLY PASSES (>=70% PASS rate, min 2 samples):\n`;
+    prompt += `PATTERNS SONNET CONSISTENTLY PASSES (>=70% PASS rate, min 5 samples):\n`;
     for (const p of stats.pass_patterns) {
       const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
-      prompt += `${triggers} (${p.trend}) ${p.strength}: ${p.total} escalated, ${p.pass_rate}% PASSed — Haiku should STOP escalating this\n`;
+      prompt += `${triggers} (${p.trend}) ${p.strength}: ${p.total} escalated, ${p.pass_rate}% PASSed\n`;
+    }
+    prompt += '\n';
+  }
+
+  // Sonnet's MISSED_OPPORTUNITY decisions — framed as SONNET ERRORS
+  if (stats.missed_pass_decisions.length > 0) {
+    prompt += `SONNET ERRORS — MISSED_OPPORTUNITY PASS DECISIONS (Sonnet was wrong to pass these):\n`;
+    for (const m of stats.missed_pass_decisions.slice(0, 10)) {
+      prompt += `${m.symbol} Haiku:${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed (conf:${m.sonnet_conf}) → price rose +${parseFloat(m.potential_gain_pct).toFixed(1)}%\n`;
+      prompt += `  Sonnet's (wrong) reasoning: ${(m.reasoning || '').substring(0, 120)}\n`;
     }
     prompt += '\n';
   }
@@ -486,7 +516,16 @@ async function callSonnetForAnalysis(stats) {
     prompt += '\n';
   }
 
-  prompt += `Generate JSON with: haiku_rules (string array — what to escalate/skip), sonnet_rules (string array — what to prioritize), haiku_few_shots (array of {description, input, output, outcome}), sonnet_few_shots (array of {description, signal, decision, outcome}), haiku_escalation_calibration (string array of pattern-level rules like "STOP escalating X" / "START escalating Y"), rule_changes (what changed and why). All rules must be plain strings, not objects.\n`;
+  prompt += `Generate JSON with: haiku_rules (string array — what to escalate/skip), sonnet_rules (string array — what to prioritize), haiku_few_shots (array of {description, input, output, outcome}), sonnet_few_shots (array of {description, signal, decision, outcome}), haiku_escalation_calibration (string array of pattern-level rules like "STOP escalating X" / "START escalating Y"), rule_changes (what changed and why). All rules must be plain strings, not objects.\n\n`;
+
+  prompt += `CRITICAL RULE GENERATION CONSTRAINTS:\n`;
+  prompt += `- Max 15 haiku_rules total (combined haiku_rules + haiku_escalation_calibration)\n`;
+  prompt += `- At least 40% of rules should be ESCALATE/START patterns, not just STOP/SKIP\n`;
+  prompt += `- A healthy system has 15-30% escalation conversion rate, NOT 100%\n`;
+  prompt += `- Do NOT generate STOP rules for patterns with fewer than 5 samples\n`;
+  prompt += `- MISSED_OPPORTUNITY PASSes mean Sonnet was wrong, not Haiku — do NOT penalize Haiku for these\n`;
+  prompt += `- Avoid duplicate rules that say the same thing in different words\n\n`;
+
   if (hasTrades) {
     prompt += `Focus on: >70% WR patterns (promote), <40% WR patterns (warn), missed opportunities (both non-escalated and Sonnet PASS), optimal hold times, DCA effectiveness.`;
   } else {
@@ -601,11 +640,22 @@ async function updatePromptFiles(stats, analysis) {
     haikuSection += '\n';
   }
 
-  // Haiku rules: combine haiku_rules + haiku_escalation_calibration
-  const haikuRules = [
+  // SONNET WAS WRONG section — show MISSED_OPPORTUNITY PASS decisions
+  if (stats.missed_pass_decisions.length > 0) {
+    haikuSection += `SONNET WAS WRONG (these PASSed signals SHOULD have been escalated — Sonnet erred, not you):\n`;
+    for (const m of stats.missed_pass_decisions.slice(0, 5)) {
+      haikuSection += `- ${m.symbol} ${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed → price rose +${parseFloat(m.potential_gain_pct).toFixed(1)}%`;
+      if (m.reasoning) haikuSection += ` | Sonnet's reason: ${m.reasoning.substring(0, 80)}`;
+      haikuSection += '\n';
+    }
+    haikuSection += `Keep escalating signals like these — Sonnet needs to see them.\n\n`;
+  }
+
+  // Haiku rules: combine haiku_rules + haiku_escalation_calibration, cap at 15
+  const haikuRules = deduplicateRules([
     ...toArray(analysis.haiku_rules),
     ...toArray(analysis.haiku_escalation_calibration),
-  ];
+  ]).slice(0, 15);
   const sonnetRules = analysis.sonnet_rules || [];
 
   // ── Sonnet section stays unchanged ──
@@ -631,6 +681,34 @@ function flattenRule(rule) {
   return JSON.stringify(rule);
 }
 
+function deduplicateRules(rules) {
+  const flattened = rules.map(flattenRule);
+  const seen = [];
+  const result = [];
+  for (let i = 0; i < flattened.length; i++) {
+    const normalized = flattened[i].toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
+    // Check for near-duplicates: if >60% of words overlap with an existing rule, skip
+    const words = new Set(normalized.split(' ').filter(w => w.length > 2));
+    let isDuplicate = false;
+    for (const existing of seen) {
+      const existingWords = new Set(existing.split(' ').filter(w => w.length > 2));
+      const intersection = [...words].filter(w => existingWords.has(w));
+      const overlap = Math.max(words.size, existingWords.size) > 0
+        ? intersection.length / Math.min(words.size, existingWords.size)
+        : 0;
+      if (overlap > 0.6) {
+        isDuplicate = true;
+        break;
+      }
+    }
+    if (!isDuplicate) {
+      seen.push(normalized);
+      result.push(rules[i]);
+    }
+  }
+  return result;
+}
+
 function updatePromptFile(path, learningSection, rules, fewShots) {
   let content = readFileSync(path, 'utf8');
 
@@ -646,10 +724,12 @@ function updatePromptFile(path, learningSection, rules, fewShots) {
   // Build new section
   let section = '\n\n' + learningSection;
 
-  if (rules.length > 0) {
+  // Enforce max 15 rules as safety net
+  const cappedRules = rules.slice(0, 15);
+  if (cappedRules.length > 0) {
     section += `RULES FROM EXPERIENCE:\n`;
-    for (let i = 0; i < rules.length; i++) {
-      section += `${i + 1}. ${flattenRule(rules[i])}\n`;
+    for (let i = 0; i < cappedRules.length; i++) {
+      section += `${i + 1}. ${flattenRule(cappedRules[i])}\n`;
     }
     section += '\n';
   }
@@ -666,7 +746,7 @@ function updatePromptFile(path, learningSection, rules, fewShots) {
   const newSection = section.trim();
   if (oldSection && newSection !== oldSection.trim()) {
     const oldRuleCount = (oldSection.match(/^\d+\./gm) || []).length;
-    const newRuleCount = rules.length;
+    const newRuleCount = cappedRules.length;
     const oldStopCount = (oldSection.match(/STOP/g) || []).length;
     const newStopCount = (newSection.match(/STOP/g) || []).length;
     const oldStartCount = (oldSection.match(/START/g) || []).length;
