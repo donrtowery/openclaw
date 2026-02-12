@@ -1,0 +1,26 @@
+To install these systemd services:
+
+1. Copy service files to systemd directory:
+   sudo cp systemd/*.service /etc/systemd/system/
+   sudo cp systemd/*.timer /etc/systemd/system/
+
+2. Reload systemd:
+   sudo systemctl daemon-reload
+
+3. Enable services to start on boot:
+   sudo systemctl enable openclaw-engine
+   sudo systemctl enable openclaw-api
+   sudo systemctl enable openclaw-learning.timer
+
+4. Start services:
+   sudo systemctl start openclaw-engine
+   sudo systemctl start openclaw-api
+   sudo systemctl start openclaw-learning.timer
+
+5. Check status:
+   sudo systemctl status openclaw-engine
+   sudo systemctl status openclaw-api
+   systemctl status openclaw-learning.timer
+
+Or use the management script:
+   ./scripts/openclaw.sh status

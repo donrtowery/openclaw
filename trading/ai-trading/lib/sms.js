@@ -1,158 +1,128 @@
+import { readFileSync } from 'fs';
 import logger from './logger.js';
-import { createRequire } from 'module';
+import dotenv from 'dotenv';
+dotenv.config();
 
-const require = createRequire(import.meta.url);
-const tradingConfig = require('../config/trading.json');
-
-const API_KEY = process.env.TEXTBELT_API_KEY;
+const TEXTBELT_URL = 'https://textbelt.com/text';
+const TEXTBELT_KEY = process.env.TEXTBELT_API_KEY;
 const PHONE = process.env.SMS_PHONE_NUMBER;
-const SMS_CONFIG = tradingConfig.sms || {};
-const MAX_PER_HOUR = SMS_CONFIG.maxPerHour || 20;
 
-// ── State ────────────────────────────────────────────────────
-let enabled = false;
-let sentThisHour = 0;
-let quotaExhausted = false;
+// Rate limiter: hourKey -> count
+const sendCounts = new Map();
 
-// Reset hourly counter
-setInterval(() => { sentThisHour = 0; quotaExhausted = false; }, 60 * 60 * 1000);
-
-// ── Init check ───────────────────────────────────────────────
-if (!API_KEY || API_KEY === 'your_textbelt_key_here') {
-  logger.warn('SMS: TEXTBELT_API_KEY not configured — SMS alerts disabled');
-} else if (!PHONE || PHONE === '+15551234567') {
-  logger.warn('SMS: SMS_PHONE_NUMBER not configured — SMS alerts disabled');
-} else if (SMS_CONFIG.enabled === false) {
-  logger.info('SMS: Disabled in config');
-} else {
-  enabled = true;
-  logger.info(`SMS: Enabled — sending to ${PHONE.slice(0, -4)}****`);
+// Load SMS config
+let smsConfig;
+try {
+  const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
+  smsConfig = config.sms || {};
+} catch {
+  smsConfig = {};
 }
 
 /**
- * Check if a specific alert type is enabled in config.
+ * Send an SMS alert for a critical trading event.
+ * Returns { sent, message } indicating success or reason for skipping.
  */
-function isAlertTypeEnabled(type) {
-  if (!SMS_CONFIG.alertTypes) return true;
-  return SMS_CONFIG.alertTypes.includes(type);
-}
-
-/**
- * Send an SMS via TextBelt.
- * @param {string} message
- * @returns {Promise<{success: boolean, quotaRemaining?: number, error?: string}>}
- */
-export async function sendSMS(message) {
-  if (!enabled) return { success: false, error: 'SMS disabled' };
-
-  if (quotaExhausted) {
-    logger.warn('SMS: Quota exhausted — skipping');
-    return { success: false, error: 'Quota exhausted' };
+export async function sendAlert(alertType, symbol, data) {
+  if (!smsConfig.enabled) {
+    return { sent: false, message: 'SMS disabled in config' };
   }
 
-  if (sentThisHour >= MAX_PER_HOUR) {
-    logger.warn(`SMS: Rate limit hit (${MAX_PER_HOUR}/hr) — skipping`);
-    return { success: false, error: 'Rate limit exceeded' };
+  if (!TEXTBELT_KEY || !PHONE) {
+    return { sent: false, message: 'Missing TEXTBELT_API_KEY or SMS_PHONE_NUMBER' };
   }
 
-  // Truncate to 160 chars
-  const text = message.length > 160 ? message.slice(0, 157) + '...' : message;
+  const allowedTypes = smsConfig.alert_types || [];
+  if (!allowedTypes.includes(alertType)) {
+    return { sent: false, message: `Alert type ${alertType} not in allowed types` };
+  }
+
+  // Rate limit check
+  const hourKey = new Date().toISOString().slice(0, 13); // "2026-02-11T20"
+  const maxPerHour = smsConfig.max_per_hour || 20;
+
+  // Clean old entries
+  for (const key of sendCounts.keys()) {
+    if (key !== hourKey) sendCounts.delete(key);
+  }
+
+  const currentCount = sendCounts.get(hourKey) || 0;
+  if (currentCount >= maxPerHour) {
+    logger.warn(`[SMS] Rate limit hit (${currentCount}/${maxPerHour} this hour)`);
+    return { sent: false, message: `Rate limit: ${currentCount}/${maxPerHour} per hour` };
+  }
+
+  const message = formatSmsMessage(alertType, symbol, data);
 
   try {
-    const res = await fetch('https://textbelt.com/text', {
+    const response = await fetch(TEXTBELT_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: PHONE, message: text, key: API_KEY }),
+      body: JSON.stringify({ phone: PHONE, message, key: TEXTBELT_KEY }),
     });
 
-    const data = await res.json();
-    sentThisHour++;
+    const result = await response.json();
 
-    if (data.success) {
-      logger.info(`SMS sent: "${text}" | quota=${data.quotaRemaining}`);
-      if (data.quotaRemaining < 10) {
-        logger.warn(`SMS: Low quota remaining: ${data.quotaRemaining}`);
-      }
-      if (data.quotaRemaining === 0) {
-        quotaExhausted = true;
-        logger.error('SMS: Quota is 0 — disabling until next hour');
-      }
-      return { success: true, quotaRemaining: data.quotaRemaining };
+    if (result.success) {
+      sendCounts.set(hourKey, currentCount + 1);
+      logger.info(`[SMS] Sent ${alertType} alert for ${symbol || 'SYSTEM'} (${currentCount + 1}/${maxPerHour})`);
+      return { sent: true, message: 'Sent successfully' };
     } else {
-      logger.error(`SMS failed: ${data.error || 'Unknown error'}`);
-      return { success: false, error: data.error || 'Send failed' };
+      logger.error(`[SMS] TextBelt error: ${result.error}`);
+      return { sent: false, message: `TextBelt: ${result.error}` };
     }
-  } catch (err) {
-    logger.error(`SMS API error: ${err.message}`);
-    return { success: false, error: err.message };
+  } catch (error) {
+    logger.error(`[SMS] Send failed: ${error.message}`);
+    return { sent: false, message: error.message };
   }
 }
 
 /**
- * Format price with commas for readability.
+ * Format an SMS message (max 160 chars).
  */
-function fmtPrice(price) {
-  const n = parseFloat(price);
-  if (n >= 1000) return '$' + n.toLocaleString('en-US', { maximumFractionDigits: 0 });
-  if (n >= 1) return '$' + n.toFixed(2);
-  return '$' + n.toPrecision(4);
-}
-
-/**
- * Send a formatted trade alert SMS.
- * @param {"BUY"|"SELL"|"DCA"|"TAKE_PROFIT"} type
- * @param {string} symbol
- * @param {number} price
- * @param {object} details - Extra info (confidence, pnl, dcaLevel, tpLevel, reasoning, etc.)
- */
-export async function sendTradeAlert(type, symbol, price, details = {}) {
-  if (!isAlertTypeEnabled(type)) return;
-
-  const icons = { BUY: '\u{1F7E2}', SELL: '\u{1F534}', DCA: '\u{1F535}', TAKE_PROFIT: '\u{1F4B0}' };
-  const icon = icons[type] || '\u{26A0}\u{FE0F}';
-  const p = fmtPrice(price);
+export function formatSmsMessage(alertType, symbol, data) {
+  const sym = symbol || '';
   let msg;
 
-  switch (type) {
-    case 'BUY':
-      msg = `${icon} BUY ${symbol} @ ${p}`;
-      if (details.confidence) msg += ` | Conf: ${details.confidence.toFixed(2)}`;
-      if (details.reasoning) msg += ` | ${details.reasoning.slice(0, 60)}`;
+  switch (alertType) {
+    case 'BUY': {
+      const reason = (data.reasoning || '').substring(0, 60);
+      msg = `🟢 BUY ${sym} @ $${fmtPrice(data.price)} | Conf: ${data.confidence} | ${reason}`;
       break;
-
-    case 'SELL':
-      msg = `${icon} SELL ${symbol} @ ${p}`;
-      if (details.pnl !== undefined) msg += ` | P&L: $${parseFloat(details.pnl).toFixed(2)}`;
-      if (details.pnlPercent !== undefined) msg += ` (${parseFloat(details.pnlPercent).toFixed(1)}%)`;
-      if (details.reason) msg += ` | ${details.reason}`;
+    }
+    case 'SELL': {
+      const sign = data.pnl >= 0 ? '+' : '';
+      msg = `🔴 SELL ${sym} @ $${fmtPrice(data.price)} | P&L: ${sign}$${fmtNum(data.pnl)} (${sign}${fmtNum(data.pnl_percent)}%)`;
       break;
-
-    case 'DCA':
-      msg = `${icon} DCA${details.dcaLevel || ''} ${symbol} @ ${p}`;
-      if (details.avgEntry) msg += ` | Avg now ${fmtPrice(details.avgEntry)}`;
-      if (details.dcaLevel) msg += ` | DCA ${details.dcaLevel}/2 used`;
+    }
+    case 'DCA': {
+      msg = `🔵 DCA ${sym} @ $${fmtPrice(data.price)} | Avg now $${fmtPrice(data.new_avg_entry)} | +$${fmtNum(data.cost)}`;
       break;
-
-    case 'TAKE_PROFIT':
-      msg = `${icon} ${details.tpLevel || 'TP'} ${symbol} @ ${p}`;
-      if (details.pnl !== undefined) msg += ` | +$${Math.abs(parseFloat(details.pnl)).toFixed(2)}`;
-      if (details.sellPercent) msg += ` | Took ${details.sellPercent}% profit`;
+    }
+    case 'PARTIAL_EXIT': {
+      const sign = data.pnl >= 0 ? '+' : '';
+      msg = `💰 PARTIAL ${sym} ${data.exit_percent}% @ $${fmtPrice(data.price)} | ${sign}$${fmtNum(data.pnl)}`;
       break;
-
-    default:
-      msg = `${icon} ${type} ${symbol} @ ${p}`;
+    }
+    case 'CIRCUIT_BREAKER': {
+      msg = `⚠️ CIRCUIT BREAKER | ${data.consecutive_losses} losses | Pausing ${data.cooldown_hours}h`;
+      break;
+    }
+    default: {
+      msg = `📊 ${alertType} ${sym} | ${JSON.stringify(data).substring(0, 100)}`;
+    }
   }
 
-  return sendSMS(msg);
+  return msg.substring(0, 160);
 }
 
-/**
- * Send a critical system alert SMS.
- * @param {string} message
- */
-export async function sendSystemAlert(message) {
-  if (!isAlertTypeEnabled('CIRCUIT_BREAKER')) return;
-  return sendSMS(message);
+function fmtPrice(n) {
+  if (n == null) return '?';
+  const num = parseFloat(n);
+  return num >= 100 ? num.toFixed(0) : num >= 1 ? num.toFixed(2) : num.toFixed(4);
 }
 
-export { enabled as smsEnabled };
+function fmtNum(n) {
+  if (n == null) return '?';
+  return parseFloat(n).toFixed(2);
+}

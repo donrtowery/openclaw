@@ -1,466 +1,546 @@
 import dotenv from 'dotenv';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-dotenv.config({ path: join(__dirname, '..', '.env') });
-
-import cron from 'node-cron';
-import logger from '../lib/logger.js';
+import { readFileSync } from 'fs';
 import { query } from '../db/connection.js';
-import pool from '../db/connection.js';
-import { getPrice, getAllCachedPrices, connectWebSocket, disconnectWebSocket } from '../lib/binance.js';
-import { lightCheck, deepCheck, alertCheck } from '../lib/claude.js';
-import { queueEvent, cleanOldEvents } from '../lib/events.js';
+import { testConnection } from '../db/connection.js';
+import { testConnectivity, placeOrder, getCurrentPrice } from '../lib/binance.js';
+import { initScanner, runScanCycle } from '../lib/scanner.js';
+import { callHaikuBatch, callSonnet } from '../lib/claude.js';
+import { getNewsContext } from '../lib/brave-search.js';
 import {
-  openPosition, executeDCA, executeTakeProfit, closePosition,
-  getOpenPositions, getPositionBySymbol,
-  isSymbolOnCooldown, getRecentlyClosedSymbols,
+  openPosition, addToPosition, closePosition,
+  getOpenPositions, getPositionBySymbol, getPortfolioSummary,
 } from '../lib/position-manager.js';
-import {
-  checkCircuitBreaker, canOpenPosition, shouldStopLoss,
-  shouldTakeProfit, shouldDCA, getTierForSymbol,
-} from '../lib/risk-manager.js';
-import { sendTradeAlert, sendSystemAlert } from '../lib/sms.js';
-import { getMarketSentiment } from '../lib/brave-search.js';
-import { analyzeAll, analyzeSymbol, formatAllForClaude, formatForClaude } from '../lib/technical-analysis.js';
-import { createRequire } from 'module';
+import { queueEvent } from '../lib/events.js';
+import { sendAlert } from '../lib/sms.js';
+import logger from '../lib/logger.js';
 
-const require = createRequire(import.meta.url);
-const tiersConfig = require('../config/tiers.json');
-const tradingConfig = require('../config/trading.json');
+// ── Config ──────────────────────────────────────────────────
 
-const ALL_SYMBOLS = Object.values(tiersConfig.tiers).flatMap(t => t.symbols);
-const CONF = tradingConfig.confidenceThresholds;
+const tradingConfig = JSON.parse(readFileSync('config/trading.json', 'utf8'));
 
-// ── Price helpers ──────────────────────────────────────────
+// ── State ───────────────────────────────────────────────────
 
-async function getPricesMap() {
-  const prices = {};
-  const cached = getAllCachedPrices();
-  for (const [symbol, data] of cached) {
-    prices[symbol] = data.price;
+let isRunning = false;
+let scanIntervalId = null;
+let cycleCount = 0;
+
+// Symbol name lookup (filled on init)
+const symbolNames = new Map(); // ETHUSDT -> Ethereum
+
+// ── Startup ─────────────────────────────────────────────────
+
+async function start() {
+  logger.info('=== OpenClaw v2 Trading Engine Starting ===');
+
+  // 1. Test database
+  const dbOk = await testConnection();
+  if (!dbOk) {
+    logger.error('Database connection failed — aborting');
+    process.exit(1);
   }
-  for (const symbol of ALL_SYMBOLS) {
-    if (!prices[symbol]) {
-      try { prices[symbol] = await getPrice(symbol); } catch { /* skip */ }
-    }
+
+  // 2. Test Binance
+  const binanceOk = await testConnectivity();
+  if (!binanceOk) {
+    logger.error('Binance connection failed — aborting');
+    process.exit(1);
   }
-  return prices;
-}
 
-// ── Execute AI decisions on existing positions ──────────────
+  // 3. Load symbol names for news searches
+  const symbolResult = await query('SELECT symbol, name FROM symbols WHERE is_active = true');
+  for (const row of symbolResult.rows) {
+    symbolNames.set(row.symbol, row.name);
+  }
 
-async function executeDecisions(decisions, prices) {
-  const actions = [];
+  // 4. Initialize scanner
+  await initScanner();
 
-  for (const decision of decisions) {
+  // 5. Queue engine start event
+  await queueEvent('ENGINE_START', null, {
+    paper_trading: tradingConfig.account.paper_trading,
+    symbols: symbolResult.rows.length,
+    capital: tradingConfig.account.total_capital,
+  });
+
+  // 6. Set up graceful shutdown
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+
+  // 7. Start scan loop
+  isRunning = true;
+  const intervalMs = (tradingConfig.scanner.interval_minutes || 5) * 60 * 1000;
+
+  logger.info(`Trading engine running — scanning every ${tradingConfig.scanner.interval_minutes} minutes`);
+  logger.info(`Paper trading: ${tradingConfig.account.paper_trading}`);
+  logger.info(`Capital: $${tradingConfig.account.total_capital} | Max positions: ${tradingConfig.account.max_concurrent_positions}`);
+
+  // Run first scan immediately
+  await runCycle();
+
+  // Then schedule recurring scans
+  scanIntervalId = setInterval(async () => {
+    if (!isRunning) return;
     try {
-      const price = prices[decision.symbol];
-      if (!price) { logger.warn(`No price for ${decision.symbol}, skipping`); continue; }
-
-      const position = await getPositionBySymbol(decision.symbol);
-      const confidence = decision.confidence || 0;
-
-      if (decision.action === 'CLOSE' && position) {
-        if (confidence < CONF.minSellConfidence) {
-          logger.info(`Skip CLOSE ${decision.symbol}: confidence ${confidence} < ${CONF.minSellConfidence}`);
-          continue;
-        }
-        // Minimum hold time check (does not apply to stop losses — those are in runSafetyChecks)
-        const minHoldHours = tradingConfig.minimumHoldHours || 4;
-        if (position.opened_at) {
-          const holdMs = Date.now() - new Date(position.opened_at).getTime();
-          const holdH = holdMs / 3600000;
-          if (holdH < minHoldHours) {
-            logger.info(`Skipping CLOSE on ${decision.symbol} — held only ${Math.floor(holdH)}h (minimum: ${minHoldHours}h). Will reassess next check.`);
-            continue;
-          }
-        }
-        const closed = await closePosition(position.id, price, 'MANUAL');
-        const holdMs = closed.opened_at ? Date.now() - new Date(closed.opened_at).getTime() : 0;
-        const holdH = Math.floor(holdMs / 3600000);
-        const holdDuration = holdH >= 24 ? `${Math.floor(holdH / 24)}d ${holdH % 24}h` : `${holdH}h`;
-        logger.info(`Closed ${decision.symbol}: P&L $${closed.realized_pnl} (conf=${confidence}) ${decision.reasoning}`);
-        actions.push(`CLOSED ${decision.symbol}: $${closed.realized_pnl}`);
-        queueEvent('CLOSE', decision.symbol, {
-          action: 'CLOSE', symbol: decision.symbol,
-          entryPrice: parseFloat(closed.avg_entry_price), exitPrice: price,
-          pnl: parseFloat(closed.realized_pnl), pnlPercent: parseFloat(closed.pnl_percent),
-          reason: 'AI decision', holdDuration, confidence,
-        }).catch(() => {});
-        sendTradeAlert('SELL', decision.symbol, price, {
-          pnl: closed.realized_pnl, pnlPercent: closed.pnl_percent, reason: 'AI decision',
-        }).catch(() => {});
-      }
-
-      if (decision.action === 'DCA' && position) {
-        if (confidence < CONF.minDCAConfidence) {
-          logger.info(`Skip DCA ${decision.symbol}: confidence ${confidence} < ${CONF.minDCAConfidence}`);
-          continue;
-        }
-        const dcaCheck = shouldDCA(position, price);
-        if (dcaCheck) {
-          const updated = await executeDCA(position.id, dcaCheck.level, price);
-          logger.info(`DCA${dcaCheck.level} ${decision.symbol} @ $${price.toFixed(2)} (conf=${confidence})`);
-          actions.push(`DCA${dcaCheck.level} ${decision.symbol}`);
-          queueEvent('DCA', decision.symbol, {
-            action: 'DCA', symbol: decision.symbol, dcaPrice: price,
-            originalEntry: parseFloat(position.entry_price),
-            newAverage: parseFloat(updated.avg_entry_price),
-            dcaLevel: `${dcaCheck.level}/2`,
-            additionalSize: dcaCheck.amount, totalSize: parseFloat(updated.amount),
-            confidence,
-          }).catch(() => {});
-          sendTradeAlert('DCA', decision.symbol, price, {
-            dcaLevel: dcaCheck.level, avgEntry: parseFloat(updated.avg_entry_price),
-          }).catch(() => {});
-        }
-      }
-    } catch (err) {
-      logger.error(`Failed to execute decision for ${decision.symbol}: ${err.message}`);
+      await runCycle();
+    } catch (error) {
+      logger.error(`[Engine] Cycle error: ${error.message}`);
+      logger.error(error.stack);
     }
-  }
-  return actions;
+  }, intervalMs);
 }
 
-// ── Execute new entries ─────────────────────────────────────
+// ── Main Scan Cycle ─────────────────────────────────────────
 
-async function executeNewEntries(entries, prices) {
+async function runCycle() {
+  cycleCount++;
+  const cycleStart = Date.now();
+
+  logger.info(`[Engine] === Cycle ${cycleCount} ===`);
+
+  // 1. Check circuit breaker
   const cb = await checkCircuitBreaker();
-  if (cb.isPaused) {
-    logger.info('Circuit breaker paused — skipping entries');
-    queueEvent('CIRCUIT_BREAKER', null, {
-      action: 'CIRCUIT_BREAKER', status: 'ACTIVATED',
-      consecutiveLosses: cb.consecutiveLosses,
-      pauseDuration: '24h',
-    }).catch(() => {});
-    sendSystemAlert('\u26A0\uFE0F Circuit breaker ON \u2014 3 consecutive losses. Trading paused 24h.').catch(() => {});
-    return [];
+  if (cb.is_active) {
+    logger.warn(`[Engine] Circuit breaker ACTIVE (${cb.consecutive_losses} losses). Skipping cycle. Reactivates: ${cb.deactivates_at}`);
+    return;
   }
 
-  const actions = [];
-  for (const entry of entries) {
-    try {
-      const confidence = entry.confidence || 0;
-      if (confidence < CONF.minBuyConfidence) {
-        logger.info(`Skip BUY ${entry.symbol}: confidence ${confidence} < ${CONF.minBuyConfidence}`);
-        continue;
-      }
+  // 2. Run scanner
+  const scanResult = await runScanCycle(tradingConfig);
+  logger.info(`[Engine] Scanned ${scanResult.symbols_scanned} symbols in ${scanResult.duration_ms}ms — ${scanResult.triggered.length} triggered`);
 
-      const { canOpen } = await canOpenPosition();
-      if (!canOpen) { logger.info('Max positions reached — done with entries'); break; }
+  if (scanResult.triggered.length === 0) return;
 
-      const existing = await getPositionBySymbol(entry.symbol);
-      if (existing) { logger.info(`Already hold ${entry.symbol} — skipping`); continue; }
+  // 3. Process triggered signals through Haiku (batched)
+  let signalsEscalated = 0;
+  let tradesExecuted = 0;
 
-      // Cooldown check: skip if symbol was closed recently
-      const cooldown = await isSymbolOnCooldown(entry.symbol);
-      if (cooldown.onCooldown) {
-        logger.info(`Skipping BUY on ${entry.symbol} — cooldown active (closed ${cooldown.hoursAgo}h ago, ${cooldown.hoursRemaining}h remaining)`);
-        continue;
-      }
+  const haikuResults = await callHaikuBatch(scanResult.triggered, tradingConfig);
 
-      const price = prices[entry.symbol];
-      if (!price) continue;
+  for (let i = 0; i < scanResult.triggered.length; i++) {
+    const triggered = scanResult.triggered[i];
+    const haikuResult = haikuResults[i];
 
-      const position = await openPosition(entry.symbol, price, tradingConfig.positionSize);
-      const openCount = (await getOpenPositions()).length;
-      const tier = getTierForSymbol(entry.symbol)?.tier || 0;
-      logger.info(`OPENED ${entry.symbol} @ $${price.toFixed(2)} (conf=${confidence}) — ${entry.reasoning}`);
-      actions.push(`OPENED ${entry.symbol} @ $${price.toFixed(2)} (conf=${confidence})`);
-      queueEvent('BUY', entry.symbol, {
-        action: 'BUY', symbol: entry.symbol, price,
-        positionSize: tradingConfig.positionSize, confidence,
-        reasoning: entry.reasoning, tier,
-        openPositions: `${openCount}/${tradingConfig.maxConcurrentPositions}`,
-      }).catch(() => {});
-      sendTradeAlert('BUY', entry.symbol, price, {
-        confidence, reasoning: entry.reasoning,
-      }).catch(() => {});
-    } catch (err) {
-      logger.error(`Failed to open ${entry.symbol}: ${err.message}`);
-    }
-  }
-  return actions;
-}
-
-// ── Rule-based safety checks (before AI) ────────────────────
-
-async function runSafetyChecks(prices) {
-  const positions = await getOpenPositions();
-  const actions = [];
-
-  for (const pos of positions) {
-    const price = prices[pos.symbol];
-    if (!price) continue;
-
-    if (shouldStopLoss(pos, price)) {
-      try {
-        const closed = await closePosition(pos.id, price, 'STOP');
-        const holdMs = closed.opened_at ? Date.now() - new Date(closed.opened_at).getTime() : 0;
-        const holdH = Math.floor(holdMs / 3600000);
-        const holdDuration = holdH >= 24 ? `${Math.floor(holdH / 24)}d ${holdH % 24}h` : `${holdH}h`;
-        logger.info(`STOP LOSS ${pos.symbol} @ $${price.toFixed(2)}: P&L $${closed.realized_pnl}`);
-        actions.push(`STOP ${pos.symbol}: $${closed.realized_pnl}`);
-        queueEvent('SELL', pos.symbol, {
-          action: 'CLOSE', symbol: pos.symbol,
-          entryPrice: parseFloat(closed.avg_entry_price), exitPrice: price,
-          pnl: parseFloat(closed.realized_pnl), pnlPercent: parseFloat(closed.pnl_percent),
-          reason: 'Stop loss', holdDuration, confidence: 1.0,
-        }).catch(() => {});
-        sendTradeAlert('SELL', pos.symbol, price, {
-          pnl: closed.realized_pnl, pnlPercent: closed.pnl_percent, reason: 'Stop loss',
-        }).catch(() => {});
-      } catch (err) {
-        logger.error(`Stop loss failed ${pos.symbol}: ${err.message}`);
-      }
+    if (!haikuResult || !haikuResult.escalate) {
+      logger.info(`[Engine] ${triggered.symbol}: Haiku did not escalate (${haikuResult?.strength} ${haikuResult?.signal} conf:${haikuResult?.confidence})`);
       continue;
     }
 
-    const tp = shouldTakeProfit(pos, price);
-    if (tp) {
-      try {
-        const updated = await executeTakeProfit(pos.id, tp.level, price);
-        const tpSellPct = { TP1: 50, TP2: 30, TP3: 20 };
-        const entryP = parseFloat(pos.avg_entry_price);
-        const profitTaken = (price - entryP) * parseFloat(pos.remaining_qty) * (tpSellPct[tp.level] / 100);
-        logger.info(`${tp.level} HIT ${pos.symbol} @ $${price.toFixed(2)}`);
-        actions.push(`${tp.level} ${pos.symbol}`);
-        queueEvent('TAKE_PROFIT', pos.symbol, {
-          action: 'TAKE_PROFIT', symbol: pos.symbol, tpLevel: tp.level,
-          tpPrice: price, profitTaken: Math.round(profitTaken * 100) / 100,
-          percentSold: tpSellPct[tp.level],
-          remainingSize: Math.round(parseFloat(updated.remaining_qty) * price * 100) / 100,
-          totalPnl: updated.realized_pnl ? parseFloat(updated.realized_pnl) : Math.round((price - entryP) * parseFloat(pos.quantity) * 100) / 100,
-        }).catch(() => {});
-        sendTradeAlert('TAKE_PROFIT', pos.symbol, price, {
-          tpLevel: tp.level, sellPercent: tpSellPct[tp.level],
-        }).catch(() => {});
-      } catch (err) {
-        logger.error(`Take profit failed ${pos.symbol}: ${err.message}`);
+    // Require at least 2 triggers for escalation — single-indicator signals are noise
+    if (triggered.thresholds_crossed.length < 2) {
+      logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — single trigger (${triggered.thresholds_crossed[0]})`);
+      continue;
+    }
+
+    // Skip SELL/PARTIAL_EXIT escalations when we don't hold the coin
+    if (haikuResult.signal === 'SELL') {
+      const position = await getPositionBySymbol(triggered.symbol);
+      if (!position) {
+        logger.info(`[Engine] ${triggered.symbol}: Skipped SELL escalation — no open position`);
+        continue;
       }
+    }
+
+    signalsEscalated++;
+
+    // Escalated — run through Sonnet
+    try {
+      const result = await processEscalatedSignal(triggered, haikuResult);
+      if (result.executed) tradesExecuted++;
+    } catch (error) {
+      logger.error(`[Engine] Error processing ${triggered.symbol}: ${error.message}`);
     }
   }
-  return actions;
+
+  const cycleDuration = Date.now() - cycleStart;
+  logger.info(`[Engine] Cycle ${cycleCount} complete in ${cycleDuration}ms — ${signalsEscalated} escalated, ${tradesExecuted} trades`);
+
+  // 4. Hourly tasks (every 12th cycle at 5-min intervals = 1 hour)
+  if (cycleCount % 12 === 0) {
+    try {
+      await runHourlyRiskCheck();
+      const portfolio = await getPortfolioSummary(tradingConfig);
+      await queueEvent('HOURLY_SUMMARY', null, {
+        cycle: cycleCount,
+        open_positions: portfolio.open_count,
+        unrealized_pnl: portfolio.unrealized_pnl,
+        unrealized_pnl_percent: portfolio.unrealized_pnl_percent,
+        realized_pnl: portfolio.realized_pnl,
+        win_rate: portfolio.win_rate,
+        total_trades: portfolio.total_trades,
+      });
+    } catch (error) {
+      logger.error(`[Engine] Hourly task error: ${error.message}`);
+    }
+  }
 }
 
-// ── Scheduled check ────────────────────────────────────────
+// ── Process Escalated Signal (Haiku → Sonnet → Execute) ─────
 
-async function runScheduledCheck() {
-  const now = new Date();
-  const hour = now.getUTCHours();
-  const isDeepCheck = [0, 6, 12, 18].includes(hour);
+async function processEscalatedSignal(triggered, haikuResult) {
+  const { symbol, tier } = triggered;
+  const coinName = symbolNames.get(symbol) || symbol.replace('USDT', '');
 
-  logger.info(`Running ${isDeepCheck ? 'DEEP' : 'HOURLY'} check at ${now.toISOString()}`);
+  logger.info(`[Engine] ${symbol}: Escalated to Sonnet (${haikuResult.strength} ${haikuResult.signal} conf:${haikuResult.confidence})`);
+
+  // Gather context for Sonnet
+  const [news, portfolio, learningRules] = await Promise.all([
+    getNewsContext(symbol, coinName),
+    getPortfolioSummary(tradingConfig),
+    getLearningRules(),
+  ]);
+
+  // Add circuit breaker info to portfolio
+  const cb = await checkCircuitBreaker();
+  portfolio.circuit_breaker_active = cb.is_active;
+  portfolio.consecutive_losses = cb.consecutive_losses;
+
+  // Call Sonnet
+  const decision = await callSonnet(haikuResult, triggered, news, portfolio, learningRules, tradingConfig);
+
+  // Execute if actionable
+  if (['BUY', 'SELL', 'DCA', 'PARTIAL_EXIT'].includes(decision.action)) {
+    return await executeDecision(decision, triggered);
+  }
+
+  logger.info(`[Engine] ${symbol}: Sonnet chose ${decision.action} — no execution needed`);
+  return { escalated: true, executed: false };
+}
+
+// ── Execute Sonnet's Decision ───────────────────────────────
+
+async function executeDecision(decision, triggered) {
+  const { symbol, tier } = triggered;
 
   try {
-    const prices = await getPricesMap();
-    const safetyActions = await runSafetyChecks(prices);
-    const positions = await getOpenPositions();
-    const cb = await checkCircuitBreaker();
-
-    // Run technical analysis on all symbols
-    logger.info('Running technical analysis on all symbols...');
-    const taStart = Date.now();
-    const analyses = await analyzeAll(ALL_SYMBOLS);
-    const taTime = ((Date.now() - taStart) / 1000).toFixed(1);
-    const successCount = analyses.filter(a => !a.error).length;
-    logger.info(`TA complete: ${successCount}/${ALL_SYMBOLS.length} symbols in ${taTime}s`);
-
-    const technicalSummary = formatAllForClaude(analyses);
-
-    // Get recently closed symbols for cooldown context
-    const recentlyClosed = await getRecentlyClosedSymbols();
-    if (recentlyClosed.length > 0) {
-      logger.info(`Cooldown active for: ${recentlyClosed.map(r => `${r.symbol}(${r.hoursAgo}h ago)`).join(', ')}`);
+    switch (decision.action) {
+      case 'BUY':
+        return await executeBuy(decision, triggered);
+      case 'SELL':
+      case 'PARTIAL_EXIT':
+        return await executeSell(decision, triggered);
+      case 'DCA':
+        return await executeDCA(decision, triggered);
+      default:
+        logger.warn(`[Engine] Unknown action: ${decision.action}`);
+        return { escalated: true, executed: false };
     }
+  } catch (error) {
+    logger.error(`[Engine] Execution failed for ${symbol}: ${error.message}`);
+    await queueEvent('EXECUTION_ERROR', symbol, {
+      action: decision.action,
+      error: error.message,
+      decision_id: decision.decision_id,
+    });
+    return { escalated: true, executed: false };
+  }
+}
 
-    let analysis;
-    if (isDeepCheck) {
-      // Deep check: technicals + news
-      let newsContext = '';
-      try {
-        newsContext = await getMarketSentiment();
-      } catch (err) {
-        logger.warn(`News fetch failed: ${err.message}`);
-      }
-      analysis = await deepCheck(positions, prices, newsContext, cb, technicalSummary, recentlyClosed);
+async function executeBuy(decision, triggered) {
+  const { symbol, tier } = triggered;
+
+  // Check max positions
+  const openPositions = await getOpenPositions();
+  if (openPositions.length >= tradingConfig.account.max_concurrent_positions) {
+    logger.warn(`[Engine] ${symbol}: BUY rejected — max positions (${openPositions.length}/${tradingConfig.account.max_concurrent_positions})`);
+    return { escalated: true, executed: false };
+  }
+
+  // Check no existing position on symbol
+  const existing = await getPositionBySymbol(symbol);
+  if (existing) {
+    logger.warn(`[Engine] ${symbol}: BUY rejected — already have open position #${existing.id}`);
+    return { escalated: true, executed: false };
+  }
+
+  // Determine position size — use Sonnet's recommendation or tier default
+  const tierKey = `tier_${tier}`;
+  const tierConfig = tradingConfig.position_sizing[tierKey];
+  let positionSizeUsd = decision.position_details?.position_size_usd || tierConfig?.base_position_usd || 600;
+
+  // Cap at tier max
+  if (tierConfig?.max_position_usd && positionSizeUsd > tierConfig.max_position_usd) {
+    positionSizeUsd = tierConfig.max_position_usd;
+  }
+
+  // Check available capital
+  const portfolio = await getPortfolioSummary(tradingConfig);
+  if (positionSizeUsd > portfolio.available_capital) {
+    logger.warn(`[Engine] ${symbol}: BUY rejected — insufficient capital ($${positionSizeUsd} > $${portfolio.available_capital.toFixed(2)} available)`);
+    return { escalated: true, executed: false };
+  }
+
+  // Execute
+  const currentPrice = await getCurrentPrice(symbol);
+  const quantity = positionSizeUsd / currentPrice;
+  const order = await placeOrder(symbol, 'BUY', quantity);
+  const fillPrice = order.price;
+  const fillQty = parseFloat(order.executedQty) || quantity;
+  const fillCost = fillPrice * fillQty;
+
+  const positionId = await openPosition(
+    symbol, tier, fillPrice, fillQty, fillCost,
+    decision.reasoning, decision.confidence, decision.decision_id
+  );
+
+  await queueEvent('BUY', symbol, {
+    position_id: positionId,
+    price: fillPrice,
+    quantity: fillQty,
+    cost: fillCost,
+    tier,
+    confidence: decision.confidence,
+    reasoning: decision.reasoning,
+  });
+
+  logger.info(`[Engine] EXECUTED BUY: ${symbol} ${fillQty.toFixed(6)} @ $${fillPrice.toFixed(2)} ($${fillCost.toFixed(2)})`);
+  sendAlert('BUY', symbol, { price: fillPrice, confidence: decision.confidence, reasoning: decision.reasoning }).catch(() => {});
+  return { escalated: true, executed: true };
+}
+
+async function executeSell(decision, triggered) {
+  const { symbol } = triggered;
+
+  const position = await getPositionBySymbol(symbol);
+  if (!position) {
+    logger.warn(`[Engine] ${symbol}: SELL rejected — no open position`);
+    return { escalated: true, executed: false };
+  }
+
+  // Determine exit percent — Sonnet may specify partial exit
+  const exitPercent = decision.position_details?.exit_percent || 100;
+  const currentPrice = await getCurrentPrice(symbol);
+  const exitSize = parseFloat(position.current_size) * (exitPercent / 100);
+
+  const order = await placeOrder(symbol, 'SELL', exitSize);
+  const fillPrice = order.price;
+
+  const closeResult = await closePosition(
+    position.id, fillPrice, exitPercent,
+    decision.reasoning, decision.confidence, decision.decision_id
+  );
+
+  // Circuit breaker tracking
+  if (closeResult.isFull) {
+    if (closeResult.pnl < 0) {
+      await recordLoss(symbol, closeResult.pnl);
     } else {
-      // Hourly: technicals only
-      analysis = await lightCheck(positions, prices, cb, technicalSummary, recentlyClosed);
+      await resetCircuitBreaker();
     }
+  }
 
-    // Safety: filter out symbols that appear in both CLOSE decisions and BUY entries
-    let decisions = analysis.decisions || [];
-    let newEntries = analysis.newEntries || [];
-    const closeSymbols = new Set(decisions.filter(d => d.action === 'CLOSE').map(d => d.symbol));
-    const buySymbols = new Set(newEntries.map(e => e.symbol));
-    const conflictSymbols = [...closeSymbols].filter(s => buySymbols.has(s));
-    if (conflictSymbols.length > 0) {
-      logger.warn(`Same-check conflict: CLOSE+BUY on ${conflictSymbols.join(', ')} — ignoring both actions for these symbols`);
-      decisions = decisions.filter(d => !conflictSymbols.includes(d.symbol));
-      newEntries = newEntries.filter(e => !conflictSymbols.includes(e.symbol));
+  const eventType = closeResult.isFull ? 'SELL' : 'PARTIAL_EXIT';
+  await queueEvent(eventType, symbol, {
+    position_id: position.id,
+    price: fillPrice,
+    exit_percent: exitPercent,
+    pnl: closeResult.pnl,
+    pnl_percent: closeResult.pnlPercent,
+    confidence: decision.confidence,
+    reasoning: decision.reasoning,
+  });
+
+  logger.info(`[Engine] EXECUTED ${eventType}: ${symbol} ${exitPercent}% @ $${fillPrice.toFixed(2)} | P&L: $${closeResult.pnl.toFixed(2)} (${closeResult.pnlPercent.toFixed(2)}%)`);
+  sendAlert('SELL', symbol, { price: fillPrice, pnl: closeResult.pnl, pnl_percent: closeResult.pnlPercent }).catch(() => {});
+  return { escalated: true, executed: true };
+}
+
+async function executeDCA(decision, triggered) {
+  const { symbol, tier } = triggered;
+
+  const position = await getPositionBySymbol(symbol);
+  if (!position) {
+    logger.warn(`[Engine] ${symbol}: DCA rejected — no open position`);
+    return { escalated: true, executed: false };
+  }
+
+  // DCA amount — use Sonnet's recommendation or tier-based default
+  const tierKey = `tier_${tier}`;
+  const tierConfig = tradingConfig.position_sizing[tierKey];
+  let dcaAmountUsd = decision.position_details?.position_size_usd || tierConfig?.base_position_usd || 600;
+
+  // Check total won't exceed tier max
+  const currentInvested = parseFloat(position.total_cost);
+  if (tierConfig?.max_position_usd && (currentInvested + dcaAmountUsd) > tierConfig.max_position_usd) {
+    dcaAmountUsd = tierConfig.max_position_usd - currentInvested;
+    if (dcaAmountUsd <= 0) {
+      logger.warn(`[Engine] ${symbol}: DCA rejected — position already at tier max ($${currentInvested.toFixed(2)})`);
+      return { escalated: true, executed: false };
     }
+  }
 
-    // Execute decisions
-    const decisionActions = await executeDecisions(decisions, prices);
-    const entryActions = await executeNewEntries(newEntries, prices);
+  // Check available capital
+  const portfolio = await getPortfolioSummary(tradingConfig);
+  if (dcaAmountUsd > portfolio.available_capital) {
+    logger.warn(`[Engine] ${symbol}: DCA rejected — insufficient capital`);
+    return { escalated: true, executed: false };
+  }
 
-    // Queue summary event for Ollama bot
-    const allActions = [...safetyActions, ...decisionActions, ...entryActions];
-    const summaryType = isDeepCheck ? 'DEEP_CHECK_SUMMARY' : 'HOURLY_SUMMARY';
-    const positionsAfter = await getOpenPositions();
-    const summaryData = {
-      checkType: isDeepCheck ? 'deep' : 'light',
-      marketPhase: analysis.marketPhase || 'UNKNOWN',
-      symbolsAnalyzed: ALL_SYMBOLS.length,
-      openPositions: positionsAfter.map(p => {
-        const entry = parseFloat(p.avg_entry_price);
-        const cur = prices[p.symbol] || entry;
-        return {
-          symbol: p.symbol,
-          pnl: Math.round((cur - entry) * parseFloat(p.remaining_qty) * 100) / 100,
-          pnlPercent: Math.round(((cur - entry) / entry) * 10000) / 100,
-          action: (analysis.decisions || []).find(d => d.symbol === p.symbol)?.action || 'HOLD',
-        };
-      }),
-      newEntrySignals: (analysis.newEntries || []).map(e => ({
-        symbol: e.symbol,
-        confidence: e.confidence || 0,
-        reason: (e.confidence || 0) < CONF.minBuyConfidence
-          ? `Below threshold (${CONF.minBuyConfidence})`
-          : e.reasoning,
-      })),
-      tokensUsed: analysis.tokensUsed || 0,
-      cost: analysis.cost || 0,
-    };
-    if (isDeepCheck) {
-      summaryData.newsHeadlines = analysis.summary ? [analysis.summary] : [];
+  const currentPrice = await getCurrentPrice(symbol);
+  const quantity = dcaAmountUsd / currentPrice;
+  const order = await placeOrder(symbol, 'BUY', quantity);
+  const fillPrice = order.price;
+  const fillQty = parseFloat(order.executedQty) || quantity;
+  const fillCost = fillPrice * fillQty;
+
+  const dcaResult = await addToPosition(
+    position.id, fillPrice, fillQty, fillCost,
+    decision.reasoning, decision.confidence
+  );
+
+  await queueEvent('DCA', symbol, {
+    position_id: position.id,
+    price: fillPrice,
+    quantity: fillQty,
+    cost: fillCost,
+    new_avg_entry: dcaResult.newAvgEntry,
+    total_invested: dcaResult.newTotalCost,
+    confidence: decision.confidence,
+    reasoning: decision.reasoning,
+  });
+
+  logger.info(`[Engine] EXECUTED DCA: ${symbol} ${fillQty.toFixed(6)} @ $${fillPrice.toFixed(2)} | new avg: $${dcaResult.newAvgEntry.toFixed(2)}`);
+  sendAlert('DCA', symbol, { price: fillPrice, new_avg_entry: dcaResult.newAvgEntry, cost: fillCost }).catch(() => {});
+  return { escalated: true, executed: true };
+}
+
+// ── Hourly Risk Check ───────────────────────────────────────
+
+async function runHourlyRiskCheck() {
+  const openPositions = await getOpenPositions();
+  if (openPositions.length === 0) {
+    logger.info('[Engine] Hourly check: no open positions');
+    return;
+  }
+
+  logger.info(`[Engine] Hourly risk check: ${openPositions.length} open position(s)`);
+
+  for (const pos of openPositions) {
+    try {
+      const currentPrice = await getCurrentPrice(pos.symbol);
+      const avgEntry = parseFloat(pos.avg_entry_price);
+      const pnlPercent = ((currentPrice - avgEntry) / avgEntry * 100);
+      const holdHours = (Date.now() - new Date(pos.entry_time).getTime()) / (1000 * 60 * 60);
+
+      // Track max unrealized gain/loss
+      const maxGain = parseFloat(pos.max_unrealized_gain_percent || 0);
+      const maxLoss = parseFloat(pos.max_unrealized_loss_percent || 0);
+      const newMaxGain = Math.max(maxGain, pnlPercent);
+      const newMaxLoss = Math.min(maxLoss, pnlPercent);
+
+      await query(`
+        UPDATE positions
+        SET current_price = $1, max_unrealized_gain_percent = $2, max_unrealized_loss_percent = $3, updated_at = NOW()
+        WHERE id = $4
+      `, [currentPrice, newMaxGain, newMaxLoss, pos.id]);
+
+      const status = pnlPercent >= 0 ? `+${pnlPercent.toFixed(2)}%` : `${pnlPercent.toFixed(2)}%`;
+      logger.info(`[Engine] ${pos.symbol} #${pos.id}: $${currentPrice.toFixed(2)} (${status}) held ${holdHours.toFixed(1)}h`);
+    } catch (error) {
+      logger.error(`[Engine] Risk check failed for ${pos.symbol}: ${error.message}`);
     }
-    queueEvent(summaryType, null, summaryData).catch(() => {});
-
-    logger.info(`Check complete: ${allActions.length} actions, ${analysis.tokensUsed} tokens, $${(analysis.cost || 0).toFixed(4)}`);
-  } catch (err) {
-    logger.error(`Scheduled check failed: ${err.message}`);
   }
 }
 
-// ── Alert response loop ────────────────────────────────────
+// ── Circuit Breaker ─────────────────────────────────────────
 
-async function processUnhandledAlerts() {
+async function checkCircuitBreaker() {
+  const result = await query('SELECT * FROM circuit_breaker ORDER BY id LIMIT 1');
+  if (result.rows.length === 0) return { is_active: false, consecutive_losses: 0 };
+
+  const cb = result.rows[0];
+
+  // Auto-deactivate if cooldown expired
+  if (cb.is_active && cb.deactivates_at && new Date(cb.deactivates_at) <= new Date()) {
+    await query(`
+      UPDATE circuit_breaker SET is_active = false, updated_at = NOW() WHERE id = $1
+    `, [cb.id]);
+    logger.info('[Engine] Circuit breaker auto-deactivated (cooldown expired)');
+    return { is_active: false, consecutive_losses: cb.consecutive_losses, deactivates_at: null };
+  }
+
+  return {
+    is_active: cb.is_active,
+    consecutive_losses: cb.consecutive_losses,
+    deactivates_at: cb.deactivates_at,
+  };
+}
+
+async function recordLoss(symbol, pnl) {
+  const maxLosses = tradingConfig.circuit_breaker.consecutive_losses_to_activate;
+  const cooldownHours = tradingConfig.circuit_breaker.cooldown_hours;
+
+  const result = await query(`
+    UPDATE circuit_breaker
+    SET consecutive_losses = consecutive_losses + 1,
+        last_loss_symbol = $1, last_loss_pnl = $2, updated_at = NOW()
+    RETURNING consecutive_losses
+  `, [symbol, pnl]);
+
+  const losses = result.rows[0].consecutive_losses;
+
+  if (losses >= maxLosses) {
+    await query(`
+      UPDATE circuit_breaker
+      SET is_active = true, activated_at = NOW(),
+          deactivates_at = NOW() + INTERVAL '${cooldownHours} hours'
+      WHERE id = 1
+    `);
+    logger.warn(`[Engine] CIRCUIT BREAKER ACTIVATED — ${losses} consecutive losses. Pausing for ${cooldownHours}h.`);
+    sendAlert('CIRCUIT_BREAKER', null, { consecutive_losses: losses, cooldown_hours: cooldownHours }).catch(() => {});
+    await queueEvent('CIRCUIT_BREAKER', null, {
+      consecutive_losses: losses,
+      last_loss_symbol: symbol,
+      last_loss_pnl: pnl,
+      cooldown_hours: cooldownHours,
+    });
+  } else {
+    logger.warn(`[Engine] Loss recorded: ${symbol} $${pnl.toFixed(2)} (${losses}/${maxLosses} before circuit breaker)`);
+  }
+}
+
+async function resetCircuitBreaker() {
+  await query('UPDATE circuit_breaker SET consecutive_losses = 0, updated_at = NOW() WHERE id = 1');
+}
+
+// ── Learning Rules ──────────────────────────────────────────
+
+async function getLearningRules() {
+  const result = await query(`
+    SELECT * FROM learning_rules
+    WHERE is_active = true
+      AND rule_type = 'sonnet_decision'
+    ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
+    LIMIT 5
+  `);
+  return result.rows;
+}
+
+// ── Graceful Shutdown ───────────────────────────────────────
+
+async function shutdown() {
+  logger.info('[Engine] Shutting down...');
+  isRunning = false;
+
+  if (scanIntervalId) {
+    clearInterval(scanIntervalId);
+  }
+
   try {
-    const result = await query(
-      `SELECT * FROM alerts WHERE handled = false ORDER BY created_at LIMIT 10`
-    );
-    if (result.rows.length === 0) return;
-
-    logger.info(`Processing ${result.rows.length} unhandled alerts`);
-
-    for (const alert of result.rows) {
-      try {
-        const cb = await checkCircuitBreaker();
-        const position = await getPositionBySymbol(alert.symbol);
-        let currentPrice;
-        try { currentPrice = await getPrice(alert.symbol); } catch { currentPrice = parseFloat(alert.price); }
-
-        // Get TA for the alerted symbol
-        let taSummary = '';
-        try {
-          const ta = await analyzeSymbol(alert.symbol);
-          taSummary = formatForClaude(ta);
-        } catch { /* proceed without TA */ }
-
-        const response = await alertCheck(alert, position, currentPrice, cb, taSummary);
-        const confidence = response.confidence || 0;
-
-        if (response.action === 'CLOSE' && position && confidence >= CONF.minSellConfidence) {
-          await closePosition(position.id, currentPrice, 'MANUAL');
-          logger.info(`Alert: closed ${alert.symbol} @ $${currentPrice.toFixed(2)} (conf=${confidence})`);
-        } else if (response.action === 'DCA' && position && confidence >= CONF.minDCAConfidence) {
-          const dcaCheck = shouldDCA(position, currentPrice);
-          if (dcaCheck) {
-            await executeDCA(position.id, dcaCheck.level, currentPrice);
-            logger.info(`Alert: DCA${dcaCheck.level} ${alert.symbol} (conf=${confidence})`);
-          }
-        } else if (response.action === 'BUY' && !position && !cb.isPaused && confidence >= CONF.minBuyConfidence) {
-          const cooldown = await isSymbolOnCooldown(alert.symbol);
-          if (cooldown.onCooldown) {
-            logger.info(`Alert: skipping BUY on ${alert.symbol} — cooldown active (closed ${cooldown.hoursAgo}h ago, ${cooldown.hoursRemaining}h remaining)`);
-          } else {
-            const { canOpen } = await canOpenPosition();
-            if (canOpen) {
-              await openPosition(alert.symbol, currentPrice, tradingConfig.positionSize);
-              logger.info(`Alert: opened ${alert.symbol} @ $${currentPrice.toFixed(2)} (conf=${confidence})`);
-            }
-          }
-        }
-
-        await query('UPDATE alerts SET handled = true WHERE id = $1', [alert.id]);
-      } catch (err) {
-        logger.error(`Alert ${alert.id} (${alert.symbol}) failed: ${err.message}`);
-        await query('UPDATE alerts SET handled = true WHERE id = $1', [alert.id]);
-      }
-    }
-  } catch (err) {
-    logger.error(`Alert processing failed: ${err.message}`);
+    await queueEvent('ENGINE_STOP', null, { cycle_count: cycleCount });
+  } catch {
+    // DB may already be closing
   }
-}
 
-// ── Main ───────────────────────────────────────────────────
-
-let alertInterval = null;
-
-async function start() {
-  logger.info('Trading Engine starting...');
-  logger.info(`Mode: ${process.env.PAPER_TRADING !== 'false' ? 'PAPER' : 'LIVE'}`);
-  logger.info(`Position size: $${tradingConfig.positionSize}`);
-  logger.info(`Max positions: ${tradingConfig.maxConcurrentPositions}`);
-  logger.info(`Buy confidence threshold: ${CONF.minBuyConfidence}`);
-
-  connectWebSocket(ALL_SYMBOLS, null);
-
-  logger.info('Waiting 15s for WebSocket price data...');
-  await new Promise(resolve => setTimeout(resolve, 15000));
-
-  // Hourly cron
-  cron.schedule('0 * * * *', () => {
-    runScheduledCheck().catch(err => logger.error(`Cron error: ${err.message}`));
-  });
-
-  // Daily event cleanup at midnight UTC
-  cron.schedule('0 0 * * *', () => {
-    cleanOldEvents(7).catch(err => logger.error(`Event cleanup error: ${err.message}`));
-  });
-
-  queueEvent('SYSTEM', null, {
-    message: 'Trading engine started', severity: 'INFO',
-  }).catch(() => {});
-
-  // Alert loop every 30s
-  alertInterval = setInterval(() => {
-    processUnhandledAlerts().catch(err => logger.error(`Alert loop error: ${err.message}`));
-  }, 30 * 1000);
-
-  logger.info('Running initial check...');
-  await runScheduledCheck();
-
-  logger.info('Trading Engine running — hourly TA+AI checks + 30s alert loop');
-}
-
-function shutdown() {
-  logger.info('Trading Engine shutting down...');
-  if (alertInterval) clearInterval(alertInterval);
-  disconnectWebSocket();
-  pool.end();
+  logger.info(`[Engine] Stopped after ${cycleCount} cycles`);
   process.exit(0);
 }
 
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
+// ── Entry Point ─────────────────────────────────────────────
 
-start().catch(err => {
-  logger.error(`Trading Engine fatal: ${err.message}`);
+start().catch(error => {
+  logger.error(`[Engine] Fatal startup error: ${error.message}`);
+  logger.error(error.stack);
   process.exit(1);
 });

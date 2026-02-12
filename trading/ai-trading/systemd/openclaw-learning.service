@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenClaw Nightly Learning Analysis
+After=network.target postgresql.service
+
+[Service]
+Type=oneshot
+User=don
+WorkingDirectory=/home/don/openclaw/trading/ai-trading
+ExecStart=/usr/bin/node services/nightly-learning.js
+Environment=NODE_ENV=production
+StandardOutput=append:/home/don/openclaw/trading/ai-trading/logs/learning.log
+StandardError=append:/home/don/openclaw/trading/ai-trading/logs/learning-error.log

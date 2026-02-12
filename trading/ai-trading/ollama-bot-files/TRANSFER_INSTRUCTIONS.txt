@@ -1,0 +1,16 @@
+HOW TO TRANSFER THESE FILES TO WINDOWS PC:
+
+Option 1 - Via Tailscale (Recommended):
+1. On VPS: tar -czf ollama-bot.tar.gz ollama-bot-files/
+2. On Windows PC: scp don@100.79.158.90:/home/don/openclaw/trading/ai-trading/ollama-bot.tar.gz .
+3. Extract to C:\Users\Slander\openclaw-local\
+
+Option 2 - Manual:
+1. Copy each file content from VPS
+2. Create files on Windows PC in C:\Users\Slander\openclaw-local\
+3. Paste content
+
+After transfer:
+1. Edit config.json with real API keys
+2. pip install -r requirements.txt
+3. python ollama-bot.py

@@ -1,0 +1,21 @@
+[Unit]
+Description=OpenClaw Dashboard API
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=don
+WorkingDirectory=/home/don/openclaw/trading/ai-trading
+ExecStart=/usr/bin/node services/dashboard-api.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+StandardOutput=append:/home/don/openclaw/trading/ai-trading/logs/api.log
+StandardError=append:/home/don/openclaw/trading/ai-trading/logs/api-error.log
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/don/openclaw/trading/ai-trading/logs
+
+[Install]
+WantedBy=multi-user.target

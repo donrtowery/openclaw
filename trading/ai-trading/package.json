@@ -1,15 +1,20 @@
 {
-  "name": "openclaw-ai-trading",
-  "version": "1.0.0",
+  "name": "openclaw-v2",
+  "version": "2.0.0",
   "type": "module",
+  "description": "AI-driven cryptocurrency trading system",
+  "main": "services/trading-engine.js",
+  "scripts": {
+    "start": "node services/trading-engine.js",
+    "test": "node tests/test-scanner.js"
+  },
   "dependencies": {
-    "@anthropic-ai/sdk": "latest",
-    "binance-api-node": "^0.13.6",
-    "dotenv": "^17.2.4",
-    "express": "^4.18.2",
-    "node-cron": "^3.0.3",
-    "pg": "^8.13.0",
+    "@anthropic-ai/sdk": "^0.27.0",
+    "pg": "^8.11.0",
+    "node-cron": "^3.0.0",
+    "winston": "^3.11.0",
+    "dotenv": "^16.3.0",
     "technicalindicators": "^3.1.0",
-    "winston": "^3.11.0"
+    "express": "^4.18.0"
   }
 }

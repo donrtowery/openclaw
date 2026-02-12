@@ -1,0 +1,21 @@
+[Unit]
+Description=OpenClaw Trading Engine
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=don
+WorkingDirectory=/home/don/openclaw/trading/ai-trading
+ExecStart=/usr/bin/node services/trading-engine.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+StandardOutput=append:/home/don/openclaw/trading/ai-trading/logs/engine.log
+StandardError=append:/home/don/openclaw/trading/ai-trading/logs/engine-error.log
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/don/openclaw/trading/ai-trading/logs /home/don/openclaw/trading/ai-trading/prompts
+
+[Install]
+WantedBy=multi-user.target
