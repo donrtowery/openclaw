@@ -257,20 +257,22 @@ async function calculateStats() {
     ORDER BY s.strength
   `);
 
-  // PASS patterns — which triggered_by + trend + strength combos Sonnet consistently rejects
+  // PASS patterns — only flag patterns where PASSes were CONFIRMED correct (price didn't move)
+  // This prevents self-reinforcing rejection loops where Sonnet passes → nightly says "stop" → Sonnet passes more
   const passPatternResult = await query(`
     SELECT s.triggered_by, s.trend, s.strength,
       COUNT(*) as total,
-      COUNT(CASE WHEN d.action = 'PASS' THEN 1 END) as pass_count,
-      ROUND(COUNT(CASE WHEN d.action = 'PASS' THEN 1 END)::numeric / COUNT(*) * 100, 1) as pass_rate
+      COUNT(CASE WHEN d.outcome = 'CORRECT_PASS' THEN 1 END) as correct_pass_count,
+      ROUND(COUNT(CASE WHEN d.outcome = 'CORRECT_PASS' THEN 1 END)::numeric / NULLIF(COUNT(CASE WHEN d.outcome IN ('CORRECT_PASS', 'MISSED_OPPORTUNITY') THEN 1 END), 0) * 100, 1) as correct_pass_rate
     FROM signals s
     JOIN decisions d ON d.signal_id = s.id
     WHERE s.escalated = true
       AND s.created_at > NOW() - INTERVAL '30 days'
+      AND d.outcome IN ('CORRECT_PASS', 'MISSED_OPPORTUNITY')
     GROUP BY s.triggered_by, s.trend, s.strength
-    HAVING COUNT(*) >= 5
-      AND (COUNT(CASE WHEN d.action = 'PASS' THEN 1 END)::numeric / COUNT(*) * 100) >= 70
-    ORDER BY pass_rate DESC
+    HAVING COUNT(CASE WHEN d.outcome IN ('CORRECT_PASS', 'MISSED_OPPORTUNITY') THEN 1 END) >= 5
+      AND (COUNT(CASE WHEN d.outcome = 'CORRECT_PASS' THEN 1 END)::numeric / NULLIF(COUNT(CASE WHEN d.outcome IN ('CORRECT_PASS', 'MISSED_OPPORTUNITY') THEN 1 END), 0) * 100) >= 70
+    ORDER BY correct_pass_rate DESC
   `);
 
   // Missed escalation patterns — combos Haiku didn't escalate that turned out to be MISSED_OPPORTUNITY
@@ -524,7 +526,9 @@ async function callSonnetForAnalysis(stats) {
   prompt += `- A healthy system has 15-30% escalation conversion rate, NOT 100%\n`;
   prompt += `- Do NOT generate STOP rules for patterns with fewer than 5 samples\n`;
   prompt += `- MISSED_OPPORTUNITY PASSes mean Sonnet was wrong, not Haiku — do NOT penalize Haiku for these\n`;
-  prompt += `- Avoid duplicate rules that say the same thing in different words\n\n`;
+  prompt += `- Avoid duplicate rules that say the same thing in different words\n`;
+  prompt += `- NEVER generate blanket rejection rules like "REJECT all MODERATE" — a Sonnet PASS is NOT proof a pattern is bad. Only reject patterns where the PRICE ACTUALLY DROPPED (confirmed CORRECT_PASS outcomes)\n`;
+  prompt += `- Even modest gains matter and compound over time. Small T3 position sizes limit downside risk, so the bar for entry should be lower, not higher\n\n`;
 
   if (hasTrades) {
     prompt += `Focus on: >70% WR patterns (promote), <40% WR patterns (warn), missed opportunities (both non-escalated and Sonnet PASS), optimal hold times, DCA effectiveness.`;
@@ -620,12 +624,12 @@ async function updatePromptFiles(stats, analysis) {
     haikuSection += `- MISSED_OPPORTUNITY: ${missedOpp} (price moved favorably after pass)\n\n`;
   }
 
-  // STOP escalating patterns
+  // STOP escalating patterns — only based on confirmed correct passes, not raw PASS rate
   if (stats.pass_patterns.length > 0) {
-    haikuSection += `STOP ESCALATING (Sonnet passes >70% of the time on these):\n`;
+    haikuSection += `STOP ESCALATING (confirmed unprofitable — price didn't move after >70% of these):\n`;
     for (const p of stats.pass_patterns.slice(0, 5)) {
       const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
-      haikuSection += `- ${triggers} (${p.trend}) ${p.strength}: ${p.pass_rate}% PASS rate (${p.total} samples)\n`;
+      haikuSection += `- ${triggers} (${p.trend}) ${p.strength}: ${p.correct_pass_rate}% confirmed unprofitable (${p.total} evaluated)\n`;
     }
     haikuSection += '\n';
   }

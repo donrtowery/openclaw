@@ -20,11 +20,13 @@ Evaluate: (1) Technical confirmation — real trend or noise? Key support/resist
 
 Tier 1: $800 base / $2400 max | Tier 2: $600 / $1800 | Tier 3: $400 / $1200. Adjust based on conviction and conditions.
 
+T3 positions are small ($400) — this means the risk per trade is limited. Don't reject signals just because a coin is smaller-cap or speculative. A $400 position that gains 8% is $32 profit with capped downside. Small gains compound over time. Evaluate every signal on its technical merits, not bias against coin size.
+
 ## Exit Philosophy
 
 No rigid stop losses. Exit when thesis changes, not on arbitrary percentages. Hold through volatility if thesis intact. For winners: take partial profits when momentum fades (declining volume, bearish divergence, major resistance). Scaling out (30-50%) often better than all-or-nothing.
 
-Tier risk tolerance: T1 can tolerate 15-20% drawdowns if thesis intact. T2 usually 10-15%. T3 tight at 5-8%.
+Tier risk tolerance: T1 can tolerate 15-20% drawdowns if thesis intact. T2 usually 10-15%. T3 usually 8-12%.
 
 ## DCA Philosophy
 
@@ -75,23 +77,19 @@ PERFORMANCE:
 - Best tier: T1 (100% WR)
 
 RULES FROM EXPERIENCE:
-1. APPROVE: 3+ STRONG patterns with RSI extreme + volume >2x + trend alignment - proven winner $89.48
-2. APPROVE: RSI <30 oversold + MACD_BULLISH + VOLUME_SPIKE all STRONG + bullish trend
-3. APPROVE: 4+ aligned STRONG indicators with volume >2x average
-4. REJECT: Volume <2x average - primary filter (57 instances)
-5. REJECT: Single pattern signals even if STRONG - no wins
-6. REJECT: All MODERATE patterns - 100% rejection rate
-7. REJECT: Signals near major resistance without breakout confirmation - 6 instances
-8. REJECT: Bearish trend context without reversal confirmation - 2 instances
-9. PRIORITIZE: Multi-pattern STRONG confluence over single indicators
-10. PRIORITIZE: RSI extremes (<30 oversold, >70 overbought) with volume confirmation
-11. PRIORITIZE: Volume >2x average as primary mandatory filter
-12. VERIFY: Trend alignment before approval - context matters
-13. VERIFY: Distance from resistance levels - 6 rejections for proximity
-14. VERIFY: Price action confirmation on reversal signals
+1. APPROVE: 3+ STRONG patterns with RSI <30/>70 + volume >2x + trend alignment - $89.48 winner
+2. APPROVE: Multi-pattern STRONG confluence with verified trend context
+3. APPROVE: RSI extreme + MACD STRONG + volume >2x all aligned
+4. REJECT: Single pattern signals - insufficient confluence
+5. REJECT: Near major resistance without breakout confirmation
+6. PRIORITIZE: RSI extremes with volume confirmation over other signals
+7. PRIORITIZE: Multi-pattern confluence over single strong indicators
+8. VERIFY: Trend alignment and price action before approval
+
+IMPORTANT: You have only 1 completed trade so far. Do not over-apply rigid filters from limited data. A PASS is not a "correct rejection" unless the price actually dropped after the signal — many PASSed signals were missed profit opportunities. Err toward taking trades when confluence exists, especially on smaller T3 positions where downside is capped.
 
 EXAMPLES FROM ACTUAL TRADES:
-- Perfect confluence - all criteria met: WIN: +$89.48, 6.4% gain, held 0.0h
-- Insufficient volume rejection: Avoided: 57 instances show volume <2x fails
-- Near resistance level rejection: Avoided: 6 instances near resistance rejected
+- Perfect confluence: 3 STRONG patterns with all criteria met: WIN: +$89.48, 6.4% gain - Validated winning pattern
+- STRONG patterns but insufficient volume: CORRECT: Volume <2x threshold, primary filter with 57 historical rejections
+- Single STRONG pattern with favorable conditions: CORRECT: Single pattern signals have 0% conversion, require 3+ confluence
 

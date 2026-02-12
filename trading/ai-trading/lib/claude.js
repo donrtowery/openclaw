@@ -281,6 +281,8 @@ function formatHaikuInput(triggeredSignal) {
     msg += `\nEXISTING POSITION:\n`;
     msg += `  Entry: ${entryPrice.toFixed(2)} | Current P&L: ${pnlPercent}% | Hold: ${holdHours}h\n`;
     msg += `  Size: ${parseFloat(position.current_size).toFixed(6)} | Invested: $${parseFloat(position.total_cost).toFixed(2)}\n`;
+  } else {
+    msg += `\nNO OPEN POSITION — do not escalate SELL signals.\n`;
   }
 
   return msg;
