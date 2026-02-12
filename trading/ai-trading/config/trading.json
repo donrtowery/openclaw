@@ -1,25 +1,72 @@
 {
-  "accountSize": 6000,
-  "activePool": 3000,
-  "dcaReserve": 3000,
-  "positionSize": 600,
-  "maxConcurrentPositions": 5,
-  "cooldownHours": 24,
-  "minimumHoldHours": 4,
-  "circuitBreaker": {
-    "maxConsecutiveLosses": 3,
-    "pauseDurationHours": 24
+  "account": {
+    "total_capital": 6000,
+    "max_concurrent_positions": 10,
+    "paper_trading": true
   },
-  "confidenceThresholds": {
-    "minBuyConfidence": 0.7,
-    "minSellConfidence": 0.6,
-    "minDCAConfidence": 0.65,
-    "minTakeProfitConfidence": 0.5
+  "position_sizing": {
+    "tier_1": {
+      "label": "Blue Chips (BTC, ETH, BNB, SOL, XRP, ADA, AVAX, DOT, LINK, POL)",
+      "base_position_usd": 800,
+      "max_position_usd": 2400,
+      "note": "Guidelines for Sonnet — highest conviction, most patient"
+    },
+    "tier_2": {
+      "label": "Established (ATOM, NEAR, OP, ARB, SUI, AAVE, UNI, etc.)",
+      "base_position_usd": 600,
+      "max_position_usd": 1800,
+      "note": "Guidelines for Sonnet — standard risk management"
+    },
+    "tier_3": {
+      "label": "Growth (RENDER, FLOW, EGLD, LTC, BCH, ETC, etc.)",
+      "base_position_usd": 400,
+      "max_position_usd": 1200,
+      "note": "Guidelines for Sonnet — moderate conviction required"
+    },
+    "tier_4": {
+      "label": "Speculative (IMX, GALA, OCEAN, FET, SUSHI, etc.)",
+      "base_position_usd": 300,
+      "max_position_usd": 600,
+      "note": "Guidelines for Sonnet — smallest positions, highest conviction needed"
+    }
+  },
+  "scanner": {
+    "interval_minutes": 5,
+    "candle_history": 200,
+    "signal_cooldown_minutes": 60,
+    "thresholds": {
+      "rsi_oversold": 30,
+      "rsi_overbought": 70,
+      "volume_spike_ratio": 1.5,
+      "macd_crossover": true,
+      "bb_squeeze": true,
+      "note": "These are ALERTS to Haiku, not trading triggers. The AI decides what matters."
+    }
+  },
+  "confidence_thresholds": {
+    "sonnet_minimum_for_new_entry": 0.65,
+    "sonnet_minimum_for_exit": 0.55,
+    "sonnet_minimum_for_dca": 0.60,
+    "note": "Safety net — Sonnet can still make intelligent decisions below these, but actions are downgraded"
+  },
+  "escalation": {
+    "min_confidence_to_escalate": 0.60,
+    "min_strength_to_escalate": "MODERATE",
+    "note": "Haiku decides whether to escalate based on signal quality, not rigid cutoffs"
+  },
+  "circuit_breaker": {
+    "consecutive_losses_to_activate": 3,
+    "cooldown_hours": 4,
+    "note": "Safety net only — pauses trading after 3 consecutive losses"
   },
   "sms": {
     "enabled": true,
-    "alertTypes": ["BUY", "SELL", "DCA", "TAKE_PROFIT", "CIRCUIT_BREAKER"],
-    "maxPerHour": 20,
-    "quietHours": false
+    "max_per_hour": 20,
+    "alert_types": ["BUY", "SELL", "DCA", "PARTIAL_EXIT", "CIRCUIT_BREAKER"],
+    "note": "SMS via TextBelt for critical trade alerts only"
+  },
+  "learning": {
+    "snapshot_retention_days": 30,
+    "note": "Nightly Sonnet analysis of closed trades to update prompts"
   }
 }
