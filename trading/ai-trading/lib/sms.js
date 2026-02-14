@@ -1,11 +1,19 @@
 import { readFileSync } from 'fs';
+import twilio from 'twilio';
 import logger from './logger.js';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const TEXTBELT_URL = 'https://textbelt.com/text';
-const TEXTBELT_KEY = process.env.TEXTBELT_API_KEY;
-const PHONE = process.env.SMS_PHONE_NUMBER;
+const ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const API_KEY = process.env.TWILIO_API_KEY;
+const API_SECRET = process.env.TWILIO_API_SECRET;
+const FROM_NUMBER = process.env.TWILIO_FROM_NUMBER;
+const TO_NUMBER = process.env.SMS_PHONE_NUMBER;
+
+let client;
+if (ACCOUNT_SID && API_KEY && API_SECRET) {
+  client = twilio(API_KEY, API_SECRET, { accountSid: ACCOUNT_SID });
+}
 
 // Rate limiter: hourKey -> count
 const sendCounts = new Map();
@@ -28,8 +36,8 @@ export async function sendAlert(alertType, symbol, data) {
     return { sent: false, message: 'SMS disabled in config' };
   }
 
-  if (!TEXTBELT_KEY || !PHONE) {
-    return { sent: false, message: 'Missing TEXTBELT_API_KEY or SMS_PHONE_NUMBER' };
+  if (!client || !FROM_NUMBER || !TO_NUMBER) {
+    return { sent: false, message: 'Missing Twilio credentials or phone numbers' };
   }
 
   const allowedTypes = smsConfig.alert_types || [];
@@ -38,7 +46,7 @@ export async function sendAlert(alertType, symbol, data) {
   }
 
   // Rate limit check
-  const hourKey = new Date().toISOString().slice(0, 13); // "2026-02-11T20"
+  const hourKey = new Date().toISOString().slice(0, 13);
   const maxPerHour = smsConfig.max_per_hour || 20;
 
   // Clean old entries
@@ -52,27 +60,20 @@ export async function sendAlert(alertType, symbol, data) {
     return { sent: false, message: `Rate limit: ${currentCount}/${maxPerHour} per hour` };
   }
 
-  const message = formatSmsMessage(alertType, symbol, data);
+  const body = formatSmsMessage(alertType, symbol, data);
 
   try {
-    const response = await fetch(TEXTBELT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ phone: PHONE, message, key: TEXTBELT_KEY }),
+    const result = await client.messages.create({
+      body,
+      from: FROM_NUMBER,
+      to: TO_NUMBER,
     });
 
-    const result = await response.json();
-
-    if (result.success) {
-      sendCounts.set(hourKey, currentCount + 1);
-      logger.info(`[SMS] Sent ${alertType} alert for ${symbol || 'SYSTEM'} (${currentCount + 1}/${maxPerHour})`);
-      return { sent: true, message: 'Sent successfully' };
-    } else {
-      logger.error(`[SMS] TextBelt error: ${result.error}`);
-      return { sent: false, message: `TextBelt: ${result.error}` };
-    }
+    sendCounts.set(hourKey, currentCount + 1);
+    logger.info(`[SMS] Sent ${alertType} alert for ${symbol || 'SYSTEM'} (${currentCount + 1}/${maxPerHour}) sid:${result.sid}`);
+    return { sent: true, message: 'Sent successfully' };
   } catch (error) {
-    logger.error(`[SMS] Send failed: ${error.message}`);
+    logger.error(`[SMS] Twilio error: ${error.message}`);
     return { sent: false, message: error.message };
   }
 }
@@ -87,29 +88,29 @@ export function formatSmsMessage(alertType, symbol, data) {
   switch (alertType) {
     case 'BUY': {
       const reason = (data.reasoning || '').substring(0, 60);
-      msg = `🟢 BUY ${sym} @ $${fmtPrice(data.price)} | Conf: ${data.confidence} | ${reason}`;
+      msg = `BUY ${sym} @ $${fmtPrice(data.price)} | Conf: ${data.confidence} | ${reason}`;
       break;
     }
     case 'SELL': {
       const sign = data.pnl >= 0 ? '+' : '';
-      msg = `🔴 SELL ${sym} @ $${fmtPrice(data.price)} | P&L: ${sign}$${fmtNum(data.pnl)} (${sign}${fmtNum(data.pnl_percent)}%)`;
+      msg = `SELL ${sym} @ $${fmtPrice(data.price)} | P&L: ${sign}$${fmtNum(data.pnl)} (${sign}${fmtNum(data.pnl_percent)}%)`;
       break;
     }
     case 'DCA': {
-      msg = `🔵 DCA ${sym} @ $${fmtPrice(data.price)} | Avg now $${fmtPrice(data.new_avg_entry)} | +$${fmtNum(data.cost)}`;
+      msg = `DCA ${sym} @ $${fmtPrice(data.price)} | Avg now $${fmtPrice(data.new_avg_entry)} | +$${fmtNum(data.cost)}`;
       break;
     }
     case 'PARTIAL_EXIT': {
       const sign = data.pnl >= 0 ? '+' : '';
-      msg = `💰 PARTIAL ${sym} ${data.exit_percent}% @ $${fmtPrice(data.price)} | ${sign}$${fmtNum(data.pnl)}`;
+      msg = `PARTIAL ${sym} ${data.exit_percent}% @ $${fmtPrice(data.price)} | ${sign}$${fmtNum(data.pnl)}`;
       break;
     }
     case 'CIRCUIT_BREAKER': {
-      msg = `⚠️ CIRCUIT BREAKER | ${data.consecutive_losses} losses | Pausing ${data.cooldown_hours}h`;
+      msg = `CIRCUIT BREAKER | ${data.consecutive_losses} losses | Pausing ${data.cooldown_hours}h`;
       break;
     }
     default: {
-      msg = `📊 ${alertType} ${sym} | ${JSON.stringify(data).substring(0, 100)}`;
+      msg = `${alertType} ${sym} | ${JSON.stringify(data).substring(0, 100)}`;
     }
   }
 

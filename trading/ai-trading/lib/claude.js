@@ -11,11 +11,14 @@ const anthropic = new Anthropic({
 });
 
 const HAIKU_MODEL = process.env.HAIKU_MODEL || 'claude-haiku-4-5-20251001';
-const SONNET_MODEL = process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250929';
+export const SONNET_MODEL = process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250929';
+
+export { anthropic };
 
 // Cache loaded prompt text to avoid repeated filesystem reads within the same cycle
 let haikuPromptCache = { text: null, mtime: 0 };
 let sonnetPromptCache = { text: null, mtime: 0 };
+let sonnetExitPromptCache = { text: null, mtime: 0 };
 
 function loadPrompt(path, cache) {
   try {
@@ -252,6 +255,199 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
     logger.error('[Sonnet] API error:', error.message);
     throw error;
   }
+}
+
+/**
+ * Call Sonnet for exit evaluation of an open position.
+ * Bypasses Haiku — exit scanner's urgency scoring replaces Haiku triage.
+ *
+ * Returns: { action, symbol, confidence, position_details, reasoning, risk_assessment, alternative_considered, decision_id }
+ */
+export async function callSonnetExitEval(position, analysis, urgency, newsContext, portfolioState, learningRules, config) {
+  const systemPrompt = loadPrompt('prompts/sonnet-exit-eval.md', sonnetExitPromptCache);
+
+  const userMessage = formatExitEvalInput(position, analysis, urgency, newsContext, portfolioState, learningRules);
+
+  try {
+    const startTime = Date.now();
+
+    const message = await anthropic.messages.create({
+      model: SONNET_MODEL,
+      max_tokens: 1536,
+      system: [{
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      }],
+      messages: [{ role: 'user', content: userMessage }],
+    });
+
+    const responseText = message.content[0].text;
+    const inputTokens = message.usage.input_tokens;
+    const outputTokens = message.usage.output_tokens;
+    const cacheRead = message.usage.cache_read_input_tokens || 0;
+    const duration = Date.now() - startTime;
+
+    logger.info(`[Sonnet-Exit] ${position.symbol} evaluated in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
+
+    let parsed;
+    try {
+      parsed = extractJSON(responseText);
+    } catch {
+      logger.error(`[Sonnet-Exit] JSON parse failed, response: ${responseText.substring(0, 500)}`);
+      parsed = {
+        action: 'HOLD',
+        symbol: position.symbol,
+        confidence: 0,
+        position_details: null,
+        reasoning: 'Parse error — could not interpret Sonnet response',
+        risk_assessment: 'Unable to assess due to parse error',
+        alternative_considered: 'N/A',
+      };
+    }
+
+    // Map PARTIAL_EXIT to SELL with exit_percent for compatibility with enforceConfidenceThresholds
+    if (parsed.action === 'PARTIAL_EXIT') {
+      parsed.action = 'SELL';
+    }
+
+    // Enforce confidence safety net
+    parsed = enforceConfidenceThresholds(parsed, config);
+
+    // Log signal with EXIT_SCANNER trigger
+    const signalId = await logExitSignal(position, analysis, urgency);
+
+    // Log decision
+    const decisionId = await logDecision(signalId, parsed, userMessage, inputTokens + outputTokens);
+
+    logger.info(`[Sonnet-Exit] ${position.symbol}: ${parsed.action} conf:${parsed.confidence}`);
+    logger.info(`[Sonnet-Exit] Reasoning: ${(parsed.reasoning || '').substring(0, 150)}...`);
+
+    return { ...parsed, decision_id: decisionId };
+
+  } catch (error) {
+    logger.error('[Sonnet-Exit] API error:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Format exit evaluation input for Sonnet.
+ */
+function formatExitEvalInput(position, analysis, urgency, newsContext, portfolioState, learningRules) {
+  const avgEntry = parseFloat(position.avg_entry_price);
+  const currentPrice = analysis.price;
+  const holdHours = (Date.now() - new Date(position.entry_time).getTime()) / (1000 * 60 * 60);
+  const maxGain = parseFloat(position.max_unrealized_gain_percent || 0);
+  const partialExits = position.partial_exits || 0;
+  const totalProfitTaken = parseFloat(position.total_profit_taken || 0);
+
+  let msg = `# EXIT EVALUATION REQUEST\n\n`;
+
+  msg += `## Position\n`;
+  msg += `Symbol: ${position.symbol} (Tier ${position.tier})\n`;
+  msg += `Entry: $${avgEntry.toFixed(4)} | Current: $${currentPrice.toFixed(4)}\n`;
+  msg += `P&L: ${urgency.pnl_percent.toFixed(2)}%\n`;
+  msg += `Hold time: ${holdHours.toFixed(1)}h\n`;
+  msg += `Size: ${parseFloat(position.current_size).toFixed(6)} | Invested: $${parseFloat(position.total_cost).toFixed(2)}\n`;
+  msg += `Peak gain: ${maxGain.toFixed(2)}% | Drawdown from peak: ${urgency.drawdown_from_peak.toFixed(2)}%\n`;
+  if (partialExits > 0) {
+    msg += `Partial exits: ${partialExits} (profit taken: $${totalProfitTaken.toFixed(2)})\n`;
+  }
+  msg += '\n';
+
+  msg += `## Exit Scanner Urgency: ${urgency.score} points\n`;
+  msg += `Factors:\n`;
+  for (const factor of urgency.factors) {
+    msg += `- ${factor}\n`;
+  }
+  msg += '\n';
+
+  msg += `## Technical Indicators\n`;
+  msg += formatForClaude(analysis);
+  msg += '\n';
+  if (analysis.rsi) msg += `RSI: ${analysis.rsi.value}\n`;
+  if (analysis.macd) msg += `MACD histogram: ${analysis.macd.histogram}, crossover: ${analysis.macd.crossover}\n`;
+  if (analysis.volume) msg += `Volume ratio: ${analysis.volume.ratio}x, trend: ${analysis.volume.trend}\n`;
+  if (analysis.sma?.sma200 != null) msg += `SMA200: ${analysis.sma.sma200}\n`;
+  msg += '\n';
+
+  msg += `## News Context\n`;
+  msg += newsContext || 'No recent news available.\n';
+  msg += '\n';
+
+  msg += `## Portfolio State\n`;
+  msg += `Open positions: ${portfolioState.open_count}/${portfolioState.max_positions}\n`;
+  msg += `Unrealized P&L: ${portfolioState.unrealized_pnl_percent?.toFixed(2) || '0.00'}%\n`;
+  msg += `Available capital: $${portfolioState.available_capital?.toFixed(2) || '0.00'}\n`;
+  if (portfolioState.total_trades > 0) {
+    msg += `Win rate: ${portfolioState.win_rate?.toFixed(1)}% (${portfolioState.total_trades} trades)\n`;
+  }
+  msg += '\n';
+
+  if (learningRules?.length > 0) {
+    msg += `## Lessons from Past Trades\n`;
+    for (const rule of learningRules.slice(0, 5)) {
+      msg += `- ${rule.rule_text}`;
+      if (rule.win_rate && rule.sample_size) {
+        msg += ` (${rule.win_rate}% win rate, ${rule.sample_size} trades)`;
+      }
+      msg += '\n';
+    }
+    msg += '\n';
+  }
+
+  return msg;
+}
+
+/**
+ * Log exit scanner signal to the signals table.
+ */
+async function logExitSignal(position, analysis, urgency) {
+  const triggeredBy = ['EXIT_SCANNER', ...urgency.factors.map(f => f.substring(0, 50))];
+
+  const result = await query(`
+    INSERT INTO signals (
+      symbol, triggered_by, price,
+      rsi, macd, macd_signal, macd_histogram,
+      sma10, sma30, sma50, sma200, ema9, ema21,
+      bb_upper, bb_middle, bb_lower,
+      volume_24h, volume_ratio,
+      support_nearest, resistance_nearest, trend,
+      signal_type, strength, confidence, reasoning, escalated, outcome
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+    RETURNING id
+  `, [
+    position.symbol,
+    triggeredBy,
+    analysis.price,
+    analysis.rsi?.value ?? null,
+    analysis.macd?.macd ?? null,
+    analysis.macd?.signal ?? null,
+    analysis.macd?.histogram ?? null,
+    analysis.sma?.sma10 ?? null,
+    analysis.sma?.sma30 ?? null,
+    analysis.sma?.sma50 ?? null,
+    analysis.sma?.sma200 ?? null,
+    analysis.ema?.ema9 ?? null,
+    analysis.ema?.ema21 ?? null,
+    analysis.bollingerBands?.upper ?? null,
+    analysis.bollingerBands?.middle ?? null,
+    analysis.bollingerBands?.lower ?? null,
+    analysis.volume?.current ?? null,
+    analysis.volume?.ratio ?? null,
+    analysis.support?.[0] ?? null,
+    analysis.resistance?.[0] ?? null,
+    analysis.trend?.direction ?? null,
+    'SELL',
+    urgency.score >= 70 ? 'STRONG' : 'MODERATE',
+    Math.min(urgency.score / 100, 1.0),
+    JSON.stringify(urgency.factors),
+    true,
+    'PENDING',
+  ]);
+
+  return result.rows[0].id;
 }
 
 /**

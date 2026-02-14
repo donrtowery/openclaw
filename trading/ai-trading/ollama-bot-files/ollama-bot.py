@@ -59,12 +59,31 @@ def call_ollama(prompt, max_tokens=400):
         response = ol.chat(
             model=OLLAMA_MODEL,
             messages=[{"role": "user", "content": prompt}],
+            format="",
             options={"num_predict": max_tokens},
         )
         return response["message"]["content"].strip()
     except Exception as e:
         log.error(f"Ollama error: {e}")
         return None
+
+
+def _preformat_dollars(meta):
+    """Pre-format dollar/percent fields so the LLM can't mangle them."""
+    if not isinstance(meta, dict):
+        return meta
+    formatted = {}
+    dollar_keys = {"realized_pnl", "unrealized_pnl", "pnl", "price", "new_avg_entry",
+                   "entry_price", "exit_price", "cost", "capital", "available_capital"}
+    pct_keys = {"unrealized_pnl_percent", "pnl_percent", "win_rate", "exit_percent"}
+    for k, v in meta.items():
+        if k in dollar_keys and isinstance(v, (int, float)):
+            formatted[k] = f"${v:.2f}"
+        elif k in pct_keys and isinstance(v, (int, float)):
+            formatted[k] = f"{v:.2f}%"
+        else:
+            formatted[k] = v
+    return formatted
 
 
 def format_event_with_ollama(event):
@@ -75,12 +94,14 @@ def format_event_with_ollama(event):
             meta = json.loads(meta)
         except:
             pass
+    display_meta = _preformat_dollars(meta)
     prompt = (
         f"Format this trading event as a short Discord message. "
-        f"Use emoji. Keep under 300 characters. Be concise.\n\n"
+        f"Use emoji. Keep under 300 characters. Be concise. "
+        f"Dollar amounts are already formatted — use them exactly as shown.\n\n"
         f"Type: {event.get('event_type')}\n"
         f"Symbol: {event.get('symbol', 'N/A')}\n"
-        f"Data: {json.dumps(meta, default=str)[:500]}\n"
+        f"Data: {json.dumps(display_meta, default=str)[:500]}\n"
         f"Time: {event.get('created_at', '')}"
     )
     result = call_ollama(prompt, max_tokens=200)
@@ -129,17 +150,21 @@ def handle_user_query(question):
 
     if portfolio and "data" in portfolio:
         p = portfolio["data"]
+        unrealized = p.get('unrealized_pnl', 0) or 0
+        realized = p.get('realized_pnl', 0) or 0
+        total_pnl = unrealized + realized
         context += f"Portfolio: {p.get('open_count', 0)}/{p.get('max_positions', 5)} positions | "
         context += f"Invested: ${p.get('total_invested', 0):.2f} | "
         context += f"Available: ${p.get('available_capital', 0):.2f} | "
-        context += f"Unrealized: ${p.get('unrealized_pnl', 0):.2f} ({p.get('unrealized_pnl_percent', 0):.1f}%) | "
-        context += f"Realized: ${p.get('realized_pnl', 0):.2f} | "
+        context += f"Unrealized P&L: ${unrealized:.2f} ({p.get('unrealized_pnl_percent', 0):.1f}%) | "
+        context += f"Realized P&L: ${realized:.2f} | "
+        context += f"TOTAL P&L: ${total_pnl:.2f} | "
         context += f"Win rate: {p.get('win_rate', 0):.1f}% ({p.get('total_trades', 0)} trades)\n\n"
 
     if positions and "data" in positions:
         if len(positions["data"]) > 0:
             context += "Open positions:\n"
-            for pos in positions["data"][:5]:
+            for pos in positions["data"][:10]:
                 sym = pos.get("symbol", "?")
                 entry = float(pos.get("avg_entry_price", 0))
                 live = pos.get("live_price") or float(pos.get("current_price", 0))
@@ -156,7 +181,8 @@ def handle_user_query(question):
 
     prompt = (
         f"You are a helpful trading assistant for the OpenClaw crypto trading system. "
-        f"Answer the user's question based on the data below. Be concise (under 1800 chars).\n\n"
+        f"Answer the user's question in plain English sentences. Do NOT respond with JSON, code blocks, or raw data. "
+        f"Use dollar signs for money and percent signs for percentages. Be concise (under 1800 chars).\n\n"
         f"{context}"
         f"User question: {question}"
     )
@@ -227,7 +253,7 @@ async def poll_events():
                 posted_ids = []
 
                 for event in events:
-                    formatted = await asyncio.to_thread(format_event_with_ollama, event)
+                    formatted = format_event_fallback(event)
                     if report_channel:
                         await report_channel.send(formatted)
                         posted_ids.append(event["id"])

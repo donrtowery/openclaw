@@ -47,42 +47,58 @@ Valid JSON only:
 
 
 ## LEARNING DATA
-(Updated: 2026-02-12 | 1 trades | 100.0% win rate)
+(Updated: 2026-02-14 | 11 trades | 90.9% win rate)
 
 PERFORMANCE:
-- 100.0% WR (1W/0L) | PF: ∞
-- Avg win: +$89.48 | Avg loss: $0.00
-- Hold: Winners 0.0h, Losers 0.0h
-- Best tier: T1 (100% WR)
+- 90.9% WR (10W/1L) | PF: 4.57
+- Avg win: +$33.12 | Avg loss: $-72.54
+- Hold: Winners 20.2h, Losers 5.9h
+- Best tier: T2 (100% WR)
 
 YOUR ESCALATION ACCURACY:
-- Total: 66 escalated → 0 traded, 66 PASSed by Sonnet
-- MODERATE: 52 escalated, 0% converted
-- STRONG: 14 escalated, 0% converted
+- Total: 161 escalated → 38 traded, 123 PASSed by Sonnet
+- MODERATE: 119 escalated, 23% converted
+- STRONG: 39 escalated, 23% converted
+- WEAK: 3 escalated, 67% converted
 
-STOP ESCALATING (Sonnet passes >70% of the time on these):
-- MACD_BEARISH_CROSSOVER (BEARISH) MODERATE: 100.0% PASS rate (5 samples)
-- VOLUME_SPIKE (BULLISH) MODERATE: 100.0% PASS rate (7 samples)
+SONNET PASS OUTCOMES:
+- CORRECT_PASS: 46 (Sonnet was right to pass)
+- MISSED_OPPORTUNITY: 35 (price moved favorably after pass)
+
+STOP ESCALATING (confirmed unprofitable — price didn't move after >70% of these):
+- VOLUME_SPIKE (BULLISH) MODERATE: 71.4% confirmed unprofitable (7 evaluated)
+
+START ESCALATING (you filtered these out but price moved favorably):
+- VOLUME_SPIKE (BEARISH) STRONG: 2 missed, avg +18.9% gain
+- VOLUME_SPIKE+BB_LOWER_TOUCH (BULLISH) MODERATE: 2 missed, avg +11.4% gain
+- MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) WEAK: 4 missed, avg +10.4% gain
+- MACD_BULLISH_CROSSOVER (SIDEWAYS) WEAK: 3 missed, avg +6.9% gain
+- EMA_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) WEAK: 4 missed, avg +6.6% gain
+
+SONNET WAS WRONG (these PASSed signals SHOULD have been escalated — Sonnet erred, not you):
+- SANDUSDT MODERATE conf:0.680 → Sonnet passed → price rose +12.5% | Sonnet's reason: SAND shows textbook oversold signals (RSI 27.87, BB lower touch, at SMA200 suppo
+- AXSUSDT MODERATE conf:0.620 → Sonnet passed → price rose +11.6% | Sonnet's reason: Fresh MACD bullish crossover at RSI 33 (oversold entry zone) with price reclaimi
+- ZRXUSDT MODERATE conf:0.680 → Sonnet passed → price rose +10.0% | Sonnet's reason: ZRX shows interesting volume (23.5x spike) and BB lower touch, but the setup is 
+- NMRUSDT STRONG conf:0.820 → Sonnet passed → price rose +8.0% | Sonnet's reason: Despite 5-pattern confluence and 24x volume spike meeting our escalation criteri
+- ATOMUSDT STRONG conf:0.780 → Sonnet passed → price rose +7.5% | Sonnet's reason: Already in position at exactly current price ($1.99) entered just 12 minutes ago
+Keep escalating signals like these — Sonnet needs to see them.
 
 RULES FROM EXPERIENCE:
-1. ESCALATE: 3+ STRONG patterns with RSI <30 or >70 + volume >2x + trend alignment
-2. ESCALATE: STRONG reversal confluence at support/resistance with volume >2.5x
-3. ESCALATE: RSI extreme + divergence + volume spike all STRONG aligned
-4. SKIP: Single pattern any strength - proven 0% conversion
-5. SKIP: MODERATE patterns any type - 100% PASS rate historical
-6. SKIP: Volume <2x average - primary rejection filter
-7. SKIP: BB touches any strength - 7/7 rejected
-8. SKIP: EMA crossovers any strength - lagging signals
-9. SKIP: RSI_OVERBOUGHT in SIDEWAYS trend - no direction
-10. REQUIRE: Minimum 3 STRONG patterns in confluence
-11. REQUIRE: RSI <30 or >70 mandatory for all escalations
-12. REQUIRE: Volume >2x average minimum + trend alignment
-13. START escalating: 3+ STRONG patterns RSI extreme + volume >2x - 100% WR, $89.48 winner
-14. CONTINUE escalating: Multi-pattern STRONG confluence only
-15. STOP escalating: MODERATE VOLUME_SPIKE - 7/7 rejected, 100% PASS rate
+1. ESCALATE: VOLUME_SPIKE (BEARISH) STRONG regardless of trend direction (avg +18.9% missed)
+2. ESCALATE: VOLUME_SPIKE+BB_LOWER_TOUCH MODERATE when volume >15x
+3. ESCALATE: MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH WEAK when RSI <40
+4. ESCALATE: Volume >20x + BB_LOWER_TOUCH regardless of SMA200 distance
+5. ESCALATE: 5+ pattern confluence + volume >15x even if WEAK/MODERATE
+6. SKIP: Volume <1.5x unless RSI extreme (<25 or >75)
+7. SKIP: Isolated MACD_BEARISH patterns without volume confirmation >5x
+8. START: VOLUME_SPIKE (BEARISH) STRONG - contrarian reversal plays work (2 missed, +18.9%)
+9. START: EMA_BULLISH_CROSSOVER+TREND_TURNED_BULLISH WEAK with any volume confirmation
+10. CONTINUE: MODERATE patterns with volume >5x - 88% WR validates approach
+11. CONTINUE: Multi-pattern confluence (5+) - strong historical performance
+12. MAINTAIN: 23% conversion rate is healthy - do not over-restrict
 
 EXAMPLES FROM ACTUAL TRADES:
-- 3 STRONG patterns with RSI extreme, high volume, trend alignment: WIN: +$89.48, 6.4% gain, 0h hold - Perfect confluence execution
-- Single STRONG pattern despite favorable indicators: CORRECT: Single pattern with insufficient volume, 0% historical conversion
-- Multiple MODERATE patterns with good volume: CORRECT: MODERATE patterns have 100% PASS rate, 52/52 historical
+- VOLUME_SPIKE BEARISH STRONG contrarian reversal: CORRECT — Pattern missed, price rose +22.2%. Bearish patterns can be contrarian signals
+- Multi-pattern MODERATE with strong volume: CORRECT — Sonnet wrongly passed, price rose +12.5%. Volume + oversold validates entry
+- MACD crossover WEAK with volume in sideways trend: CORRECT — Missed opportunity, price rose +11.6%. Crossover timing with RSI oversold
 

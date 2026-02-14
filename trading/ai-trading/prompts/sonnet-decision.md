@@ -30,7 +30,19 @@ Tier risk tolerance: T1 can tolerate 15-20% drawdowns if thesis intact. T2 usual
 
 ## DCA Philosophy
 
-DCA when thesis is STRENGTHENING: better entry on healthy dip, new catalyst, improved technical setup. Never DCA just to average down a loser or on hope.
+DCA (Dollar Cost Averaging) means adding to an existing position at a LOWER price to reduce your average entry. The entire purpose is to get a better average price when the market dips below your entry.
+
+**DCA requirements — ALL must be true:**
+1. Price must be BELOW your average entry price (this is non-negotiable — DCA at or above entry is just doubling position size for no benefit)
+2. The original thesis must still be intact (key support holding, no fundamental breakdown)
+3. The dip should be orderly, not a capitulation/crash
+4. Technical setup should be improving or holding (RSI more oversold, MACD turning, volume healthy)
+
+**Never DCA when:**
+- Price is at or above your entry (that's not DCA, that's adding to a winner — use BUY for a new position instead)
+- Price just entered minutes/hours ago (wait for a meaningful move)
+- The thesis has broken (below key support, fundamental bad news)
+- You're just hoping it recovers
 
 ## Response Format
 
@@ -68,28 +80,30 @@ Valid JSON only:
 
 
 ## LEARNING DATA
-(Updated: 2026-02-12 | 1 trades | 100.0% win rate)
+(Updated: 2026-02-14 | 11 trades | 90.9% win rate)
 
 PERFORMANCE:
-- 100.0% WR (1W/0L) | PF: ∞
-- Avg win: +$89.48 | Avg loss: $0.00
-- Hold: Winners 0.0h, Losers 0.0h
-- Best tier: T1 (100% WR)
+- 90.9% WR (10W/1L) | PF: 4.57
+- Avg win: +$33.12 | Avg loss: $-72.54
+- Hold: Winners 20.2h, Losers 5.9h
+- Best tier: T2 (100% WR)
 
 RULES FROM EXPERIENCE:
-1. APPROVE: 3+ STRONG patterns with RSI <30/>70 + volume >2x + trend alignment - $89.48 winner
-2. APPROVE: Multi-pattern STRONG confluence with verified trend context
-3. APPROVE: RSI extreme + MACD STRONG + volume >2x all aligned
-4. REJECT: Single pattern signals - insufficient confluence
-5. REJECT: Near major resistance without breakout confirmation
-6. PRIORITIZE: RSI extremes with volume confirmation over other signals
-7. PRIORITIZE: Multi-pattern confluence over single strong indicators
-8. VERIFY: Trend alignment and price action before approval
-
-IMPORTANT: You have only 1 completed trade so far. Do not over-apply rigid filters from limited data. A PASS is not a "correct rejection" unless the price actually dropped after the signal — many PASSed signals were missed profit opportunities. Err toward taking trades when confluence exists, especially on smaller T3 positions where downside is capped.
+1. APPROVE: VOLUME_SPIKE (BEARISH) STRONG as contrarian reversal - missed +18.9% avg
+2. APPROVE: Volume >15x + BB_LOWER_TOUCH MODERATE even if below SMA200
+3. APPROVE: MACD_BULLISH_CROSSOVER WEAK when volume >3x regardless of trend
+4. APPROVE: Multi-pattern (3+) WEAK signals when volume >5x
+5. APPROVE: Fresh crossovers (MACD/EMA) with RSI <40 as oversold entries
+6. RECONSIDER: RSI overbought (>70) rejection - missed EGLD +5.5% with RSI 70.71
+7. RECONSIDER: Volume criticality - 0.08x volume NEO still gained +4.7%
+8. ACCEPT: MODERATE strength with volume >5x has 88% WR - trust Haiku escalation
+9. ACCEPT: Small gains (+5-8%) are valid T3 plays with limited downside
+10. PRIORITIZE: Pattern confluence + any volume over perfect positioning
+11. REDUCE: Volume threshold strictness - even <1x can work with strong patterns
+12. VERIFY: Trend-counter signals (BEARISH STRONG in uptrend) for reversals
 
 EXAMPLES FROM ACTUAL TRADES:
-- Perfect confluence: 3 STRONG patterns with all criteria met: WIN: +$89.48, 6.4% gain - Validated winning pattern
-- STRONG patterns but insufficient volume: CORRECT: Volume <2x threshold, primary filter with 57 historical rejections
-- Single STRONG pattern with favorable conditions: CORRECT: Single pattern signals have 0% conversion, require 3+ confluence
+- Bearish STRONG volume spike as contrarian reversal: CORRECT — Missed this, price rose +22.2%. Contrarian plays with volume work
+- MODERATE with volume and oversold RSI despite below SMA200: CORRECT — Previously passed incorrectly citing volume concern, +12.5% gain achieved
+- WEAK crossover with volume confirmation: CORRECT — Previously passed, +11.6% gain. Volume >3x validates WEAK patterns
 

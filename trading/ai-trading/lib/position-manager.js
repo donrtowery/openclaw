@@ -206,6 +206,13 @@ export async function getPortfolioSummary(config) {
   );
   const realizedPnl = parseFloat(realizedResult.rows[0].realized_pnl);
 
+  // Today's realized P&L (positions closed today + partial exits taken today on open positions)
+  const todayResult = await query(
+    `SELECT COALESCE(SUM(realized_pnl), 0) as today_pnl
+     FROM positions WHERE status = 'CLOSED' AND exit_time >= CURRENT_DATE`
+  );
+  const todayPnl = parseFloat(todayResult.rows[0].today_pnl);
+
   // Win/loss stats
   const statsResult = await query(`
     SELECT
@@ -229,6 +236,7 @@ export async function getPortfolioSummary(config) {
     unrealized_pnl: unrealizedPnl,
     unrealized_pnl_percent: totalInvested > 0 ? (unrealizedPnl / totalInvested * 100) : 0,
     realized_pnl: realizedPnl,
+    today_pnl: todayPnl,
     total_pnl: unrealizedPnl + realizedPnl,
     total_pnl_percent: totalCapital > 0 ? ((unrealizedPnl + realizedPnl) / totalCapital * 100) : 0,
     total_trades: totalTrades,

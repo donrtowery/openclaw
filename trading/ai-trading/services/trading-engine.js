@@ -6,7 +6,8 @@ import { query } from '../db/connection.js';
 import { testConnection } from '../db/connection.js';
 import { testConnectivity, placeOrder, getCurrentPrice, getAllPrices } from '../lib/binance.js';
 import { initScanner, runScanCycle } from '../lib/scanner.js';
-import { callHaikuBatch, callSonnet } from '../lib/claude.js';
+import { callHaikuBatch, callSonnet, callSonnetExitEval } from '../lib/claude.js';
+import { runExitScan, recordExitCooldown } from '../lib/exit-scanner.js';
 import { getNewsContext } from '../lib/brave-search.js';
 import {
   openPosition, addToPosition, closePosition,
@@ -142,64 +143,64 @@ async function runCycle() {
   const scanResult = await runScanCycle(tradingConfig);
   logger.info(`[Engine] Scanned ${scanResult.symbols_scanned} symbols in ${scanResult.duration_ms}ms — ${scanResult.triggered.length} triggered`);
 
-  if (scanResult.triggered.length === 0) return;
-
   // 3. Process triggered signals through Haiku (batched)
   let signalsEscalated = 0;
   let tradesExecuted = 0;
 
-  const haikuResults = await callHaikuBatch(scanResult.triggered, tradingConfig);
+  if (scanResult.triggered.length > 0) {
+    const haikuResults = await callHaikuBatch(scanResult.triggered, tradingConfig);
 
-  // Filter to escalatable signals first, then process in parallel
-  const toEscalate = [];
-  for (let i = 0; i < scanResult.triggered.length; i++) {
-    const triggered = scanResult.triggered[i];
-    const haikuResult = haikuResults[i];
+    // Filter to escalatable signals first, then process in parallel
+    const toEscalate = [];
+    for (let i = 0; i < scanResult.triggered.length; i++) {
+      const triggered = scanResult.triggered[i];
+      const haikuResult = haikuResults[i];
 
-    if (!haikuResult || !haikuResult.escalate) {
-      logger.info(`[Engine] ${triggered.symbol}: Haiku did not escalate (${haikuResult?.strength} ${haikuResult?.signal} conf:${haikuResult?.confidence})`);
-      continue;
-    }
-
-    // Require at least 2 triggers for escalation — single-indicator signals are noise
-    if (triggered.thresholds_crossed.length < 2) {
-      logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — single trigger (${triggered.thresholds_crossed[0]})`);
-      continue;
-    }
-
-    // Skip SELL/PARTIAL_EXIT escalations when we don't hold the coin
-    if (haikuResult.signal === 'SELL') {
-      const position = await getPositionBySymbol(triggered.symbol);
-      if (!position) {
-        logger.info(`[Engine] ${triggered.symbol}: Skipped SELL escalation — no open position`);
+      if (!haikuResult || !haikuResult.escalate) {
+        logger.info(`[Engine] ${triggered.symbol}: Haiku did not escalate (${haikuResult?.strength} ${haikuResult?.signal} conf:${haikuResult?.confidence})`);
         continue;
       }
+
+      // Require at least 2 triggers for escalation — single-indicator signals are noise
+      if (triggered.thresholds_crossed.length < 2) {
+        logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — single trigger (${triggered.thresholds_crossed[0]})`);
+        continue;
+      }
+
+      // Skip SELL/PARTIAL_EXIT escalations when we don't hold the coin
+      if (haikuResult.signal === 'SELL') {
+        const position = await getPositionBySymbol(triggered.symbol);
+        if (!position) {
+          logger.info(`[Engine] ${triggered.symbol}: Skipped SELL escalation — no open position`);
+          continue;
+        }
+      }
+
+      // Sonnet dedup — skip if recently evaluated (unless it's a SELL with open position)
+      const dedupMinutes = tradingConfig.escalation.sonnet_dedup_minutes || 30;
+      const lastEval = lastSonnetEvaluation.get(triggered.symbol);
+      if (lastEval && haikuResult.signal !== 'SELL' && (Date.now() - lastEval) < dedupMinutes * 60 * 1000) {
+        const minutesAgo = ((Date.now() - lastEval) / 60000).toFixed(0);
+        logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — Sonnet evaluated ${minutesAgo}m ago (dedup: ${dedupMinutes}m)`);
+        continue;
+      }
+
+      toEscalate.push({ triggered, haikuResult });
     }
 
-    // Sonnet dedup — skip if recently evaluated (unless it's a SELL with open position)
-    const dedupMinutes = tradingConfig.escalation.sonnet_dedup_minutes || 30;
-    const lastEval = lastSonnetEvaluation.get(triggered.symbol);
-    if (lastEval && haikuResult.signal !== 'SELL' && (Date.now() - lastEval) < dedupMinutes * 60 * 1000) {
-      const minutesAgo = ((Date.now() - lastEval) / 60000).toFixed(0);
-      logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — Sonnet evaluated ${minutesAgo}m ago (dedup: ${dedupMinutes}m)`);
-      continue;
-    }
+    signalsEscalated = toEscalate.length;
 
-    toEscalate.push({ triggered, haikuResult });
-  }
-
-  signalsEscalated = toEscalate.length;
-
-  // Process all escalated signals through Sonnet in parallel
-  if (toEscalate.length > 0) {
-    const results = await Promise.allSettled(
-      toEscalate.map(({ triggered, haikuResult }) => processEscalatedSignal(triggered, haikuResult))
-    );
-    for (let i = 0; i < results.length; i++) {
-      if (results[i].status === 'fulfilled' && results[i].value.executed) {
-        tradesExecuted++;
-      } else if (results[i].status === 'rejected') {
-        logger.error(`[Engine] Error processing ${toEscalate[i].triggered.symbol}: ${results[i].reason?.message}`);
+    // Process all escalated signals through Sonnet in parallel
+    if (toEscalate.length > 0) {
+      const results = await Promise.allSettled(
+        toEscalate.map(({ triggered, haikuResult }) => processEscalatedSignal(triggered, haikuResult))
+      );
+      for (let i = 0; i < results.length; i++) {
+        if (results[i].status === 'fulfilled' && results[i].value.executed) {
+          tradesExecuted++;
+        } else if (results[i].status === 'rejected') {
+          logger.error(`[Engine] Error processing ${toEscalate[i].triggered.symbol}: ${results[i].reason?.message}`);
+        }
       }
     }
   }
@@ -207,7 +208,19 @@ async function runCycle() {
   const cycleDuration = Date.now() - cycleStart;
   logger.info(`[Engine] Cycle ${cycleCount} complete in ${cycleDuration}ms — ${signalsEscalated} escalated, ${tradesExecuted} trades`);
 
-  // 4. Hourly tasks (every 12th cycle at 5-min intervals = 1 hour)
+  // 4. Exit scanner — evaluates open positions for exit conditions
+  const exitConfig = tradingConfig.exit_scanner || {};
+  const exitInterval = exitConfig.interval_cycles || 3;
+  if (exitConfig.enabled !== false && cycleCount % exitInterval === 0) {
+    try {
+      await runExitScanCycle();
+    } catch (error) {
+      logger.error(`[Engine] Exit scan error: ${error.message}`);
+      logger.error(error.stack);
+    }
+  }
+
+  // 5. Hourly tasks (every 12th cycle at 5-min intervals = 1 hour)
   if (cycleCount % 12 === 0) {
     try {
       await runHourlyRiskCheck();
@@ -259,8 +272,24 @@ async function processEscalatedSignal(triggered, haikuResult) {
     return await executeDecision(decision, triggered);
   }
 
+  // Non-actionable (PASS/HOLD) — mark decision so it's not orphaned
+  await markDecisionExecuted(decision.decision_id, false, `Sonnet chose ${decision.action}`);
   logger.info(`[Engine] ${symbol}: Sonnet chose ${decision.action} — no execution needed`);
   return { escalated: true, executed: false };
+}
+
+// ── Mark Decision Executed ───────────────────────────────────
+
+async function markDecisionExecuted(decisionId, executed, notes) {
+  if (!decisionId) return;
+  try {
+    await query(
+      'UPDATE decisions SET executed = $1, execution_notes = $2 WHERE id = $3',
+      [executed, notes || null, decisionId]
+    );
+  } catch (error) {
+    logger.error(`[Engine] Failed to update decision #${decisionId}: ${error.message}`);
+  }
 }
 
 // ── Execute Sonnet's Decision ───────────────────────────────
@@ -269,20 +298,29 @@ async function executeDecision(decision, triggered) {
   const { symbol, tier } = triggered;
 
   try {
+    let result;
     switch (decision.action) {
       case 'BUY':
-        return await executeBuy(decision, triggered);
+        result = await executeBuy(decision, triggered);
+        break;
       case 'SELL':
       case 'PARTIAL_EXIT':
-        return await executeSell(decision, triggered);
+        result = await executeSell(decision, triggered);
+        break;
       case 'DCA':
-        return await executeDCA(decision, triggered);
+        result = await executeDCA(decision, triggered);
+        break;
       default:
         logger.warn(`[Engine] Unknown action: ${decision.action}`);
+        await markDecisionExecuted(decision.decision_id, false, `Unknown action: ${decision.action}`);
         return { escalated: true, executed: false };
     }
+
+    await markDecisionExecuted(decision.decision_id, result.executed, result.reason || null);
+    return result;
   } catch (error) {
     logger.error(`[Engine] Execution failed for ${symbol}: ${error.message}`);
+    await markDecisionExecuted(decision.decision_id, false, `Execution error: ${error.message}`);
     await queueEvent('EXECUTION_ERROR', symbol, {
       action: decision.action,
       error: error.message,
@@ -298,15 +336,17 @@ async function executeBuy(decision, triggered) {
   // Check max positions
   const openPositions = await getOpenPositions();
   if (openPositions.length >= tradingConfig.account.max_concurrent_positions) {
-    logger.warn(`[Engine] ${symbol}: BUY rejected — max positions (${openPositions.length}/${tradingConfig.account.max_concurrent_positions})`);
-    return { escalated: true, executed: false };
+    const reason = `BUY rejected — max positions (${openPositions.length}/${tradingConfig.account.max_concurrent_positions})`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
   }
 
   // Check no existing position on symbol
   const existing = await getPositionBySymbol(symbol);
   if (existing) {
-    logger.warn(`[Engine] ${symbol}: BUY rejected — already have open position #${existing.id}`);
-    return { escalated: true, executed: false };
+    const reason = `BUY rejected — already have open position #${existing.id}`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
   }
 
   // Determine position size — use Sonnet's recommendation or tier default
@@ -322,8 +362,9 @@ async function executeBuy(decision, triggered) {
   // Check available capital
   const buyPortfolio = await getCachedPortfolio();
   if (positionSizeUsd > buyPortfolio.available_capital) {
-    logger.warn(`[Engine] ${symbol}: BUY rejected — insufficient capital ($${positionSizeUsd} > $${buyPortfolio.available_capital.toFixed(2)} available)`);
-    return { escalated: true, executed: false };
+    const reason = `BUY rejected — insufficient capital ($${positionSizeUsd} > $${buyPortfolio.available_capital.toFixed(2)} available)`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
   }
 
   // Execute — use estimated quantity for order, but record actual fill values
@@ -361,8 +402,9 @@ async function executeSell(decision, triggered) {
 
   const position = await getPositionBySymbol(symbol);
   if (!position) {
-    logger.warn(`[Engine] ${symbol}: SELL rejected — no open position`);
-    return { escalated: true, executed: false };
+    const reason = 'SELL rejected — no open position';
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
   }
 
   // Determine exit percent — Sonnet may specify partial exit
@@ -410,8 +452,19 @@ async function executeDCA(decision, triggered) {
 
   const position = await getPositionBySymbol(symbol);
   if (!position) {
-    logger.warn(`[Engine] ${symbol}: DCA rejected — no open position`);
-    return { escalated: true, executed: false };
+    const reason = 'DCA rejected — no open position';
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
+  // Safety net: DCA only makes sense when price is below avg entry
+  const avgEntry = parseFloat(position.avg_entry_price);
+  const currentPrice = await getCurrentPrice(symbol);
+  const dropPercent = ((avgEntry - currentPrice) / avgEntry * 100);
+  if (dropPercent < 3) {
+    const reason = `DCA rejected — price $${currentPrice.toFixed(4)} is only ${dropPercent.toFixed(1)}% below avg entry $${avgEntry.toFixed(4)} (need ≥3% drop)`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
   }
 
   // DCA amount — use Sonnet's recommendation or tier-based default
@@ -424,16 +477,18 @@ async function executeDCA(decision, triggered) {
   if (tierConfig?.max_position_usd && (currentInvested + dcaAmountUsd) > tierConfig.max_position_usd) {
     dcaAmountUsd = tierConfig.max_position_usd - currentInvested;
     if (dcaAmountUsd <= 0) {
-      logger.warn(`[Engine] ${symbol}: DCA rejected — position already at tier max ($${currentInvested.toFixed(2)})`);
-      return { escalated: true, executed: false };
+      const reason = `DCA rejected — position already at tier max ($${currentInvested.toFixed(2)})`;
+      logger.warn(`[Engine] ${symbol}: ${reason}`);
+      return { escalated: true, executed: false, reason };
     }
   }
 
   // Check available capital
   const dcaPortfolio = await getCachedPortfolio();
   if (dcaAmountUsd > dcaPortfolio.available_capital) {
-    logger.warn(`[Engine] ${symbol}: DCA rejected — insufficient capital`);
-    return { escalated: true, executed: false };
+    const reason = 'DCA rejected — insufficient capital';
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
   }
 
   const estimatedPrice = await getCurrentPrice(symbol);
@@ -464,6 +519,95 @@ async function executeDCA(decision, triggered) {
   logger.info(`[Engine] EXECUTED DCA: ${symbol} ${fillQty.toFixed(6)} @ $${fillPrice.toFixed(2)} | new avg: $${dcaResult.newAvgEntry.toFixed(2)}`);
   sendAlert('DCA', symbol, { price: fillPrice, new_avg_entry: dcaResult.newAvgEntry, cost: fillCost }).catch(() => {});
   return { escalated: true, executed: true };
+}
+
+// ── Exit Scanner Cycle ──────────────────────────────────────
+
+async function runExitScanCycle() {
+  const exitStart = Date.now();
+  logger.info('[Engine] Running exit scan...');
+
+  const exitResult = await runExitScan(tradingConfig);
+
+  if (exitResult.candidates.length === 0) {
+    logger.info(`[Engine] Exit scan: ${exitResult.positions_checked} positions checked, none above threshold`);
+    return;
+  }
+
+  let exitsExecuted = 0;
+
+  for (const candidate of exitResult.candidates) {
+    const { position, analysis, urgency, currentPrice } = candidate;
+    const coinName = symbolNames.get(position.symbol) || position.symbol.replace('USDT', '');
+
+    logger.info(`[Engine] Exit eval: ${position.symbol} urgency ${urgency.score} — ${urgency.factors.join(', ')}`);
+
+    // Update lastSonnetEvaluation to prevent entry scanner from double-evaluating
+    lastSonnetEvaluation.set(position.symbol, Date.now());
+
+    // Gather context
+    const [news, cachedPortfolio, learningRules] = await Promise.all([
+      getNewsContext(position.symbol, coinName),
+      getCachedPortfolio(),
+      getLearningRules(),
+    ]);
+
+    const cb = await checkCircuitBreaker();
+    const portfolio = {
+      ...cachedPortfolio,
+      circuit_breaker_active: cb.is_active,
+      consecutive_losses: cb.consecutive_losses,
+    };
+
+    // Call Sonnet exit evaluation (skip Haiku)
+    const decision = await callSonnetExitEval(
+      position, analysis, urgency, news, portfolio, learningRules, tradingConfig
+    );
+
+    if (['SELL', 'PARTIAL_EXIT'].includes(decision.action)) {
+      const exitPercent = decision.position_details?.exit_percent || 100;
+      const isPartial = exitPercent < 99;
+
+      const triggered = { symbol: position.symbol, tier: position.tier };
+      const result = await executeSell(decision, triggered);
+
+      if (result.executed) {
+        exitsExecuted++;
+        await queueEvent('EXIT_SCANNER_ACTION', position.symbol, {
+          action: decision.action,
+          urgency_score: urgency.score,
+          urgency_factors: urgency.factors,
+          confidence: decision.confidence,
+          reasoning: decision.reasoning,
+        });
+        sendAlert('SELL', position.symbol, {
+          price: currentPrice,
+          pnl_percent: urgency.pnl_percent,
+          reasoning: `[ExitScanner] ${(decision.reasoning || '').substring(0, 80)}`,
+        }).catch(() => {});
+
+        // Partial exit: skip cooldown so remaining position gets re-evaluated next cycle
+        // Full exit: record cooldown (position is closed, but prevents stale evaluations)
+        if (isPartial) {
+          logger.info(`[Engine] ${position.symbol}: Partial exit — skipping cooldown for follow-up evaluation`);
+        } else {
+          recordExitCooldown(position.symbol);
+        }
+      } else {
+        recordExitCooldown(position.symbol);
+      }
+
+      await markDecisionExecuted(decision.decision_id, result.executed, result.reason || null);
+    } else {
+      // HOLD — record full cooldown
+      recordExitCooldown(position.symbol);
+      await markDecisionExecuted(decision.decision_id, false, `Exit eval: ${decision.action}`);
+      logger.info(`[Engine] ${position.symbol}: Exit eval — Sonnet chose ${decision.action}`);
+    }
+  }
+
+  const exitDuration = Date.now() - exitStart;
+  logger.info(`[Engine] Exit scan complete in ${exitDuration}ms — ${exitsExecuted} exit(s) executed`);
 }
 
 // ── Hourly Risk Check ───────────────────────────────────────
