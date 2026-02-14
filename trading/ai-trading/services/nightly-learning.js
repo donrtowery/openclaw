@@ -238,6 +238,7 @@ async function calculateStats() {
       AND d.created_at > NOW() - INTERVAL '30 days'
       AND d.created_at < NOW() - INTERVAL '24 hours'
       AND sub.max_price_24h IS NOT NULL
+      AND s.price > 0
       AND ((sub.max_price_24h - s.price) / s.price * 100) > 2.0
     ORDER BY potential_gain_pct DESC
     LIMIT 20
