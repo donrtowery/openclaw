@@ -32,7 +32,8 @@ async function run() {
   const stats = await calculateStats();
 
   logger.info(`[Learning] Stats: ${stats.total_trades} trades, ${stats.win_rate.toFixed(1)}% win rate, $${stats.total_pnl.toFixed(2)} total P&L`);
-  logger.info(`[Learning] Missed opportunities: ${stats.missed_opportunities.length} non-escalated, ${stats.missed_pass_decisions.length} Sonnet PASS`);
+  logger.info(`[Learning] Missed BUY opportunities: ${stats.missed_opportunities.length} non-escalated, ${stats.missed_pass_decisions.length} Sonnet PASS`);
+  logger.info(`[Learning] Missed SELL opportunities: ${stats.missed_sell_opportunities.length} non-escalated, ${stats.missed_sell_pass_decisions.length} Sonnet PASS`);
 
   const totalEscalated = stats.escalation_accuracy.reduce((sum, r) => sum + parseInt(r.total_escalated), 0);
   const totalTraded = stats.escalation_accuracy.reduce((sum, r) => sum + parseInt(r.led_to_trade), 0);
@@ -215,6 +216,31 @@ async function calculateStats() {
     LIMIT 20
   `);
 
+  // Missed SELL opportunities: SELL signals not escalated where price dropped >2% in 24h
+  const missedSellResult = await query(`
+    SELECT s.symbol, s.signal_type, s.strength, s.confidence,
+      s.price as signal_price, s.created_at,
+      sub.min_price_24h,
+      CASE WHEN s.price > 0
+        THEN ((s.price - sub.min_price_24h) / s.price * 100)
+        ELSE 0
+      END as potential_drop_pct
+    FROM signals s
+    LEFT JOIN LATERAL (
+      SELECT MIN(i.price) as min_price_24h
+      FROM indicator_snapshots i
+      WHERE i.symbol = s.symbol
+        AND i.created_at > s.created_at
+        AND i.created_at < s.created_at + INTERVAL '24 hours'
+    ) sub ON true
+    WHERE s.escalated = false AND s.signal_type = 'SELL'
+      AND s.created_at > NOW() - INTERVAL '30 days'
+      AND s.created_at < NOW() - INTERVAL '24 hours'
+      AND sub.min_price_24h IS NOT NULL
+    ORDER BY potential_drop_pct DESC
+    LIMIT 20
+  `);
+
   // Missed PASS decisions: Sonnet passed on BUY signals where price rose >2% in 24h
   const missedPassResult = await query(`
     SELECT d.symbol, d.confidence as sonnet_conf, d.reasoning,
@@ -241,6 +267,35 @@ async function calculateStats() {
       AND s.price > 0
       AND ((sub.max_price_24h - s.price) / s.price * 100) > 2.0
     ORDER BY potential_gain_pct DESC
+    LIMIT 20
+  `);
+
+  // Missed SELL PASS decisions: Sonnet passed on SELL signals where price dropped >2% in 24h
+  const missedSellPassResult = await query(`
+    SELECT d.symbol, d.confidence as sonnet_conf, d.reasoning,
+      s.strength as haiku_strength, s.confidence as haiku_conf,
+      s.price as signal_price, s.created_at,
+      sub.min_price_24h,
+      CASE WHEN s.price > 0
+        THEN ((s.price - sub.min_price_24h) / s.price * 100)
+        ELSE 0
+      END as potential_drop_pct
+    FROM decisions d
+    JOIN signals s ON d.signal_id = s.id
+    LEFT JOIN LATERAL (
+      SELECT MIN(i.price) as min_price_24h
+      FROM indicator_snapshots i
+      WHERE i.symbol = s.symbol
+        AND i.created_at > s.created_at
+        AND i.created_at < s.created_at + INTERVAL '24 hours'
+    ) sub ON true
+    WHERE d.action = 'PASS' AND s.signal_type = 'SELL'
+      AND d.created_at > NOW() - INTERVAL '30 days'
+      AND d.created_at < NOW() - INTERVAL '24 hours'
+      AND sub.min_price_24h IS NOT NULL
+      AND s.price > 0
+      AND ((s.price - sub.min_price_24h) / s.price * 100) > 2.0
+    ORDER BY potential_drop_pct DESC
     LIMIT 20
   `);
 
@@ -343,6 +398,8 @@ async function calculateStats() {
     pattern_stats: patternResult.rows,
     missed_opportunities: missedResult.rows,
     missed_pass_decisions: missedPassResult.rows,
+    missed_sell_opportunities: missedSellResult.rows,
+    missed_sell_pass_decisions: missedSellPassResult.rows,
     escalation_accuracy: escalationAccuracyResult.rows,
     pass_patterns: passPatternResult.rows,
     missed_escalation_patterns: missedEscalationResult.rows,
@@ -447,6 +504,25 @@ async function callSonnetForAnalysis(stats) {
     prompt += '\n';
   }
 
+  // Missed SELL opportunities (non-escalated SELL signals where price dropped)
+  const missedSellNonEscalated = stats.missed_sell_opportunities.filter(m => parseFloat(m.potential_drop_pct) > 2);
+  if (missedSellNonEscalated.length > 0) {
+    prompt += `MISSED SELL (NOT ESCALATED — price dropped >2% in 24h):\n`;
+    for (const m of missedSellNonEscalated.slice(0, 10)) {
+      prompt += `${m.symbol} ${m.strength} conf:${m.confidence} @ $${parseFloat(m.signal_price).toFixed(4)} → min $${parseFloat(m.min_price_24h).toFixed(4)} (-${parseFloat(m.potential_drop_pct).toFixed(1)}%)\n`;
+    }
+    prompt += '\n';
+  }
+
+  // Missed SELL opportunities (Sonnet PASS decisions where price dropped)
+  if (stats.missed_sell_pass_decisions.length > 0) {
+    prompt += `MISSED SELL (SONNET PASSED — price dropped >2% in 24h):\n`;
+    for (const m of stats.missed_sell_pass_decisions.slice(0, 10)) {
+      prompt += `${m.symbol} Sonnet conf:${m.sonnet_conf} @ $${parseFloat(m.signal_price).toFixed(4)} → min $${parseFloat(m.min_price_24h).toFixed(4)} (-${parseFloat(m.potential_drop_pct).toFixed(1)}%) | Reason: ${(m.reasoning || '').substring(0, 100)}\n`;
+    }
+    prompt += '\n';
+  }
+
   // ── BILATERAL ACCURACY FRAMING ──
   // Show Sonnet's own accuracy prominently so the model sees both sides
   const correctPass = parseInt(stats.pass_outcome_summary.correct_pass) || 0;
@@ -500,6 +576,16 @@ async function callSonnetForAnalysis(stats) {
     prompt += '\n';
   }
 
+  // Sonnet's MISSED SELL decisions — framed as SONNET SELL ERRORS
+  if (stats.missed_sell_pass_decisions.length > 0) {
+    prompt += `SONNET SELL ERRORS — MISSED SELL PASS DECISIONS (Sonnet was wrong to pass these SELL signals):\n`;
+    for (const m of stats.missed_sell_pass_decisions.slice(0, 10)) {
+      prompt += `${m.symbol} Haiku:${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed (conf:${m.sonnet_conf}) → price dropped -${parseFloat(m.potential_drop_pct).toFixed(1)}%\n`;
+      prompt += `  Sonnet's (wrong) reasoning: ${(m.reasoning || '').substring(0, 120)}\n`;
+    }
+    prompt += '\n';
+  }
+
   // Patterns Haiku missed
   if (stats.missed_escalation_patterns.length > 0) {
     prompt += `PATTERNS HAIKU MISSED (not escalated but moved favorably):\n`;
@@ -529,7 +615,8 @@ async function callSonnetForAnalysis(stats) {
   prompt += `- MISSED_OPPORTUNITY PASSes mean Sonnet was wrong, not Haiku — do NOT penalize Haiku for these\n`;
   prompt += `- Avoid duplicate rules that say the same thing in different words\n`;
   prompt += `- NEVER generate blanket rejection rules like "REJECT all MODERATE" — a Sonnet PASS is NOT proof a pattern is bad. Only reject patterns where the PRICE ACTUALLY DROPPED (confirmed CORRECT_PASS outcomes)\n`;
-  prompt += `- Even modest gains matter and compound over time. Small T3 position sizes limit downside risk, so the bar for entry should be lower, not higher\n\n`;
+  prompt += `- Even modest gains matter and compound over time. Small T3 position sizes limit downside risk, so the bar for entry should be lower, not higher\n`;
+  prompt += `- Generate SELL-side rules too: Haiku should escalate SELL signals for existing positions when indicators suggest a drop, and Sonnet should act on them. Missed sell signals represent unrealized loss avoidance.\n\n`;
 
   if (hasTrades) {
     prompt += `Focus on: >70% WR patterns (promote), <40% WR patterns (warn), missed opportunities (both non-escalated and Sonnet PASS), optimal hold times, DCA effectiveness.`;
@@ -654,6 +741,26 @@ async function updatePromptFiles(stats, analysis) {
       haikuSection += '\n';
     }
     haikuSection += `Keep escalating signals like these — Sonnet needs to see them.\n\n`;
+  }
+
+  // Missed SELL signals — Haiku didn't escalate SELL signals but price dropped
+  if (stats.missed_sell_pass_decisions.length > 0) {
+    haikuSection += `MISSED SELL SIGNALS (you didn't escalate these SELL signals but price dropped):\n`;
+    for (const m of stats.missed_sell_pass_decisions.slice(0, 5)) {
+      haikuSection += `- ${m.symbol} ${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed → price dropped -${parseFloat(m.potential_drop_pct).toFixed(1)}%`;
+      if (m.reasoning) haikuSection += ` | Sonnet's reason: ${m.reasoning.substring(0, 80)}`;
+      haikuSection += '\n';
+    }
+    haikuSection += `Escalate SELL signals for existing positions — missed sells mean unrealized losses.\n\n`;
+  } else if (stats.missed_sell_opportunities.length > 0) {
+    const missedSellFiltered = stats.missed_sell_opportunities.filter(m => parseFloat(m.potential_drop_pct) > 2);
+    if (missedSellFiltered.length > 0) {
+      haikuSection += `MISSED SELL SIGNALS (you didn't escalate these SELL signals but price dropped):\n`;
+      for (const m of missedSellFiltered.slice(0, 5)) {
+        haikuSection += `- ${m.symbol} ${m.strength} conf:${m.confidence} @ $${parseFloat(m.signal_price).toFixed(4)} → min $${parseFloat(m.min_price_24h).toFixed(4)} (-${parseFloat(m.potential_drop_pct).toFixed(1)}%)\n`;
+      }
+      haikuSection += `Start escalating SELL signals like these — missed sells mean unrealized losses.\n\n`;
+    }
   }
 
   // Haiku rules: combine haiku_rules + haiku_escalation_calibration, cap at 15

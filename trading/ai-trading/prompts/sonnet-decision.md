@@ -80,30 +80,31 @@ Valid JSON only:
 
 
 ## LEARNING DATA
-(Updated: 2026-02-17 | 16 trades | 68.8% win rate)
+(Updated: 2026-02-17 | 17 trades | 64.7% win rate)
 
 PERFORMANCE:
-- 68.8% WR (11W/4L) | PF: 1.84
-- Avg win: +$32.17 | Avg loss: $-47.95
-- Hold: Winners 18.5h, Losers 21.0h
-- Best tier: T2 (83% WR)
+- 64.7% WR (11W/5L) | PF: 1.63
+- Avg win: +$32.17 | Avg loss: $-43.51
+- Hold: Winners 18.5h, Losers 26.8h
+- Best tier: T2 (71% WR)
 
 RULES FROM EXPERIENCE:
-1. APPROVE: MODERATE strength Haiku signals — 89% WR, T3 position sizing limits risk
-2. APPROVE: RSI >70 with bullish momentum — 17 missed at +9.2%, contrary to intuition works
-3. APPROVE: BB_UPPER_TOUCH with MACD/EMA support — continuation not exhaustion, 12 missed at +9.0%
-4. APPROVE: STRONG Haiku escalations — 50% WR acceptable for high-conviction plays
-5. APPROVE: Multi-pattern WEAK with volume >3x — sufficient confluence for T3 entry
-6. REDUCE: Volume requirement strictness — 2-3x sufficient for multi-pattern setups, not 5x+
-7. REDUCE: 'Late entry' concerns — missed 10 opportunities at +16.5% avg, momentum persists
-8. REDUCE: 'Overbought exhaustion' rejections — RSI 70-80 with volume produced +19.1% avg
-9. STOP: Rejecting signals solely on 'insufficient volume' — 289 uses suggests over-filtering
-10. STOP: Dismissing BB_UPPER_TOUCH as resistance — 9 missed at +9.4%, context matters
-11. TRUST: Medium confidence (0.70-0.80) signals — 75% WR, 12 trades validate this zone
-12. RECONSIDER: High confidence (>0.80) rejections — only 33% WR suggests over-conservative filtering
+1. APPROVE: Medium confidence (0.70-0.80) — 69% WR, 13 trades validate optimal zone
+2. APPROVE: MODERATE Haiku strength — 80% WR proven, T3 sizing limits risk
+3. APPROVE: RSI >70 with bullish momentum — continuation not exhaustion, 17 missed at +9.2%
+4. APPROVE: BB_UPPER_TOUCH with MACD/EMA support — continuation validated, 12 missed at +9.0%
+5. APPROVE: Multi-pattern WEAK with volume >2x — sufficient confluence
+6. APPROVE: SELL signals MODERATE strength on existing positions — exit at 10-15% gains per hold time data
+7. REDUCE: Volume requirement strictness — 2-3x sufficient for multi-pattern setups
+8. REDUCE: 'Late entry' concerns — 10 opportunities missed at +16.5% avg, momentum persists
+9. REDUCE: 'Overbought exhaustion' rejections — RSI 70-80 with volume produced gains
+10. STOP: Rejecting signals solely on 'insufficient volume' when multi-pattern confluence exists
+11. STOP: Dismissing BB_UPPER_TOUCH as resistance — context-dependent continuation signal
+12. RECONSIDER: High confidence (>0.80) rejections — only 33% WR suggests over-filtering
+13. RECONSIDER: Portfolio constraints blocking T3 entries — position limit shouldn't override strong technicals
 
 EXAMPLES FROM ACTUAL TRADES:
-- MODERATE Haiku with RSI overbought — trust momentum continuation: Price rose +19.1% — trusting overbought momentum validated
-- BB_UPPER_TOUCH with EMA crossover — continuation not resistance: Price rose +19.9% — BB upper is not resistance in trending markets
-- Multi-pattern WEAK with volume — sufficient for T3 entry: Price rose +22.2% — confluence matters more than individual strength
+- MODERATE multi-pattern — approve per 80% WR data: Rose +30.3% — correct approval of proven MODERATE pattern
+- STRONG overbought with volume — continuation not exhaustion: Rose +20.4% — rejecting as 'late entry' was error, momentum persisted
+- WEAK extreme RSI — momentum extreme predicts move: Rose +20% — extreme indicators with massive volume create short-term momentum
 
