@@ -80,30 +80,30 @@ Valid JSON only:
 
 
 ## LEARNING DATA
-(Updated: 2026-02-14 | 11 trades | 90.9% win rate)
+(Updated: 2026-02-17 | 16 trades | 68.8% win rate)
 
 PERFORMANCE:
-- 90.9% WR (10W/1L) | PF: 4.57
-- Avg win: +$33.12 | Avg loss: $-72.54
-- Hold: Winners 20.2h, Losers 5.9h
-- Best tier: T2 (100% WR)
+- 68.8% WR (11W/4L) | PF: 1.84
+- Avg win: +$32.17 | Avg loss: $-47.95
+- Hold: Winners 18.5h, Losers 21.0h
+- Best tier: T2 (83% WR)
 
 RULES FROM EXPERIENCE:
-1. APPROVE: VOLUME_SPIKE (BEARISH) STRONG as contrarian reversal - missed +18.9% avg
-2. APPROVE: Volume >15x + BB_LOWER_TOUCH MODERATE even if below SMA200
-3. APPROVE: MACD_BULLISH_CROSSOVER WEAK when volume >3x regardless of trend
-4. APPROVE: Multi-pattern (3+) WEAK signals when volume >5x
-5. APPROVE: Fresh crossovers (MACD/EMA) with RSI <40 as oversold entries
-6. RECONSIDER: RSI overbought (>70) rejection - missed EGLD +5.5% with RSI 70.71
-7. RECONSIDER: Volume criticality - 0.08x volume NEO still gained +4.7%
-8. ACCEPT: MODERATE strength with volume >5x has 88% WR - trust Haiku escalation
-9. ACCEPT: Small gains (+5-8%) are valid T3 plays with limited downside
-10. PRIORITIZE: Pattern confluence + any volume over perfect positioning
-11. REDUCE: Volume threshold strictness - even <1x can work with strong patterns
-12. VERIFY: Trend-counter signals (BEARISH STRONG in uptrend) for reversals
+1. APPROVE: MODERATE strength Haiku signals — 89% WR, T3 position sizing limits risk
+2. APPROVE: RSI >70 with bullish momentum — 17 missed at +9.2%, contrary to intuition works
+3. APPROVE: BB_UPPER_TOUCH with MACD/EMA support — continuation not exhaustion, 12 missed at +9.0%
+4. APPROVE: STRONG Haiku escalations — 50% WR acceptable for high-conviction plays
+5. APPROVE: Multi-pattern WEAK with volume >3x — sufficient confluence for T3 entry
+6. REDUCE: Volume requirement strictness — 2-3x sufficient for multi-pattern setups, not 5x+
+7. REDUCE: 'Late entry' concerns — missed 10 opportunities at +16.5% avg, momentum persists
+8. REDUCE: 'Overbought exhaustion' rejections — RSI 70-80 with volume produced +19.1% avg
+9. STOP: Rejecting signals solely on 'insufficient volume' — 289 uses suggests over-filtering
+10. STOP: Dismissing BB_UPPER_TOUCH as resistance — 9 missed at +9.4%, context matters
+11. TRUST: Medium confidence (0.70-0.80) signals — 75% WR, 12 trades validate this zone
+12. RECONSIDER: High confidence (>0.80) rejections — only 33% WR suggests over-conservative filtering
 
 EXAMPLES FROM ACTUAL TRADES:
-- Bearish STRONG volume spike as contrarian reversal: CORRECT — Missed this, price rose +22.2%. Contrarian plays with volume work
-- MODERATE with volume and oversold RSI despite below SMA200: CORRECT — Previously passed incorrectly citing volume concern, +12.5% gain achieved
-- WEAK crossover with volume confirmation: CORRECT — Previously passed, +11.6% gain. Volume >3x validates WEAK patterns
+- MODERATE Haiku with RSI overbought — trust momentum continuation: Price rose +19.1% — trusting overbought momentum validated
+- BB_UPPER_TOUCH with EMA crossover — continuation not resistance: Price rose +19.9% — BB upper is not resistance in trending markets
+- Multi-pattern WEAK with volume — sufficient for T3 entry: Price rose +22.2% — confluence matters more than individual strength
 

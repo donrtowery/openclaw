@@ -123,7 +123,7 @@ async function runCycle() {
   // 1. Check circuit breaker
   const cb = await checkCircuitBreaker();
   if (cb.is_active) {
-    logger.warn(`[Engine] Circuit breaker ACTIVE (${cb.consecutive_losses} losses). Skipping cycle. Reactivates: ${cb.deactivates_at}`);
+    logger.warn(`[Engine] Circuit breaker ACTIVE (${cb.consecutive_losses} losses). Skipping cycle. Reactivates: ${cb.reactivates_at}`);
     return;
   }
 
@@ -161,10 +161,14 @@ async function runCycle() {
         continue;
       }
 
-      // Require at least 2 triggers for escalation — single-indicator signals are noise
+      // Require at least 2 triggers — unless Haiku is STRONG with high confidence
       if (triggered.thresholds_crossed.length < 2) {
-        logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — single trigger (${triggered.thresholds_crossed[0]})`);
-        continue;
+        if (haikuResult.strength === 'STRONG' && haikuResult.confidence >= 0.7) {
+          logger.info(`[Engine] ${triggered.symbol}: Single trigger but Haiku STRONG conf:${haikuResult.confidence} — allowing escalation`);
+        } else {
+          logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — single trigger (${triggered.thresholds_crossed[0]})`);
+          continue;
+        }
       }
 
       // Skip SELL/PARTIAL_EXIT escalations when we don't hold the coin
@@ -192,8 +196,31 @@ async function runCycle() {
 
     // Process all escalated signals through Sonnet in parallel
     if (toEscalate.length > 0) {
+      // Pre-fetch shared context once (not per-signal)
+      const [cachedPortfolio, learningRules, cb] = await Promise.all([
+        getCachedPortfolio(),
+        getLearningRules(),
+        checkCircuitBreaker(),
+      ]);
+      const sharedPortfolio = {
+        ...cachedPortfolio,
+        circuit_breaker_active: cb.is_active,
+        consecutive_losses: cb.consecutive_losses,
+      };
+
+      // Pre-fetch news for all escalated symbols in parallel
+      const newsResults = await Promise.allSettled(
+        toEscalate.map(({ triggered }) => {
+          const coinName = symbolNames.get(triggered.symbol) || triggered.symbol.replace('USDT', '');
+          return getNewsContext(triggered.symbol, coinName);
+        })
+      );
+
       const results = await Promise.allSettled(
-        toEscalate.map(({ triggered, haikuResult }) => processEscalatedSignal(triggered, haikuResult))
+        toEscalate.map(({ triggered, haikuResult }, i) => {
+          const news = newsResults[i].status === 'fulfilled' ? newsResults[i].value : 'No recent news available.';
+          return processEscalatedSignal(triggered, haikuResult, news, sharedPortfolio, learningRules);
+        })
       );
       for (let i = 0; i < results.length; i++) {
         if (results[i].status === 'fulfilled' && results[i].value.executed) {
@@ -242,29 +269,13 @@ async function runCycle() {
 
 // ── Process Escalated Signal (Haiku → Sonnet → Execute) ─────
 
-async function processEscalatedSignal(triggered, haikuResult) {
+async function processEscalatedSignal(triggered, haikuResult, news, portfolio, learningRules) {
   const { symbol, tier } = triggered;
-  const coinName = symbolNames.get(symbol) || symbol.replace('USDT', '');
 
   logger.info(`[Engine] ${symbol}: Escalated to Sonnet (${haikuResult.strength} ${haikuResult.signal} conf:${haikuResult.confidence})`);
   lastSonnetEvaluation.set(symbol, Date.now());
 
-  // Gather context for Sonnet
-  const [news, cachedPortfolio, learningRules] = await Promise.all([
-    getNewsContext(symbol, coinName),
-    getCachedPortfolio(),
-    getLearningRules(),
-  ]);
-
-  // Spread to avoid mutating the shared cache (parallel Sonnet calls)
-  const cb = await checkCircuitBreaker();
-  const portfolio = {
-    ...cachedPortfolio,
-    circuit_breaker_active: cb.is_active,
-    consecutive_losses: cb.consecutive_losses,
-  };
-
-  // Call Sonnet
+  // Call Sonnet (context pre-fetched by caller)
   const decision = await callSonnet(haikuResult, triggered, news, portfolio, learningRules, tradingConfig);
 
   // Execute if actionable
@@ -534,35 +545,57 @@ async function runExitScanCycle() {
     return;
   }
 
+  // Pre-fetch shared context once (not per-candidate)
+  const [cachedPortfolio, learningRules, cb] = await Promise.all([
+    getCachedPortfolio(),
+    getLearningRules(),
+    checkCircuitBreaker(),
+  ]);
+
+  const portfolio = {
+    ...cachedPortfolio,
+    circuit_breaker_active: cb.is_active,
+    consecutive_losses: cb.consecutive_losses,
+  };
+
+  // Pre-fetch news for all candidates in parallel
+  const newsResults = await Promise.allSettled(
+    exitResult.candidates.map(c => {
+      const coinName = symbolNames.get(c.position.symbol) || c.position.symbol.replace('USDT', '');
+      return getNewsContext(c.position.symbol, coinName);
+    })
+  );
+
+  // Log all candidates and mark dedup before parallel Sonnet calls
+  for (const candidate of exitResult.candidates) {
+    logger.info(`[Engine] Exit eval: ${candidate.position.symbol} urgency ${candidate.urgency.score} — ${candidate.urgency.factors.join(', ')}`);
+    lastSonnetEvaluation.set(candidate.position.symbol, Date.now());
+  }
+
+  // Fire all Sonnet exit evals in parallel for better prompt cache hits
+  const sonnetResults = await Promise.allSettled(
+    exitResult.candidates.map((candidate, i) => {
+      const news = newsResults[i].status === 'fulfilled' ? newsResults[i].value : 'No recent news available.';
+      return callSonnetExitEval(
+        candidate.position, candidate.analysis, candidate.urgency,
+        news, portfolio, learningRules, tradingConfig
+      );
+    })
+  );
+
+  // Process results sequentially (executions need ordering for portfolio consistency)
   let exitsExecuted = 0;
 
-  for (const candidate of exitResult.candidates) {
-    const { position, analysis, urgency, currentPrice } = candidate;
-    const coinName = symbolNames.get(position.symbol) || position.symbol.replace('USDT', '');
+  for (let i = 0; i < exitResult.candidates.length; i++) {
+    const { position, urgency, currentPrice } = exitResult.candidates[i];
 
-    logger.info(`[Engine] Exit eval: ${position.symbol} urgency ${urgency.score} — ${urgency.factors.join(', ')}`);
+    if (sonnetResults[i].status === 'rejected') {
+      logger.error(`[Engine] Exit eval failed for ${position.symbol}: ${sonnetResults[i].reason?.message}`);
+      recordExitCooldown(position.symbol);
+      continue;
+    }
 
-    // Update lastSonnetEvaluation to prevent entry scanner from double-evaluating
-    lastSonnetEvaluation.set(position.symbol, Date.now());
-
-    // Gather context
-    const [news, cachedPortfolio, learningRules] = await Promise.all([
-      getNewsContext(position.symbol, coinName),
-      getCachedPortfolio(),
-      getLearningRules(),
-    ]);
-
-    const cb = await checkCircuitBreaker();
-    const portfolio = {
-      ...cachedPortfolio,
-      circuit_breaker_active: cb.is_active,
-      consecutive_losses: cb.consecutive_losses,
-    };
-
-    // Call Sonnet exit evaluation (skip Haiku)
-    const decision = await callSonnetExitEval(
-      position, analysis, urgency, news, portfolio, learningRules, tradingConfig
-    );
+    const decision = sonnetResults[i].value;
 
     if (['SELL', 'PARTIAL_EXIT'].includes(decision.action)) {
       const exitPercent = decision.position_details?.exit_percent || 100;
@@ -586,8 +619,6 @@ async function runExitScanCycle() {
           reasoning: `[ExitScanner] ${(decision.reasoning || '').substring(0, 80)}`,
         }).catch(() => {});
 
-        // Partial exit: skip cooldown so remaining position gets re-evaluated next cycle
-        // Full exit: record cooldown (position is closed, but prevents stale evaluations)
         if (isPartial) {
           logger.info(`[Engine] ${position.symbol}: Partial exit — skipping cooldown for follow-up evaluation`);
         } else {
@@ -599,7 +630,6 @@ async function runExitScanCycle() {
 
       await markDecisionExecuted(decision.decision_id, result.executed, result.reason || null);
     } else {
-      // HOLD — record full cooldown
       recordExitCooldown(position.symbol);
       await markDecisionExecuted(decision.decision_id, false, `Exit eval: ${decision.action}`);
       logger.info(`[Engine] ${position.symbol}: Exit eval — Sonnet chose ${decision.action}`);
@@ -665,18 +695,18 @@ async function checkCircuitBreaker() {
   const cb = result.rows[0];
 
   // Auto-deactivate if cooldown expired
-  if (cb.is_active && cb.deactivates_at && new Date(cb.deactivates_at) <= new Date()) {
+  if (cb.is_active && cb.reactivates_at && new Date(cb.reactivates_at) <= new Date()) {
     await query(`
       UPDATE circuit_breaker SET is_active = false, updated_at = NOW() WHERE id = $1
     `, [cb.id]);
     logger.info('[Engine] Circuit breaker auto-deactivated (cooldown expired)');
-    return { is_active: false, consecutive_losses: cb.consecutive_losses, deactivates_at: null };
+    return { is_active: false, consecutive_losses: cb.consecutive_losses, reactivates_at: null };
   }
 
   return {
     is_active: cb.is_active,
     consecutive_losses: cb.consecutive_losses,
-    deactivates_at: cb.deactivates_at,
+    reactivates_at: cb.reactivates_at,
   };
 }
 
@@ -697,7 +727,7 @@ async function recordLoss(symbol, pnl) {
     await query(`
       UPDATE circuit_breaker
       SET is_active = true, activated_at = NOW(),
-          deactivates_at = NOW() + INTERVAL '${cooldownHours} hours'
+          reactivates_at = NOW() + INTERVAL '${cooldownHours} hours'
       WHERE id = 1
     `);
     logger.warn(`[Engine] CIRCUIT BREAKER ACTIVATED — ${losses} consecutive losses. Pausing for ${cooldownHours}h.`);
@@ -717,9 +747,14 @@ async function resetCircuitBreaker() {
   await query('UPDATE circuit_breaker SET consecutive_losses = 0, updated_at = NOW() WHERE id = 1');
 }
 
-// ── Learning Rules ──────────────────────────────────────────
+// ── Learning Rules (cached 1hr — only changes nightly) ──────
+
+let learningRulesCache = { data: null, expiry: 0 };
 
 async function getLearningRules() {
+  if (learningRulesCache.data && Date.now() < learningRulesCache.expiry) {
+    return learningRulesCache.data;
+  }
   const result = await query(`
     SELECT * FROM learning_rules
     WHERE is_active = true
@@ -727,6 +762,7 @@ async function getLearningRules() {
     ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
     LIMIT 5
   `);
+  learningRulesCache = { data: result.rows, expiry: Date.now() + 60 * 60 * 1000 };
   return result.rows;
 }
 

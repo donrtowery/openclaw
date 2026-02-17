@@ -10,15 +10,34 @@ import { getOpenPositions, getClosedPositions, getPortfolioSummary, closePositio
 import { getPendingEvents, markEventsPosted, getEventStats, queueEvent } from '../lib/events.js';
 import { getCurrentPrice, placeOrder } from '../lib/binance.js';
 import { getNewsContext } from '../lib/brave-search.js';
-import { anthropic, SONNET_MODEL, extractJSON } from '../lib/claude.js';
+import { anthropic, SONNET_MODEL, HAIKU_MODEL, extractJSON } from '../lib/claude.js';
+import { analyzeSymbol, formatForClaude } from '../lib/technical-analysis.js';
 import logger from '../lib/logger.js';
 
 const execAsync = promisify(exec);
+
+// Cache the exit-eval prompt for analyze_position (same prompt the exit scanner uses)
+let analyzePromptCache = null;
+function getAnalyzeSystemPrompt() {
+  if (!analyzePromptCache) {
+    analyzePromptCache = readFileSync('prompts/sonnet-exit-eval.md', 'utf8');
+  }
+  return analyzePromptCache;
+}
 
 let config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
 
 const app = express();
 app.use(express.json());
+
+// ── CORS ─────────────────────────────────────────────────────
+app.use((_req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+  if (_req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 const PORT = process.env.DASHBOARD_API_PORT || 3000;
 const HOST = process.env.DASHBOARD_API_HOST || '0.0.0.0';
@@ -205,16 +224,37 @@ async function handleAction(action, params) {
          FROM positions WHERE status = 'CLOSED' ORDER BY exit_time DESC LIMIT 5`
       );
 
-      let chatPrompt = `You are OpenClaw, an AI crypto trading assistant. Answer the user's question concisely (2-3 paragraphs max) based on the portfolio data below.\n\n`;
-      chatPrompt += `User question: ${question}\n\n`;
-      chatPrompt += `Portfolio: ${JSON.stringify(portfolio)}\n\n`;
-      if (positions.length > 0) chatPrompt += `Open positions: ${JSON.stringify(positions)}\n\n`;
-      chatPrompt += `Recent closed trades: ${JSON.stringify(recentTrades.rows)}\n`;
+      // Compact formatting instead of raw JSON.stringify
+      let userMsg = `${question}\n\n## Portfolio\n`;
+      userMsg += `Capital: $${portfolio.available_capital.toFixed(0)} avail / $${(portfolio.total_invested + portfolio.available_capital).toFixed(0)} total\n`;
+      userMsg += `Positions: ${portfolio.open_count}/${portfolio.max_positions} | Unrealized: ${portfolio.unrealized_pnl_percent?.toFixed(2) || 0}%\n`;
+      userMsg += `Realized: $${portfolio.realized_pnl?.toFixed(2)} | Today: $${portfolio.today_pnl?.toFixed(2)} | Win rate: ${portfolio.win_rate?.toFixed(1)}% (${portfolio.total_trades} trades)\n`;
+
+      if (positions.length > 0) {
+        userMsg += `\n## Open Positions\n`;
+        for (const p of positions) {
+          const entry = parseFloat(p.avg_entry_price);
+          const pnl = p.live_pnl_percent != null ? p.live_pnl_percent : 0;
+          userMsg += `${p.symbol} T${p.tier}: entry $${entry.toFixed(4)} | ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}% | $${parseFloat(p.total_cost).toFixed(0)} invested\n`;
+        }
+      }
+
+      if (recentTrades.rows.length > 0) {
+        userMsg += `\n## Recent Closed\n`;
+        for (const t of recentTrades.rows) {
+          userMsg += `${t.symbol}: ${parseFloat(t.realized_pnl) >= 0 ? '+' : ''}$${parseFloat(t.realized_pnl).toFixed(2)} (${parseFloat(t.realized_pnl_percent).toFixed(2)}%)\n`;
+        }
+      }
 
       const message = await anthropic.messages.create({
-        model: SONNET_MODEL,
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: chatPrompt }],
+        model: HAIKU_MODEL,
+        max_tokens: 512,
+        system: [{
+          type: 'text',
+          text: 'You are OpenClaw, an AI crypto trading assistant. Answer concisely (2-3 paragraphs max) based on the portfolio data provided. Be direct and actionable.',
+          cache_control: { type: 'ephemeral' },
+        }],
+        messages: [{ role: 'user', content: userMsg }],
       });
 
       return { data: { answer: message.content[0].text } };
@@ -362,49 +402,46 @@ async function handleAction(action, params) {
       const position = await getPositionBySymbol(symbol);
       if (!position) return { error: `No open position for ${symbol}` };
 
-      // Get latest indicators
-      const snapResult = await query(
-        'SELECT * FROM indicator_snapshots WHERE symbol = $1 ORDER BY created_at DESC LIMIT 1',
-        [symbol]
-      );
-      const snapshot = snapResult.rows[0] || null;
-
       // Get coin name for news search
       const symResult = await query('SELECT name FROM symbols WHERE symbol = $1', [symbol]);
       const coinName = symResult.rows[0]?.name || symbol.replace('USDT', '');
 
-      const newsContext = await getNewsContext(symbol, coinName);
+      // Fetch fresh live indicators + news in parallel
+      const [liveAnalysis, newsContext] = await Promise.all([
+        analyzeSymbol(symbol),
+        getNewsContext(symbol, coinName),
+      ]);
 
       const avgEntry = parseFloat(position.avg_entry_price);
-      const currentPrice = snapshot ? parseFloat(snapshot.price) : await getCurrentPrice(symbol);
+      const currentPrice = liveAnalysis.price;
       const pnlPercent = avgEntry > 0 ? ((currentPrice - avgEntry) / avgEntry * 100) : 0;
       const holdHours = ((Date.now() - new Date(position.entry_time).getTime()) / (1000 * 60 * 60));
+      const maxGain = parseFloat(position.max_unrealized_gain_percent || 0);
 
-      let analysisPrompt = `Analyze this open crypto position and provide a recommendation.\n\n`;
-      analysisPrompt += `## Position\n`;
-      analysisPrompt += `Symbol: ${symbol}\n`;
-      analysisPrompt += `Entry: $${avgEntry.toFixed(2)} | Current: $${currentPrice.toFixed(2)}\n`;
+      // Compact prompt using formatForClaude (same format as exit scanner)
+      let analysisPrompt = `## Position\n`;
+      analysisPrompt += `Symbol: ${symbol} (Tier ${position.tier})\n`;
+      analysisPrompt += `Entry: $${avgEntry.toFixed(4)} | Current: $${currentPrice.toFixed(4)}\n`;
       analysisPrompt += `P&L: ${pnlPercent.toFixed(2)}% | Hold time: ${holdHours.toFixed(1)}h\n`;
-      analysisPrompt += `Size: ${parseFloat(position.current_size).toFixed(6)} | Invested: $${parseFloat(position.total_cost).toFixed(2)}\n\n`;
-
-      if (snapshot) {
-        analysisPrompt += `## Technical Indicators\n`;
-        if (snapshot.rsi) analysisPrompt += `RSI: ${snapshot.rsi}\n`;
-        if (snapshot.macd_histogram) analysisPrompt += `MACD histogram: ${snapshot.macd_histogram}\n`;
-        if (snapshot.sma50) analysisPrompt += `SMA50: ${snapshot.sma50}\n`;
-        if (snapshot.sma200) analysisPrompt += `SMA200: ${snapshot.sma200}\n`;
-        if (snapshot.bb_upper) analysisPrompt += `BB: ${snapshot.bb_lower} / ${snapshot.bb_middle} / ${snapshot.bb_upper}\n`;
-        if (snapshot.volume_ratio) analysisPrompt += `Volume ratio: ${snapshot.volume_ratio}\n`;
-        if (snapshot.trend) analysisPrompt += `Trend: ${snapshot.trend}\n`;
-        analysisPrompt += '\n';
-      }
-
-      analysisPrompt += `## News\n${newsContext}\n\n`;
+      analysisPrompt += `Size: ${parseFloat(position.current_size).toFixed(6)} | Invested: $${parseFloat(position.total_cost).toFixed(2)}\n`;
+      analysisPrompt += `Peak gain: ${maxGain.toFixed(2)}% | Drawdown from peak: ${(maxGain - pnlPercent).toFixed(2)}%\n\n`;
+      analysisPrompt += `## Technical Indicators\n`;
+      analysisPrompt += formatForClaude(liveAnalysis);
+      if (liveAnalysis.rsi) analysisPrompt += `\nRSI: ${liveAnalysis.rsi.value}`;
+      if (liveAnalysis.macd) analysisPrompt += `\nMACD histogram: ${liveAnalysis.macd.histogram}, crossover: ${liveAnalysis.macd.crossover}`;
+      if (liveAnalysis.volume) analysisPrompt += `\nVolume ratio: ${liveAnalysis.volume.ratio}x`;
+      analysisPrompt += `\n\n## News\n${newsContext}\n\n`;
       analysisPrompt += `Respond in JSON: { "recommendation": "HOLD"|"SELL"|"DCA", "confidence": 0.0-1.0, "reasoning": "...", "key_levels": { "support": number, "resistance": number }, "risk_factors": ["..."] }`;
 
+      // Use the exit-eval system prompt (same one used by exit scanner — benefits from shared cache)
       const message = await anthropic.messages.create({
         model: SONNET_MODEL,
-        max_tokens: 1024,
+        max_tokens: 768,
+        system: [{
+          type: 'text',
+          text: getAnalyzeSystemPrompt(),
+          cache_control: { type: 'ephemeral' },
+        }],
         messages: [{ role: 'user', content: analysisPrompt }],
       });
 

@@ -47,58 +47,54 @@ Valid JSON only:
 
 
 ## LEARNING DATA
-(Updated: 2026-02-14 | 11 trades | 90.9% win rate)
+(Updated: 2026-02-17 | 16 trades | 68.8% win rate)
 
 PERFORMANCE:
-- 90.9% WR (10W/1L) | PF: 4.57
-- Avg win: +$33.12 | Avg loss: $-72.54
-- Hold: Winners 20.2h, Losers 5.9h
-- Best tier: T2 (100% WR)
+- 68.8% WR (11W/4L) | PF: 1.84
+- Avg win: +$32.17 | Avg loss: $-47.95
+- Hold: Winners 18.5h, Losers 21.0h
+- Best tier: T2 (83% WR)
 
 YOUR ESCALATION ACCURACY:
-- Total: 161 escalated → 38 traded, 123 PASSed by Sonnet
-- MODERATE: 119 escalated, 23% converted
-- STRONG: 39 escalated, 23% converted
-- WEAK: 3 escalated, 67% converted
+- Total: 469 escalated → 154 traded, 315 PASSed by Sonnet
+- MODERATE: 263 escalated, 35% converted
+- STRONG: 152 escalated, 26% converted
+- WEAK: 54 escalated, 41% converted
 
 SONNET PASS OUTCOMES:
-- CORRECT_PASS: 46 (Sonnet was right to pass)
-- MISSED_OPPORTUNITY: 35 (price moved favorably after pass)
+- CORRECT_PASS: 121 (Sonnet was right to pass)
+- MISSED_OPPORTUNITY: 94 (price moved favorably after pass)
 
 STOP ESCALATING (confirmed unprofitable — price didn't move after >70% of these):
+- BB_UPPER_TOUCH (BULLISH) STRONG: 83.3% confirmed unprofitable (6 evaluated)
 - VOLUME_SPIKE (BULLISH) MODERATE: 71.4% confirmed unprofitable (7 evaluated)
 
 START ESCALATING (you filtered these out but price moved favorably):
+- MACD_BEARISH_CROSSOVER+TREND_TURNED_BEARISH (BEARISH) WEAK: 3 missed, avg +35.9% gain
 - VOLUME_SPIKE (BEARISH) STRONG: 2 missed, avg +18.9% gain
+- MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) WEAK: 8 missed, avg +13.1% gain
+- MACD_BEARISH_CROSSOVER (BULLISH) WEAK: 4 missed, avg +12.5% gain
 - VOLUME_SPIKE+BB_LOWER_TOUCH (BULLISH) MODERATE: 2 missed, avg +11.4% gain
-- MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) WEAK: 4 missed, avg +10.4% gain
-- MACD_BULLISH_CROSSOVER (SIDEWAYS) WEAK: 3 missed, avg +6.9% gain
-- EMA_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) WEAK: 4 missed, avg +6.6% gain
 
 SONNET WAS WRONG (these PASSed signals SHOULD have been escalated — Sonnet erred, not you):
-- SANDUSDT MODERATE conf:0.680 → Sonnet passed → price rose +12.5% | Sonnet's reason: SAND shows textbook oversold signals (RSI 27.87, BB lower touch, at SMA200 suppo
-- AXSUSDT MODERATE conf:0.620 → Sonnet passed → price rose +11.6% | Sonnet's reason: Fresh MACD bullish crossover at RSI 33 (oversold entry zone) with price reclaimi
-- ZRXUSDT MODERATE conf:0.680 → Sonnet passed → price rose +10.0% | Sonnet's reason: ZRX shows interesting volume (23.5x spike) and BB lower touch, but the setup is 
-- NMRUSDT STRONG conf:0.820 → Sonnet passed → price rose +8.0% | Sonnet's reason: Despite 5-pattern confluence and 24x volume spike meeting our escalation criteri
-- ATOMUSDT STRONG conf:0.780 → Sonnet passed → price rose +7.5% | Sonnet's reason: Already in position at exactly current price ($1.99) entered just 12 minutes ago
+- 1INCHUSDT MODERATE conf:0.680 → Sonnet passed → price rose +66.7% | Sonnet's reason: Portfolio constraint (10/10 positions, only $300 available) makes T3 entries unv
+- COMPUSDT MODERATE conf:0.680 → Sonnet passed → price rose +36.5% | Sonnet's reason: Triple pattern confluence (MACD + EMA crossovers + trend turn) looks promising o
+- ZECUSDT STRONG conf:0.780 → Sonnet passed → price rose +20.4% | Sonnet's reason: RSI 74.38 is extreme overbought territory with price already touching BB upper b
+- KAVAUSDT STRONG conf:0.720 → Sonnet passed → price rose +20.0% | Sonnet's reason: RSI 99.64 is extreme overbought — this isn't momentum continuation, it's parabol
+- KAVAUSDT WEAK conf:0.580 → Sonnet passed → price rose +20.0% | Sonnet's reason: RSI 99.64 is extreme overbought — not 'healthy momentum' but parabolic exhaustio
 Keep escalating signals like these — Sonnet needs to see them.
 
 RULES FROM EXPERIENCE:
-1. ESCALATE: VOLUME_SPIKE (BEARISH) STRONG regardless of trend direction (avg +18.9% missed)
-2. ESCALATE: VOLUME_SPIKE+BB_LOWER_TOUCH MODERATE when volume >15x
-3. ESCALATE: MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH WEAK when RSI <40
-4. ESCALATE: Volume >20x + BB_LOWER_TOUCH regardless of SMA200 distance
-5. ESCALATE: 5+ pattern confluence + volume >15x even if WEAK/MODERATE
-6. SKIP: Volume <1.5x unless RSI extreme (<25 or >75)
-7. SKIP: Isolated MACD_BEARISH patterns without volume confirmation >5x
-8. START: VOLUME_SPIKE (BEARISH) STRONG - contrarian reversal plays work (2 missed, +18.9%)
-9. START: EMA_BULLISH_CROSSOVER+TREND_TURNED_BULLISH WEAK with any volume confirmation
-10. CONTINUE: MODERATE patterns with volume >5x - 88% WR validates approach
-11. CONTINUE: Multi-pattern confluence (5+) - strong historical performance
-12. MAINTAIN: 23% conversion rate is healthy - do not over-restrict
+1. ESCALATE: VOLUME_SPIKE (BULLISH) MODERATE/WEAK — 15 missed at +9.1% avg, proven conversion
+2. ESCALATE: RSI_OVERBOUGHT (BULLISH) MODERATE/WEAK — 17 missed at +9.2% avg, momentum continuation works
+3. ESCALATE: MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) WEAK with volume >2x — 8 missed at +13.1%
+4. ESCALATE: Multi-pattern confluence (3+) WEAK with volume >3x — proven conversion
+5. SKIP: Single-pattern WEAK with volume <2x and no RSI extreme (<30 or >70)
+6. SKIP: TRAP signals unless volume >10x — historically unreliable without extreme confirmation
+7. START: BB_UPPER_TOUCH (BULLISH) at all strengths — continuation signal, not exhaustion
 
 EXAMPLES FROM ACTUAL TRADES:
-- VOLUME_SPIKE BEARISH STRONG contrarian reversal: CORRECT — Pattern missed, price rose +22.2%. Bearish patterns can be contrarian signals
-- Multi-pattern MODERATE with strong volume: CORRECT — Sonnet wrongly passed, price rose +12.5%. Volume + oversold validates entry
-- MACD crossover WEAK with volume in sideways trend: CORRECT — Missed opportunity, price rose +11.6%. Crossover timing with RSI oversold
+- MODERATE MACD+EMA confluence with volume — should escalate: Sonnet passed but price rose +36.5% — Haiku was correct to escalate
+- STRONG RSI overbought with BB_UPPER_TOUCH — momentum continuation: Sonnet passed citing 'exhaustion' but price rose +20.4% — trust momentum
+- WEAK multi-pattern with high volume — sufficient confluence: Price rose +22.2% — volume + confluence overcomes WEAK strength
 
