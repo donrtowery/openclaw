@@ -10,7 +10,7 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const HAIKU_MODEL = process.env.HAIKU_MODEL || 'claude-haiku-4-5-20251001';
+export const HAIKU_MODEL = process.env.HAIKU_MODEL || 'claude-haiku-4-5-20251001';
 export const SONNET_MODEL = process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250929';
 
 export { anthropic };
@@ -207,7 +207,7 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
 
     const message = await anthropic.messages.create({
       model: SONNET_MODEL,
-      max_tokens: 2048,
+      max_tokens: 1024,
       system: [{
         type: 'text',
         text: systemPrompt,
@@ -273,7 +273,7 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
 
     const message = await anthropic.messages.create({
       model: SONNET_MODEL,
-      max_tokens: 1536,
+      max_tokens: 768,
       system: [{
         type: 'text',
         text: systemPrompt,
@@ -385,17 +385,7 @@ function formatExitEvalInput(position, analysis, urgency, newsContext, portfolio
   }
   msg += '\n';
 
-  if (learningRules?.length > 0) {
-    msg += `## Lessons from Past Trades\n`;
-    for (const rule of learningRules.slice(0, 5)) {
-      msg += `- ${rule.rule_text}`;
-      if (rule.win_rate && rule.sample_size) {
-        msg += ` (${rule.win_rate}% win rate, ${rule.sample_size} trades)`;
-      }
-      msg += '\n';
-    }
-    msg += '\n';
-  }
+  // Learning rules are in the cached system prompt — no need to duplicate here
 
   return msg;
 }
@@ -524,18 +514,7 @@ function formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioS
   }
   msg += '\n';
 
-  // Learning rules (top 5, brief)
-  if (learningRules?.length > 0) {
-    msg += `## Lessons from Past Trades\n`;
-    for (const rule of learningRules.slice(0, 5)) {
-      msg += `- ${rule.rule_text}`;
-      if (rule.win_rate && rule.sample_size) {
-        msg += ` (${rule.win_rate}% win rate, ${rule.sample_size} trades)`;
-      }
-      msg += '\n';
-    }
-    msg += '\n';
-  }
+  // Learning rules are in the cached system prompt (sonnet-decision.md) — no need to duplicate here
 
   return msg;
 }
@@ -604,7 +583,7 @@ async function logSignal(triggeredSignal, haikuResponse, tokensUsed) {
     analysis.support?.[0] ?? null,
     analysis.resistance?.[0] ?? null,
     analysis.trend?.direction ?? null,
-    haikuResponse.signal || 'NONE',
+    ['BUY', 'SELL', 'NONE'].includes(haikuResponse.signal?.toUpperCase()) ? haikuResponse.signal.toUpperCase() : 'NONE',
     haikuResponse.strength || 'WEAK',
     haikuResponse.confidence || 0,
     JSON.stringify(haikuResponse.reasons || []),
