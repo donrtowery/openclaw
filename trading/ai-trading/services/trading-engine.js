@@ -151,6 +151,9 @@ async function runCycle() {
     const haikuResults = await callHaikuBatch(scanResult.triggered, tradingConfig);
 
     // Filter to escalatable signals first, then process in parallel
+    const openPositions = await getOpenPositions();
+    const atMaxPositions = openPositions.length >= tradingConfig.account.max_concurrent_positions;
+
     const toEscalate = [];
     for (let i = 0; i < scanResult.triggered.length; i++) {
       const triggered = scanResult.triggered[i];
@@ -178,6 +181,12 @@ async function runCycle() {
           logger.info(`[Engine] ${triggered.symbol}: Skipped SELL escalation — no open position`);
           continue;
         }
+      }
+
+      // Skip BUY escalations when portfolio is at max positions
+      if (haikuResult.signal === 'BUY' && atMaxPositions) {
+        logger.info(`[Engine] ${triggered.symbol}: Skipped BUY escalation — portfolio at max positions (${openPositions.length}/${tradingConfig.account.max_concurrent_positions})`);
+        continue;
       }
 
       // Sonnet dedup — skip if recently evaluated (unless it's a SELL with open position)
@@ -208,11 +217,12 @@ async function runCycle() {
         consecutive_losses: cb.consecutive_losses,
       };
 
-      // Pre-fetch news for all escalated symbols in parallel
+      // Pre-fetch news for all escalated symbols in parallel (tier-based item count)
       const newsResults = await Promise.allSettled(
         toEscalate.map(({ triggered }) => {
           const coinName = symbolNames.get(triggered.symbol) || triggered.symbol.replace('USDT', '');
-          return getNewsContext(triggered.symbol, coinName);
+          const newsItems = triggered.tier === 1 ? 3 : triggered.tier === 2 ? 2 : 1;
+          return getNewsContext(triggered.symbol, coinName, newsItems);
         })
       );
 
@@ -558,11 +568,12 @@ async function runExitScanCycle() {
     consecutive_losses: cb.consecutive_losses,
   };
 
-  // Pre-fetch news for all candidates in parallel
+  // Pre-fetch news for all candidates in parallel (tier-based item count)
   const newsResults = await Promise.allSettled(
     exitResult.candidates.map(c => {
       const coinName = symbolNames.get(c.position.symbol) || c.position.symbol.replace('USDT', '');
-      return getNewsContext(c.position.symbol, coinName);
+      const newsItems = c.position.tier === 1 ? 3 : c.position.tier === 2 ? 2 : 1;
+      return getNewsContext(c.position.symbol, coinName, newsItems);
     })
   );
 

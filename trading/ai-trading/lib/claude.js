@@ -365,12 +365,7 @@ function formatExitEvalInput(position, analysis, urgency, newsContext, portfolio
 
   msg += `## Technical Indicators\n`;
   msg += formatForClaude(analysis);
-  msg += '\n';
-  if (analysis.rsi) msg += `RSI: ${analysis.rsi.value}\n`;
-  if (analysis.macd) msg += `MACD histogram: ${analysis.macd.histogram}, crossover: ${analysis.macd.crossover}\n`;
-  if (analysis.volume) msg += `Volume ratio: ${analysis.volume.ratio}x, trend: ${analysis.volume.trend}\n`;
-  if (analysis.sma?.sma200 != null) msg += `SMA200: ${analysis.sma.sma200}\n`;
-  msg += '\n';
+  msg += '\n\n';
 
   msg += `## News Context\n`;
   msg += newsContext || 'No recent news available.\n';
@@ -450,14 +445,9 @@ function formatHaikuInput(triggeredSignal) {
   let msg = `${symbol} — Tier ${tier}\n`;
   msg += `Triggered: ${thresholds_crossed.join(', ')}\n\n`;
 
-  // Compact technical data from proven v1 formatter
+  // Compact technical data from proven v1 formatter (includes RSI, MACD, SMA200)
   msg += formatForClaude(analysis);
   msg += '\n';
-
-  // Add raw numbers Haiku needs that formatForClaude compresses
-  if (analysis.rsi) msg += `RSI: ${analysis.rsi.value}\n`;
-  if (analysis.macd) msg += `MACD histogram: ${analysis.macd.histogram}, crossover: ${analysis.macd.crossover}\n`;
-  if (analysis.sma?.sma200 != null) msg += `SMA200: ${analysis.sma.sma200}\n`;
 
   if (has_position && position) {
     const entryPrice = parseFloat(position.entry_price || position.avg_entry_price);
