@@ -475,9 +475,17 @@ async function callSonnetForAnalysis(stats) {
   const hasTrades = stats.total_trades > 0;
 
   // Adapt prompt framing based on what data exists
-  let prompt;
+  let prompt = `═══ TRADING PHILOSOPHY — READ BEFORE ANALYZING ═══\n\n`;
+  prompt += `This is a conservative, utility-focused crypto trading bot. Follow these principles:\n\n`;
+  prompt += `1. QUALITY OVER QUANTITY: We would rather miss 10 mediocre trades than take 1 bad one. A 60% win rate with fewer trades beats a 45% win rate with many trades.\n`;
+  prompt += `2. T1 AND T2 ONLY: We only trade Tier 1 (blue chip infrastructure: BTC, ETH, SOL, etc.) and Tier 2 (established utility coins). No speculative or meme coins. Do not generate rules referencing T3 or speculative assets.\n`;
+  prompt += `3. LOSING TRADES MATTER AS MUCH AS MISSED OPPORTUNITIES: Every "START escalating" rule must be balanced by awareness of what similar setups have lost. Do not create one-sided pressure to trade more.\n`;
+  prompt += `4. MULTI-INDICATOR CONFIRMATION REQUIRED: Single-indicator signals are noise in crypto. Require 2-3 aligned indicators before escalating or approving.\n`;
+  prompt += `5. PATIENCE PAYS: Hold winners, cut losers early. If losers are held longer than winners, that is the #1 problem to fix.\n`;
+  prompt += `6. ESCALATION IS EXPENSIVE: Every escalation costs a Sonnet API call. Target ${ESC_CONV_TARGET_MIN}-${ESC_CONV_TARGET_MAX}% conversion rate. Over-escalation wastes money and creates noise.\n\n`;
+
   if (hasTrades) {
-    prompt = `Analyze this trading performance data and generate updated rules and examples.\n\n`;
+    prompt += `Analyze this trading performance data and generate updated rules and examples.\n\n`;
     prompt += `PERFORMANCE (${stats.total_trades} trades):\n`;
     prompt += `Win rate: ${stats.win_rate.toFixed(1)}% (${stats.wins}W/${stats.losses}L)\n`;
     prompt += `P&L: $${stats.total_pnl.toFixed(2)} | Avg win: +$${stats.avg_win.toFixed(2)} | Avg loss: $${stats.avg_loss.toFixed(2)}\n`;
@@ -683,7 +691,7 @@ async function callSonnetForAnalysis(stats) {
     const message = await anthropic.messages.create({
       model: SONNET_MODEL,
       max_tokens: 8192,
-      system: [{ type: 'text', text: 'You are a trading performance analyst. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: 'You are a conservative trading performance analyst for a utility-focused crypto bot. Quality over quantity — never bias toward more trading. Losing trades matter as much as missed opportunities. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: prompt }],
     });
 
