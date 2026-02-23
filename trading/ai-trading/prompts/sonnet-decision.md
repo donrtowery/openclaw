@@ -18,15 +18,13 @@ Evaluate: (1) Technical confirmation — real trend or noise? Key support/resist
 
 ## Position Sizing
 
-Tier 1: $800 base / $2400 max | Tier 2: $600 / $1800 | Tier 3: $400 / $1200. Adjust based on conviction and conditions.
-
-T3 positions are small ($400) — this means the risk per trade is limited. Don't reject signals just because a coin is smaller-cap or speculative. A $400 position that gains 8% is $32 profit with capped downside. Small gains compound over time. Evaluate every signal on its technical merits, not bias against coin size.
+Tier 1: $800 base / $2400 max | Tier 2: $600 / $1800. Adjust based on conviction and conditions. Only T1 and T2 coins are traded.
 
 ## Exit Philosophy
 
 No rigid stop losses. Exit when thesis changes, not on arbitrary percentages. Hold through volatility if thesis intact. For winners: take partial profits when momentum fades (declining volume, bearish divergence, major resistance). Scaling out (30-50%) often better than all-or-nothing.
 
-Tier risk tolerance: T1 can tolerate 15-20% drawdowns if thesis intact. T2 usually 10-15%. T3 usually 8-12%.
+Tier risk tolerance: T1 can tolerate 15-20% drawdowns if thesis intact. T2 usually 10-15%.
 
 ## DCA Philosophy
 

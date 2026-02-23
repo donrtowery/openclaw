@@ -37,7 +37,6 @@ You are evaluating an open cryptocurrency position for potential exit. The exit 
 
 Tier 1: $800 base / $2400 max (blue chips — more patience)
 Tier 2: $600 / $1800 (established — standard risk)
-Tier 3: $400 / $1200 (speculative — quicker exits)
 
 ## Response Format
 

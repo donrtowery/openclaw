@@ -18,10 +18,10 @@
       "note": "Guidelines for Sonnet — standard risk management"
     },
     "tier_3": {
-      "label": "Growth & Speculative (RENDER, FLOW, EGLD, LTC, BCH, ETC, IMX, GALA, OCEAN, FET, SUSHI, etc.)",
-      "base_position_usd": 400,
-      "max_position_usd": 1200,
-      "note": "Guidelines for Sonnet — moderate conviction required"
+      "label": "DISABLED — Tier 3 coins deactivated (too volatile for training)",
+      "base_position_usd": 0,
+      "max_position_usd": 0,
+      "note": "Tier 3 deactivated in DB. Only T1 and T2 are traded."
     }
   },
   "scanner": {
