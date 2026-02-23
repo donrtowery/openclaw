@@ -77,6 +77,10 @@
   },
   "learning": {
     "snapshot_retention_days": 30,
+    "missed_opportunity_threshold_pct": 5.0,
+    "sustained_candles_required": 6,
+    "escalation_conversion_target_min": 15,
+    "escalation_conversion_target_max": 30,
     "note": "Nightly Sonnet analysis of closed trades to update prompts"
   }
 }

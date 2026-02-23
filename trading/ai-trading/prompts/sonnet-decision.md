@@ -79,32 +79,5 @@ Valid JSON only:
 **Intelligent DCA:** DOT — Entry $7.50, now $7.12 (-5.1%). But RSI 29 (more extreme than entry), SMA200 holding at $6.80, orderly decline. Thesis strengthening. DCA $600, new avg $7.31, conf 0.70. Exit if breaks $6.80.
 
 
-## LEARNING DATA
-(Updated: 2026-02-17 | 17 trades | 64.7% win rate)
 
-PERFORMANCE:
-- 64.7% WR (11W/5L) | PF: 1.63
-- Avg win: +$32.17 | Avg loss: $-43.51
-- Hold: Winners 18.5h, Losers 26.8h
-- Best tier: T2 (71% WR)
-
-RULES FROM EXPERIENCE:
-1. APPROVE: Medium confidence (0.70-0.80) — 69% WR, 13 trades validate optimal zone
-2. APPROVE: MODERATE Haiku strength — 80% WR proven, T3 sizing limits risk
-3. APPROVE: RSI >70 with bullish momentum — continuation not exhaustion, 17 missed at +9.2%
-4. APPROVE: BB_UPPER_TOUCH with MACD/EMA support — continuation validated, 12 missed at +9.0%
-5. APPROVE: Multi-pattern WEAK with volume >2x — sufficient confluence
-6. APPROVE: SELL signals MODERATE strength on existing positions — exit at 10-15% gains per hold time data
-7. REDUCE: Volume requirement strictness — 2-3x sufficient for multi-pattern setups
-8. REDUCE: 'Late entry' concerns — 10 opportunities missed at +16.5% avg, momentum persists
-9. REDUCE: 'Overbought exhaustion' rejections — RSI 70-80 with volume produced gains
-10. STOP: Rejecting signals solely on 'insufficient volume' when multi-pattern confluence exists
-11. STOP: Dismissing BB_UPPER_TOUCH as resistance — context-dependent continuation signal
-12. RECONSIDER: High confidence (>0.80) rejections — only 33% WR suggests over-filtering
-13. RECONSIDER: Portfolio constraints blocking T3 entries — position limit shouldn't override strong technicals
-
-EXAMPLES FROM ACTUAL TRADES:
-- MODERATE multi-pattern — approve per 80% WR data: Rose +30.3% — correct approval of proven MODERATE pattern
-- STRONG overbought with volume — continuation not exhaustion: Rose +20.4% — rejecting as 'late entry' was error, momentum persisted
-- WEAK extreme RSI — momentum extreme predicts move: Rose +20% — extreme indicators with massive volume create short-term momentum
 

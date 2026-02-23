@@ -70,12 +70,5 @@ Valid JSON only:
 
 **Hold Through Drawdown:** SOL — Peak was +12%, now +8% (4% drawdown). RSI 58, MACD still positive, above SMA50. Normal consolidation after a run — not a reversal. Support at SMA50 holding. HOLD, conf 0.75. Exit if breaks SMA50 or MACD crosses bearish.
 
-## LEARNING DATA
-(Updated: 2026-02-15 | 12 trades | 91.7% win rate)
 
-EXIT RULES FROM EXPERIENCE:
-1. RSI overbought alone is NOT exit criteria in strong trends — hold if MACD bullish and volume confirms
-2. T3 positions: take profits at +5-8% — small gains compound, don't be greedy
-3. Drawdown from peak >10%: exit or reduce — trend has likely reversed
-4. Hold through 3-5% drawdowns if key support levels intact
-5. Partial exit (50%) when uncertain — lock half, let rest run
+
