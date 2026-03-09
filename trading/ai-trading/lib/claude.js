@@ -211,7 +211,8 @@ export async function callHaikuBatch(triggeredSignals, config) {
     const output = [];
     for (let i = 0; i < triggeredSignals.length; i++) {
       const sig = triggeredSignals[i];
-      const result = results[i] || {
+      // Match by symbol first (handles out-of-order responses), fall back to index
+      const result = results.find(r => r.symbol === sig.symbol) || results[i] || {
         symbol: sig.symbol, signal: 'NONE', strength: 'WEAK',
         escalate: false, confidence: 0, reasons: ['No response for this signal'], concerns: [],
       };
@@ -378,6 +379,9 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
     // Enforce confidence safety net — check before remapping PARTIAL_EXIT
     parsed = enforceConfidenceThresholds(parsed, config);
 
+    // Preserve original action for logging before remapping
+    const originalAction = parsed.action;
+
     // Map PARTIAL_EXIT to SELL after threshold check (so partial exits use exit threshold, not sell threshold)
     if (parsed.action === 'PARTIAL_EXIT') {
       parsed.action = 'SELL';
@@ -391,8 +395,8 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
     // Log signal with EXIT_SCANNER trigger
     const signalId = await logExitSignal(position, analysis, urgency);
 
-    // Log decision
-    const decisionId = await logDecision(signalId, parsed, userMessage, inputTokens + outputTokens);
+    // Log decision with original action so learning system sees PARTIAL_EXIT vs SELL accurately
+    const decisionId = await logDecision(signalId, { ...parsed, action: originalAction }, userMessage, inputTokens + outputTokens);
 
     logger.info(`[Sonnet-Exit] ${position.symbol}: ${parsed.action} conf:${parsed.confidence}`);
     logger.info(`[Sonnet-Exit] Reasoning: ${(parsed.reasoning || '').substring(0, 150)}...`);
@@ -626,9 +630,10 @@ function enforceConfidenceThresholds(decision, config) {
     decision.action = 'HOLD';
   }
 
-  // PARTIAL_EXIT uses a lower threshold than full SELL (less risky action)
-  if (decision.action === 'PARTIAL_EXIT' && decision.confidence < (thresholds.sonnet_minimum_for_exit - 0.10)) {
-    logger.warn(`[Sonnet] PARTIAL_EXIT confidence ${decision.confidence} < ${(thresholds.sonnet_minimum_for_exit - 0.10).toFixed(2)}, downgrading to HOLD`);
+  // PARTIAL_EXIT uses a fixed lower threshold (less risky than full SELL)
+  const partialExitThreshold = 0.50;
+  if (decision.action === 'PARTIAL_EXIT' && decision.confidence < partialExitThreshold) {
+    logger.warn(`[Sonnet] PARTIAL_EXIT confidence ${decision.confidence} < ${partialExitThreshold}, downgrading to HOLD`);
     decision.action = 'HOLD';
   }
 

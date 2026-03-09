@@ -165,19 +165,33 @@ export async function placeOrder(symbol, side, quantity, price = null) {
     return mockOrder;
   }
 
-  // Real order
+  // Real order — round quantity to exchange LOT_SIZE step
+  const stepSize = await getStepSize(symbol);
+  const roundedQty = roundToStepSize(quantity, stepSize);
+  if (roundedQty <= 0) {
+    throw new Error(`Order quantity ${quantity} rounds to 0 for ${symbol} (step: ${stepSize})`);
+  }
+
   const params = {
     symbol,
     side,
     type: 'MARKET',
-    quantity: quantity.toFixed(8),
+    quantity: String(roundedQty),
   };
 
   logger.info(`[Binance] REAL TRADE: ${side} ${quantity} ${symbol}`);
   const result = await request('/api/v3/order', params, 'POST', true);
 
+  // Validate order was actually filled
+  if (result.status !== 'FILLED' && result.status !== 'PARTIALLY_FILLED') {
+    throw new Error(`Order ${result.status}: ${result.orderId} for ${symbol}`);
+  }
+  if (parseFloat(result.executedQty) === 0) {
+    throw new Error(`Order filled 0 quantity: ${result.orderId} for ${symbol}`);
+  }
+
   // Normalize Binance API string responses to numbers for consistent downstream handling
-  const executedQty = parseFloat(result.executedQty) || quantity;
+  const executedQty = parseFloat(result.executedQty);
   const cummulativeQuoteQty = parseFloat(result.cummulativeQuoteQty) || 0;
   // Compute fill price from actual fills (more accurate than reported price for market orders)
   const fillPrice = cummulativeQuoteQty > 0 ? cummulativeQuoteQty / executedQty : parseFloat(result.price) || 0;
@@ -188,6 +202,33 @@ export async function placeOrder(symbol, side, quantity, price = null) {
     executedQty,
     cummulativeQuoteQty,
   };
+}
+
+// ── LOT_SIZE cache for real order compliance ────────────────
+let exchangeInfoCache = null;
+let exchangeInfoExpiry = 0;
+
+async function getStepSize(symbol) {
+  if (!exchangeInfoCache || Date.now() > exchangeInfoExpiry) {
+    const info = await request('/api/v3/exchangeInfo');
+    exchangeInfoCache = {};
+    for (const s of info.symbols) {
+      const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
+      if (lotSize) {
+        exchangeInfoCache[s.symbol] = parseFloat(lotSize.stepSize);
+      }
+    }
+    exchangeInfoExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24h cache
+  }
+  return exchangeInfoCache[symbol] || 0.00000001;
+}
+
+function roundToStepSize(quantity, stepSize) {
+  if (stepSize <= 0) return quantity;
+  // Compute decimal places from step size to avoid floating point drift
+  const decimals = Math.max(0, -Math.floor(Math.log10(stepSize)));
+  const rounded = Math.floor(quantity / stepSize) * stepSize;
+  return parseFloat(rounded.toFixed(decimals));
 }
 
 /**

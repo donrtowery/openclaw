@@ -74,7 +74,10 @@ export async function addToPosition(positionId, dcaPrice, dcaSize, dcaCost, reas
     if (newTotalSize <= 0) throw new Error(`Invalid DCA: size would become ${newTotalSize}`);
 
     const newTotalCost = oldCost + dcaCostWithFees;
-    const newAvgEntry = newTotalCost / newTotalSize;
+    // Compute avg entry from raw costs (excluding fees) to avoid inflating P&L basis
+    // total_cost includes fees for cost tracking, but avg_entry should reflect actual price
+    const oldRawCost = oldSize * parseFloat(pos.avg_entry_price);
+    const newAvgEntry = (oldRawCost + dcaCost) / newTotalSize;
     const newTotalFees = parseFloat(pos.total_fees || 0) + dcaFee;
 
     await client.query(`
@@ -130,8 +133,10 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
       const entryTime = new Date(pos.entry_time);
       const holdHours = (Date.now() - entryTime.getTime()) / (1000 * 60 * 60);
       const totalProfit = parseFloat(pos.total_profit_taken || 0) + pnl;
-      const totalCost = parseFloat(pos.total_cost);
-      const finalPnlPercent = totalCost > 0 ? (totalProfit / totalCost) * 100 : 0;
+      // Use entry_cost (original investment including DCAs before partial exits) for P&L%
+      // This avoids inflated percentages when partial exits have reduced total_cost
+      const originalCost = parseFloat(pos.entry_cost) || parseFloat(pos.total_cost);
+      const finalPnlPercent = originalCost > 0 ? (totalProfit / originalCost) * 100 : 0;
 
       await client.query(`
         UPDATE positions
@@ -145,7 +150,8 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
       logger.info(`[Position] CLOSED #${positionId} @ $${exitPrice.toFixed(2)} | P&L: $${totalProfit.toFixed(2)} (${finalPnlPercent.toFixed(2)}%) | fees: $${newTotalFees.toFixed(2)} | held ${holdHours.toFixed(1)}h`);
     } else {
       const remainingSize = Math.max(0, currentSize - exitSize);
-      const remainingCost = Math.max(0, parseFloat(pos.total_cost) - costBasis);
+      // Preserve cost basis ratio: remaining coins keep their avg cost, not a subtracted remainder
+      const remainingCost = remainingSize * avgEntry;
       const partialExits = (pos.partial_exits || 0) + 1;
       const totalProfit = parseFloat(pos.total_profit_taken || 0) + pnl;
 

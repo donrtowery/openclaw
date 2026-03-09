@@ -163,9 +163,9 @@ export function calcVolume(candles) {
     const avg24h = last24.reduce((s, c) => s + c.volume, 0) / last24.length;
     const ratio = avg24h > 0 ? Math.round((recent / avg24h) * 100) / 100 : 0;
 
-    // Volume trend: compare last 6h average to prior 6h average
-    const last6 = candles.slice(-6);
-    const prior6 = candles.slice(-12, -6);
+    // Volume trend: compare last 6 complete candles to prior 6 (exclude last incomplete)
+    const last6 = candles.slice(-7, -1);
+    const prior6 = candles.slice(-13, -7);
     const avg6 = last6.reduce((s, c) => s + c.volume, 0) / last6.length;
     const avgPrior6 = prior6.reduce((s, c) => s + c.volume, 0) / Math.max(prior6.length, 1);
     let trend = 'STABLE';

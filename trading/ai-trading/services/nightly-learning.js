@@ -270,8 +270,8 @@ async function calculateStats() {
         ELSE 'other'
       END as exit_category,
       COUNT(*) as cnt,
-      AVG(LEAST(GREATEST(realized_pnl_percent, -100), 200)) as avg_pnl_pct,
-      AVG(LEAST(max_unrealized_gain_percent, 200)) as avg_max_gain_pct,
+      AVG(LEAST(GREATEST(realized_pnl_percent, -100), 100)) as avg_pnl_pct,
+      AVG(LEAST(max_unrealized_gain_percent, 100)) as avg_max_gain_pct,
       AVG(hold_hours) as avg_hold_hours
     FROM positions
     WHERE status = 'CLOSED' AND exit_time > NOW() - INTERVAL '30 days'
@@ -909,14 +909,15 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     let message;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
+        let timer;
         message = await Promise.race([
           anthropic.messages.create({
             model: SONNET_MODEL,
             max_tokens: 8192,
             system: [{ type: 'text', text: 'You are a conservative trading performance analyst for a utility-focused crypto bot. Quality over quantity — never bias toward more trading. Losing trades matter as much as missed opportunities. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral' } }],
             messages: [{ role: 'user', content: prompt }],
-          }),
-          new Promise((_, reject) => setTimeout(() => reject(new Error(`Sonnet learning timed out after ${LEARNING_TIMEOUT_MS}ms`)), LEARNING_TIMEOUT_MS)),
+          }).then(r => { clearTimeout(timer); return r; }),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Sonnet learning timed out after ${LEARNING_TIMEOUT_MS}ms`)), LEARNING_TIMEOUT_MS); }),
         ]);
         break; // Success
       } catch (retryErr) {
@@ -1024,6 +1025,7 @@ function validateAnalysis(analysis, defensiveMode = false) {
   analysis.haiku_rules = filterLowSampleRules(toArray(analysis.haiku_rules));
   analysis.haiku_escalation_calibration = filterLowSampleRules(toArray(analysis.haiku_escalation_calibration));
   analysis.sonnet_rules = filterLowSampleRules(toArray(analysis.sonnet_rules));
+  analysis.exit_rules = filterLowSampleRules(toArray(analysis.exit_rules || []));
 
   // Detect contradictory rule pairs
   const allRulesFlat = [
@@ -1092,7 +1094,7 @@ async function updatePromptFiles(stats, analysis) {
   let perfHeader = `\n## LEARNING DATA\n`;
   perfHeader += `(Updated: ${date} | ${stats.total_trades} trades | ${stats.win_rate.toFixed(1)}% win rate)\n\n`;
   perfHeader += `PERFORMANCE:\n`;
-  perfHeader += `- ${stats.win_rate.toFixed(1)}% WR (${stats.wins}W/${stats.losses}L) | PF: ${stats.profit_factor === Infinity ? '∞' : stats.profit_factor.toFixed(2)}\n`;
+  perfHeader += `- ${stats.win_rate.toFixed(1)}% WR (${stats.wins}W/${stats.losses}L) | PF: ${stats.profit_factor >= 999 ? '∞' : stats.profit_factor.toFixed(2)}\n`;
   perfHeader += `- Avg win: +$${stats.avg_win.toFixed(2)} | Avg loss: $${stats.avg_loss.toFixed(2)}\n`;
   perfHeader += `- Hold: Winners ${stats.avg_hold_winners.toFixed(1)}h, Losers ${stats.avg_hold_losers.toFixed(1)}h\n`;
 

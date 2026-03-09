@@ -155,6 +155,12 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push(`Loser held ${holdHours.toFixed(0)}h with MACD bearish — cut loss`);
   }
 
+  // ── Declining volume with profit — fading buying interest ──
+  if (analysis.volume?.trend === 'DECREASING' && pnlPercent > 3) {
+    score += 10;
+    factors.push(`Volume declining with +${pnlPercent.toFixed(1)}% profit — fading interest`);
+  }
+
   // ── DCA'd positions losing — tighter exit (but not premature) ──
   if (dcaCount >= 2 && pnlPercent < -8) {
     score += 20;
@@ -229,18 +235,20 @@ export async function runExitScan(config) {
       const currentPrice = analysis.price;
 
       // Update peak gain before urgency calc to avoid stale data
+      // Use a shallow copy so we don't mutate the DB row object
+      let posForUrgency = position;
       const avgEntry = parseFloat(position.avg_entry_price);
       if (avgEntry > 0) {
         const currentPnlPct = ((currentPrice - avgEntry) / avgEntry) * 100;
         const storedPeak = parseFloat(position.max_unrealized_gain_percent || 0);
         if (currentPnlPct > storedPeak) {
-          position.max_unrealized_gain_percent = currentPnlPct;
+          posForUrgency = { ...position, max_unrealized_gain_percent: currentPnlPct };
           query('UPDATE positions SET max_unrealized_gain_percent = $1, updated_at = NOW() WHERE id = $2', [currentPnlPct, position.id])
             .catch(err => logger.warn(`[ExitScanner] Failed to update peak gain for ${position.symbol}: ${err.message}`));
         }
       }
 
-      const urgency = computeExitUrgency(position, analysis, currentPrice);
+      const urgency = computeExitUrgency(posForUrgency, analysis, currentPrice);
 
       logger.info(`[ExitScanner] ${position.symbol}: urgency ${urgency.score} | P&L ${urgency.pnl_percent.toFixed(1)}% | held ${urgency.hold_hours.toFixed(0)}h`);
 
@@ -256,7 +264,7 @@ export async function runExitScan(config) {
         logger.warn(`[ExitScanner] ${position.symbol}: CRITICAL urgency ${urgency.score} — bypassing cooldown`);
       }
 
-      candidates.push({ position, analysis, urgency, currentPrice });
+      candidates.push({ position: posForUrgency, analysis, urgency, currentPrice });
     } catch (error) {
       logger.error(`[ExitScanner] Error evaluating ${position.symbol}: ${error.message}`);
     }

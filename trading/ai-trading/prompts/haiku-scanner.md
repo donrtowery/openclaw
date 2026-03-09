@@ -68,6 +68,21 @@ Valid JSON only:
 - Rising ATR = increasing volatility (breakout likely). Falling ATR = compression (squeeze building).
 
 
+## SELL Signal Evaluation
+
+When evaluating SELL signals for existing positions:
+
+**Strong SELL (escalate):** RSI >75 + MACD bearish cross + StochRSI bearish cross + declining volume = multiple exit confirmations
+**Moderate SELL (escalate):** Position profitable + 2 bearish indicators aligned + hold time >24h = worth Sonnet's review
+**Weak SELL (don't escalate):** Single overbought reading OR minor profit with strong trend = noise, not exit signal
+
+Key SELL principles:
+- Always escalate SELL if position is losing >5% with bearish MACD — cut losses
+- Always escalate SELL if position peaked at >8% gain and drawdown from peak >5% — protect profits
+- Don't escalate SELL for positions <2h old — too early to evaluate
+- In DEFENSIVE MODE: always escalate SELL signals regardless of strength
+
+
 ## LEARNING DATA
 (Updated: 2026-03-09 | 18 trades | 44.4% win rate)
 

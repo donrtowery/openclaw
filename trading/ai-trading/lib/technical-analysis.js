@@ -49,15 +49,15 @@ async function runWithConcurrency(tasks, maxConcurrent = 3) {
   const executing = new Set();
 
   for (const task of tasks) {
-    const p = task().then(result => {
-      executing.delete(p);
-      return result;
-    });
+    const p = task().then(
+      result => { executing.delete(p); return result; },
+      error => { executing.delete(p); throw error; }
+    );
     executing.add(p);
     results.push(p);
 
     if (executing.size >= maxConcurrent) {
-      await Promise.race(executing);
+      await Promise.race(executing).catch(() => {});
     }
   }
 
@@ -170,7 +170,7 @@ export function formatForClaude(a) {
   // Line 3: MAs and BB
   const maParts = [];
   if (a.sma?.sma200 != null) {
-    maParts.push(`price${a.price > a.sma.sma200 ? '>' : '<'}SMA200`);
+    maParts.push(`price${a.price > a.sma.sma200 ? '>' : '<'}SMA200(1h)`);
   }
   if (a.sma?.sma50 != null && a.sma?.sma200 != null) {
     maParts.push(a.sma.sma50 > a.sma.sma200 ? 'golden-cross' : 'death-cross');

@@ -21,6 +21,9 @@ import logger from '../lib/logger.js';
 
 const tradingConfig = JSON.parse(readFileSync('config/trading.json', 'utf8'));
 
+// Sync PAPER_TRADING env with config so lib/binance.js reads the same source of truth
+process.env.PAPER_TRADING = String(tradingConfig.account.paper_trading);
+
 // ── State ───────────────────────────────────────────────────
 
 let isRunning = false;
@@ -67,24 +70,33 @@ async function start() {
     symbolNames.set(row.symbol, row.name);
   }
 
-  // 4. Startup state reconciliation
+  // 4. Restore daily trade counter from DB (survives restarts)
+  const todayTradesResult = await query(
+    "SELECT COUNT(*) as cnt FROM trades WHERE executed_at >= CURRENT_DATE"
+  );
+  dailyTradeCount = parseInt(todayTradesResult.rows[0].cnt) || 0;
+  if (dailyTradeCount > 0) {
+    logger.info(`[Engine] Restored daily trade count: ${dailyTradeCount} trades today`);
+  }
+
+  // 5. Startup state reconciliation
   await reconcileState();
 
-  // 5. Initialize scanner
+  // 6. Initialize scanner
   await initScanner();
 
-  // 6. Queue engine start event
+  // 7. Queue engine start event
   await queueEvent('ENGINE_START', null, {
     paper_trading: tradingConfig.account.paper_trading,
     symbols: symbolResult.rows.length,
     capital: tradingConfig.account.total_capital,
   });
 
-  // 7. Set up graceful shutdown
+  // 8. Set up graceful shutdown
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  // 8. Start scan loop
+  // 9. Start scan loop
   isRunning = true;
   const intervalMs = (tradingConfig.scanner.interval_minutes || 5) * 60 * 1000;
 
@@ -93,7 +105,12 @@ async function start() {
   logger.info(`Capital: $${tradingConfig.account.total_capital} | Max positions: ${tradingConfig.account.max_concurrent_positions}`);
 
   // Run first scan immediately
-  await runCycle();
+  try {
+    cycleInProgress = true;
+    await runCycle();
+  } finally {
+    cycleInProgress = false;
+  }
 
   // Then schedule recurring scans
   scanIntervalId = setInterval(async () => {
@@ -168,32 +185,33 @@ async function runCycle() {
     return;
   }
 
-  // 1. Check circuit breaker
+  // 1. Check circuit breaker and drawdown — block new entries but ALWAYS allow exit scans
   const cb = await checkCircuitBreaker();
-  if (cb.is_active) {
-    logger.warn(`[Engine] Circuit breaker ACTIVE (${cb.consecutive_losses} losses). Skipping cycle. Reactivates: ${cb.reactivates_at}`);
-    return;
-  }
-
-  // 1b. Check portfolio drawdown
   const maxDrawdownPct = tradingConfig.circuit_breaker.max_drawdown_percent || 10;
   const drawdownPortfolio = await getCachedPortfolio();
-  if (drawdownPortfolio.total_pnl_percent < -maxDrawdownPct) {
-    logger.warn(`[Engine] DRAWDOWN PROTECTION: total P&L ${drawdownPortfolio.total_pnl_percent.toFixed(2)}% exceeds -${maxDrawdownPct}% limit. Skipping cycle.`);
+  const drawdownActive = drawdownPortfolio.total_pnl_percent < -maxDrawdownPct;
+  const skipNewEntries = cb.is_active || drawdownActive;
+
+  if (cb.is_active) {
+    logger.warn(`[Engine] Circuit breaker ACTIVE (${cb.consecutive_losses} losses). Blocking new entries. Reactivates: ${cb.reactivates_at}`);
+  }
+  if (drawdownActive) {
+    logger.warn(`[Engine] DRAWDOWN PROTECTION: total P&L ${drawdownPortfolio.total_pnl_percent.toFixed(2)}% exceeds -${maxDrawdownPct}% limit. Blocking new entries.`);
     await queueEvent('DRAWDOWN_PAUSE', null, {
       total_pnl_percent: drawdownPortfolio.total_pnl_percent,
       max_drawdown_percent: maxDrawdownPct,
     });
-    return;
   }
 
-  // 2. Run scanner
+  // 2. Run scanner (skip if entries blocked — but exit scan still runs below)
+  let signalsEscalated = 0;
+  let tradesExecuted = 0;
+
+  if (!skipNewEntries) {
   const scanResult = await runScanCycle(tradingConfig);
   logger.info(`[Engine] Scanned ${scanResult.symbols_scanned} symbols in ${scanResult.duration_ms}ms — ${scanResult.triggered.length} triggered`);
 
   // 3. Process triggered signals through Haiku (batched)
-  let signalsEscalated = 0;
-  let tradesExecuted = 0;
 
   if (scanResult.triggered.length > 0) {
     const haikuResults = await callHaikuBatch(scanResult.triggered, tradingConfig);
@@ -302,27 +320,28 @@ async function runCycle() {
         })
       );
 
-      const results = await Promise.allSettled(
-        toEscalate.map(({ triggered, haikuResult }, i) => {
-          const news = newsResults[i].status === 'fulfilled' ? newsResults[i].value : 'No recent news available.';
-          return processEscalatedSignal(triggered, haikuResult, news, sharedPortfolio, learningRules);
-        })
-      );
-      for (let i = 0; i < results.length; i++) {
-        if (results[i].status === 'fulfilled' && results[i].value.executed) {
-          tradesExecuted++;
-          dailyTradeCount++;
-        } else if (results[i].status === 'rejected') {
-          logger.error(`[Engine] Error processing ${toEscalate[i].triggered.symbol}: ${results[i].reason?.message}`);
+      // Process sequentially to prevent parallel BUYs from over-committing capital
+      for (let i = 0; i < toEscalate.length; i++) {
+        const { triggered, haikuResult } = toEscalate[i];
+        const news = newsResults[i].status === 'fulfilled' ? newsResults[i].value : 'No recent news available.';
+        try {
+          const result = await processEscalatedSignal(triggered, haikuResult, news, sharedPortfolio, learningRules);
+          if (result.executed) {
+            tradesExecuted++;
+            dailyTradeCount++;
+          }
+        } catch (error) {
+          logger.error(`[Engine] Error processing ${triggered.symbol}: ${error.message}`);
         }
       }
     }
   }
+  } // end if (!skipNewEntries)
 
   const cycleDuration = Date.now() - cycleStart;
   logger.info(`[Engine] Cycle ${cycleCount} complete in ${cycleDuration}ms — ${signalsEscalated} escalated, ${tradesExecuted} trades`);
 
-  // 4. Exit scanner — evaluates open positions for exit conditions
+  // 4. Exit scanner — ALWAYS runs, even during circuit breaker / drawdown protection
   const exitConfig = tradingConfig.exit_scanner || {};
   const exitInterval = exitConfig.interval_cycles || 3;
   if (exitConfig.enabled !== false && cycleCount % exitInterval === 0) {
@@ -338,7 +357,8 @@ async function runCycle() {
   if (cycleCount % 12 === 0) {
     try {
       await runHourlyRiskCheck();
-      const portfolio = await getPortfolioSummary(tradingConfig);
+      invalidatePortfolioCache(); // Fresh data after risk check price updates
+      const portfolio = await getCachedPortfolio();
       await queueEvent('HOURLY_SUMMARY', null, {
         cycle: cycleCount,
         open_positions: portfolio.open_count,
@@ -554,10 +574,10 @@ async function executeSell(decision, triggered) {
     tradingConfig.account.paper_trading
   );
 
-  // Circuit breaker tracking — track both full and partial exit losses
+  // Circuit breaker tracking — any loss increments, any profit resets
   if (closeResult.pnl < 0) {
     await recordLoss(symbol, closeResult.pnl);
-  } else if (closeResult.isFull) {
+  } else if (closeResult.pnl > 0) {
     await resetCircuitBreaker();
   }
 
@@ -618,6 +638,17 @@ async function executeDCA(decision, triggered) {
   const tierKey = `tier_${tier}`;
   const tierConfig = tradingConfig.position_sizing[tierKey];
   let dcaAmountUsd = decision.position_details?.position_size_usd || tierConfig?.base_position_usd || 600;
+
+  // Confidence-scaled DCA sizing
+  const confScaling = tradingConfig.position_sizing.confidence_scaling !== false;
+  if (confScaling && decision.confidence < 0.80) {
+    const scaleFactor = Math.min(decision.confidence / 0.80, 1.0);
+    const scaledDca = Math.round(dcaAmountUsd * scaleFactor);
+    if (scaledDca < dcaAmountUsd) {
+      logger.info(`[Engine] ${symbol}: DCA confidence-scaled: $${dcaAmountUsd} → $${scaledDca} (conf:${decision.confidence})`);
+      dcaAmountUsd = scaledDca;
+    }
+  }
 
   // Cap DCA at percentage of original entry cost
   const originalEntry = parseFloat(position.entry_cost);
@@ -1029,8 +1060,8 @@ async function getLearningRules() {
     SELECT * FROM learning_rules
     WHERE is_active = true
       AND rule_type = 'sonnet_decision'
-    ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
-    LIMIT 5
+    ORDER BY sample_size DESC NULLS LAST, created_at DESC
+    LIMIT 8
   `);
   learningRulesCache = { data: result.rows, expiry: Date.now() + 60 * 60 * 1000 };
   return result.rows;
