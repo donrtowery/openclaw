@@ -15,6 +15,20 @@ export const SONNET_MODEL = process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250
 
 export { anthropic };
 
+const API_TIMEOUT_MS = parseInt(process.env.CLAUDE_API_TIMEOUT_MS || '60000');
+
+/**
+ * Wrap an API call with a timeout
+ */
+function withTimeout(promise, timeoutMs = API_TIMEOUT_MS, label = 'API call') {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
+    ),
+  ]);
+}
+
 // Cache loaded prompt text to avoid repeated filesystem reads within the same cycle
 let haikuPromptCache = { text: null, mtime: 0 };
 let sonnetPromptCache = { text: null, mtime: 0 };
@@ -40,8 +54,8 @@ function loadPrompt(path, cache) {
  * Finds the outermost JSON array or object in the text.
  */
 export function extractJSON(text) {
-  // Strip markdown code fences first
-  const cleaned = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  // Strip markdown code fences first (case-insensitive, any language tag, handle \r\n)
+  const cleaned = text.replace(/```\w*\r?\n?/gi, '').trim();
 
   // Try direct parse first (fast path)
   try {
@@ -117,16 +131,20 @@ export async function callHaikuBatch(triggeredSignals, config) {
   try {
     const startTime = Date.now();
 
-    const message = await anthropic.messages.create({
-      model: HAIKU_MODEL,
-      max_tokens: 512 * triggeredSignals.length,
-      system: [{
-        type: 'text',
-        text: systemPrompt,
-        cache_control: { type: 'ephemeral' },
-      }],
-      messages: [{ role: 'user', content: userMessage }],
-    });
+    const message = await withTimeout(
+      anthropic.messages.create({
+        model: HAIKU_MODEL,
+        max_tokens: Math.min(512 * triggeredSignals.length, 4096),
+        system: [{
+          type: 'text',
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral' },
+        }],
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+      API_TIMEOUT_MS,
+      `Haiku batch (${triggeredSignals.length} signals)`
+    );
 
     const responseText = message.content[0].text;
     const inputTokens = message.usage.input_tokens;
@@ -168,7 +186,12 @@ export async function callHaikuBatch(triggeredSignals, config) {
         escalate: false, confidence: 0, reasons: ['No response for this signal'], concerns: [],
       };
 
-      const signalId = await logSignal(sig, result, inputTokens + outputTokens);
+      let signalId = null;
+      try {
+        signalId = await logSignal(sig, result, inputTokens + outputTokens);
+      } catch (logErr) {
+        logger.error(`[Haiku] Failed to log signal for ${sig.symbol}: ${logErr.message}`);
+      }
 
       logger.info(`[Haiku] ${sig.symbol}: ${result.strength} ${result.signal} conf:${result.confidence} escalate:${result.escalate}`);
 
@@ -205,16 +228,20 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
   try {
     const startTime = Date.now();
 
-    const message = await anthropic.messages.create({
-      model: SONNET_MODEL,
-      max_tokens: 1024,
-      system: [{
-        type: 'text',
-        text: systemPrompt,
-        cache_control: { type: 'ephemeral' },
-      }],
-      messages: [{ role: 'user', content: userMessage }],
-    });
+    const message = await withTimeout(
+      anthropic.messages.create({
+        model: SONNET_MODEL,
+        max_tokens: 1024,
+        system: [{
+          type: 'text',
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral' },
+        }],
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+      API_TIMEOUT_MS,
+      `Sonnet decision (${triggeredSignal.symbol})`
+    );
 
     const responseText = message.content[0].text;
     const inputTokens = message.usage.input_tokens;
@@ -271,16 +298,20 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
   try {
     const startTime = Date.now();
 
-    const message = await anthropic.messages.create({
-      model: SONNET_MODEL,
-      max_tokens: 768,
-      system: [{
-        type: 'text',
-        text: systemPrompt,
-        cache_control: { type: 'ephemeral' },
-      }],
-      messages: [{ role: 'user', content: userMessage }],
-    });
+    const message = await withTimeout(
+      anthropic.messages.create({
+        model: SONNET_MODEL,
+        max_tokens: 768,
+        system: [{
+          type: 'text',
+          text: systemPrompt,
+          cache_control: { type: 'ephemeral' },
+        }],
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+      API_TIMEOUT_MS,
+      `Sonnet exit eval (${position.symbol})`
+    );
 
     const responseText = message.content[0].text;
     const inputTokens = message.usage.input_tokens;
@@ -380,7 +411,16 @@ function formatExitEvalInput(position, analysis, urgency, newsContext, portfolio
   }
   msg += '\n';
 
-  // Learning rules are in the cached system prompt — no need to duplicate here
+  // Inject dynamic learning rules (supplements static rules in exit prompt)
+  if (learningRules?.length > 0) {
+    msg += `## Dynamic Learning Rules (from recent trades)\n`;
+    for (const rule of learningRules) {
+      msg += `- ${rule.rule_text}`;
+      if (rule.win_rate) msg += ` (${rule.win_rate}% WR, ${rule.sample_size} trades)`;
+      msg += '\n';
+    }
+    msg += '\n';
+  }
 
   return msg;
 }
@@ -504,7 +544,16 @@ function formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioS
   }
   msg += '\n';
 
-  // Learning rules are in the cached system prompt (sonnet-decision.md) — no need to duplicate here
+  // Inject dynamic learning rules from DB (supplements static rules in sonnet-decision.md)
+  if (learningRules?.length > 0) {
+    msg += `## Dynamic Learning Rules (from recent trades)\n`;
+    for (const rule of learningRules) {
+      msg += `- ${rule.rule_text}`;
+      if (rule.win_rate) msg += ` (${rule.win_rate}% WR, ${rule.sample_size} trades)`;
+      msg += '\n';
+    }
+    msg += '\n';
+  }
 
   return msg;
 }
@@ -519,7 +568,7 @@ function enforceConfidenceThresholds(decision, config) {
   if (decision.action === 'BUY' && decision.confidence < thresholds.sonnet_minimum_for_new_entry) {
     logger.warn(`[Sonnet] BUY confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_new_entry}, downgrading to PASS`);
     decision.action = 'PASS';
-    decision.reasoning += ` [Auto-downgraded: confidence below ${thresholds.sonnet_minimum_for_new_entry} threshold]`;
+    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${thresholds.sonnet_minimum_for_new_entry} threshold]`;
   }
 
   if (decision.action === 'SELL' && decision.confidence < thresholds.sonnet_minimum_for_exit) {
@@ -573,8 +622,8 @@ async function logSignal(triggeredSignal, haikuResponse, tokensUsed) {
     analysis.support?.[0] ?? null,
     analysis.resistance?.[0] ?? null,
     analysis.trend?.direction ?? null,
-    ['BUY', 'SELL', 'NONE'].includes(haikuResponse.signal?.toUpperCase()) ? haikuResponse.signal.toUpperCase() : 'NONE',
-    haikuResponse.strength || 'WEAK',
+    (() => { const s = String(haikuResponse.signal || '').toUpperCase(); return ['BUY', 'SELL', 'NONE'].includes(s) ? s : 'NONE'; })(),
+    (() => { const s = String(haikuResponse.strength || '').toUpperCase(); return ['STRONG', 'MODERATE', 'WEAK', 'TRAP'].includes(s) ? s : 'WEAK'; })(),
     haikuResponse.confidence || 0,
     JSON.stringify(haikuResponse.reasons || []),
     haikuResponse.escalate || false,

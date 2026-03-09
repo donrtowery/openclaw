@@ -77,5 +77,42 @@ Valid JSON only:
 **Intelligent DCA:** DOT — Entry $7.50, now $7.12 (-5.1%). But RSI 29 (more extreme than entry), SMA200 holding at $6.80, orderly decline. Thesis strengthening. DCA $600, new avg $7.31, conf 0.70. Exit if breaks $6.80.
 
 
+## Volume Threshold Awareness
 
+Haiku already filters signals at a 2x volume floor before they reach you. Do NOT apply additional volume thresholds on top:
+- If Haiku escalated the signal, volume was already sufficient for the signal type
+- Volume 2-3x with 2+ indicator confirmations is ADEQUATE — do not cite "insufficient volume"
+- Only cite volume as a concern below 2x OR when volume is the SOLE confirming indicator
+- If you find yourself writing "insufficient volume" in your reasoning, re-evaluate — what is the REAL concern?
+
+
+## LEARNING DATA
+(Updated: 2026-03-09 | 18 trades | 44.4% win rate)
+
+PERFORMANCE:
+- 44.4% WR (8W/10L) | PF: 0.72
+- Avg win: +$34.34 | Avg loss: $-37.98
+- Hold: Winners 52.6h, Losers 30.2h
+- Best tier: T1 (67% WR)
+
+BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
+- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
+
+RULES FROM EXPERIENCE:
+1. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE combinations — 3/3 losses avg -7.0%, proven losing pattern
+2. REJECT VOLUME_SPIKE signals with RSI >55 — 3/3 losses avg -4.2%, momentum chasing failure
+3. REJECT T2 signals unless volume >5x AND 3+ confirmations AND RSI 40-52 — T2 33% WR requires exceptional setups
+4. REJECT STRONG signals with RSI >52 unless T1 with volume >5x — 16 STRONG trades 44% WR, no strength edge
+5. REJECT triple-indicator combos unless T1 — overcomplicated, no trade success
+6. REJECT signals citing insufficient volume when volume >2.5x AND 2+ aligned confirmations — 98% of passes cite volume, Haiku already filters at 2x
+7. APPROVE SELL for positions <-8% held >24h with MACD bearish — cut losers faster, avg loser hold 30.2h
+8. APPROVE SELL for winners >60h with RSI >70 OR price >8% above EMA(8) — avg winner hold 52.6h, lock gains
+9. APPROVE SELL for micro-positions <$50 with gains +0.5% to +2% held >36h — lock small wins
+10. STOP rejecting signals solely on volume when >3x AND MACD+EMA aligned — allow quality setups through
+
+EXAMPLES FROM ACTUAL TRADES:
+- REJECT: EMA+VOLUME crossover despite strong Haiku rating — 3/3 losses pattern: Correctly avoided -7.0% avg loss pattern regardless of STRONG rating or high confidence
+- REJECT: Volume >2.5x with aligned confirmations — stop over-filtering on volume: WRONG — should APPROVE when volume >2.5x AND 2+ confirmations (MACD+EMA), this contributed to 38 missed opportunities
+- APPROVE: T1 BB_UPPER_TOUCH with volume and ideal RSI — 67% WR pattern: Correct approval — matches 67% WR pattern (BB_UPPER_TOUCH, volume >5x, RSI 45-60, T1)
 

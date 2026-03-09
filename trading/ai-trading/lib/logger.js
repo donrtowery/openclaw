@@ -26,12 +26,12 @@ const logger = winston.createLogger({
       filename: join(logsDir, 'error.log'),
       level: 'error',
       maxsize: 10 * 1024 * 1024, // 10MB
-      maxFiles: 3,
+      maxFiles: 10,
     }),
     new winston.transports.File({
       filename: join(logsDir, 'trading.log'),
       maxsize: 10 * 1024 * 1024,
-      maxFiles: 5,
+      maxFiles: 10,
     }),
   ],
 });

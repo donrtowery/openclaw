@@ -69,5 +69,24 @@ Valid JSON only:
 
 **Hold Through Drawdown:** SOL — Peak was +12%, now +8% (4% drawdown). RSI 58, MACD still positive, above SMA50. Normal consolidation after a run — not a reversal. Support at SMA50 holding. HOLD, conf 0.75. Exit if breaks SMA50 or MACD crosses bearish.
 
+## LEARNING DATA
+(Updated: 2026-03-09 | 18 trades | 44.4% win rate)
 
+EXIT TIMING ANALYSIS:
+- slow_loss_cut: 10 trades, avg P&L -5.6%, avg max gain 0.6%, avg hold 30.2h
+- late_exit_winner: 2 trades, avg P&L 0.7%, avg max gain 7.6%, avg hold 51.4h
+- good_exit: 6 trades, avg P&L 344.7%, avg max gain 7.5%, avg hold 53.0h
 
+HOLD TIME COMPARISON:
+- Winners: 52.6h avg hold
+- Losers: 30.2h avg hold
+
+EXIT RULES FROM EXPERIENCE:
+1. EXIT positions <-8% held >24h with MACD bearish AND volume declining — thesis failed, avg loser hold 30.2h vs winner 52.6h
+2. EXIT winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
+3. EXIT micro-positions <$50 with gains +0.5% to +2% held >36h — reduce exit friction on small wins
+4. EXIT T2 positions <-6% with RSI <35 AND price <SMA200 — T2 33% WR, preserve capital on thesis failure
+5. EXIT positions <-10% held >48h regardless of technicals — max drawdown tolerance exceeded
+6. HOLD T1 winners with P&L >5% AND RSI 50-65 AND MACD bullish — avg winner hold 52.6h, let trends run
+7. TRAIL winners >8% with 5% trailing stop when RSI >60 — protect gains while allowing upside
+8. PARTIAL_EXIT 50% of position at +6% if RSI >68 AND hold >36h — lock partial gains, let rest run

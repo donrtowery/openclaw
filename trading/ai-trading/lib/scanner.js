@@ -227,6 +227,14 @@ export async function runScanCycle(config) {
     };
   }
 
+  // Prune previousIndicators for symbols no longer in the active list
+  const activeSymbolSet = new Set(symbolNames);
+  for (const key of previousIndicators.keys()) {
+    if (!activeSymbolSet.has(key)) {
+      previousIndicators.delete(key);
+    }
+  }
+
   // Batch-save all indicator snapshots in one INSERT
   if (allSnapshots.length > 0) {
     try {

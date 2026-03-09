@@ -17,6 +17,10 @@ const MISSED_OPP_THRESHOLD = config.learning.missed_opportunity_threshold_pct ||
 const SUSTAINED_CANDLES = config.learning.sustained_candles_required || 6;
 const ESC_CONV_TARGET_MIN = config.learning.escalation_conversion_target_min || 15;
 const ESC_CONV_TARGET_MAX = config.learning.escalation_conversion_target_max || 30;
+const PASS_EVAL_WINDOW_HOURS = config.learning.pass_evaluation_window_hours || 48;
+const DEFENSIVE_WIN_RATE_THRESHOLD = config.learning.defensive_mode_win_rate_threshold || 50;
+const DEFENSIVE_MAX_ESC_TARGET = config.learning.defensive_mode_max_escalation_target || 15;
+const DEFENSIVE_MIN_ESCALATE_RATIO = config.learning.defensive_mode_min_escalate_ratio || 0.2;
 
 async function run() {
   logger.info('[Learning] === Nightly Learning Job Started ===');
@@ -51,27 +55,51 @@ async function run() {
     logger.info(`[Learning] PASS rejection themes: ${themes}`);
   }
 
-  // Compare escalation conversion rate vs previous run
-  const prevHistory = await query(`
-    SELECT sonnet_analysis FROM learning_history
-    ORDER BY created_at DESC LIMIT 1
+  // ── Defensive Mode Detection ──
+  const defensiveMode = stats.win_rate < DEFENSIVE_WIN_RATE_THRESHOLD && stats.total_pnl < 0 && stats.total_trades >= 5;
+  if (defensiveMode) {
+    logger.warn(`[Learning] *** DEFENSIVE MODE ACTIVE *** Win rate ${stats.win_rate.toFixed(1)}% < ${DEFENSIVE_WIN_RATE_THRESHOLD}%, P&L $${stats.total_pnl.toFixed(2)} < 0, ${stats.total_trades} trades >= 5`);
+  }
+
+  // Fetch last 5 learning history rows for trajectory analysis
+  const trajectoryResult = await query(`
+    SELECT created_at, total_trades, win_rate, total_pnl, sonnet_analysis
+    FROM learning_history
+    ORDER BY created_at DESC LIMIT 5
   `);
-  if (prevHistory.rows.length > 0) {
-    try {
-      const prev = JSON.parse(prevHistory.rows[0].sonnet_analysis);
-      const prevRuleCount = (toArray(prev.haiku_rules).length + toArray(prev.haiku_escalation_calibration).length);
-      logger.info(`[Learning] Previous run: ${prevRuleCount} haiku rules generated. Current escalation conversion: ${escConvRate}%`);
-    } catch { /* ignore parse errors from old format */ }
+  const trajectoryRows = trajectoryResult.rows;
+  if (trajectoryRows.length > 0) {
+    for (const row of trajectoryRows) {
+      try {
+        const prev = JSON.parse(row.sonnet_analysis);
+        const prevRuleCount = (toArray(prev.haiku_rules).length + toArray(prev.haiku_escalation_calibration).length);
+        logger.info(`[Learning] History ${new Date(row.created_at).toISOString().split('T')[0]}: ${row.total_trades} trades, ${parseFloat(row.win_rate).toFixed(1)}% WR, $${parseFloat(row.total_pnl).toFixed(2)} P&L, ${prevRuleCount} rules`);
+      } catch { /* ignore parse errors from old format */ }
+    }
+    logger.info(`[Learning] Current escalation conversion: ${escConvRate}%`);
   }
 
   // ── Step 3: Call Sonnet for analysis (ONE call) ───────────
 
-  const analysis = await callSonnetForAnalysis(stats);
+  const analysis = await callSonnetForAnalysis(stats, defensiveMode, trajectoryRows);
 
-  // ── Step 3b: Enforce escalation conversion rate bounds ────
+  // ── Step 3b: Validate Sonnet's generated rules ────────────
+  // Run validation BEFORE injecting corrective rules so the contradiction
+  // detector doesn't strip system-generated calibration rules.
+
+  validateAnalysis(analysis, defensiveMode);
+
+  // ── Step 3c: Enforce escalation conversion rate bounds ────
+  // These corrective rules are injected AFTER validation so they are
+  // never removed by the contradiction detector.
 
   const currentEscRate = parseFloat(escConvRate);
-  if (totalEscalated >= 20) { // Only enforce with sufficient data
+  if (defensiveMode) {
+    // In defensive mode, corrective rule is ALWAYS a STOP — never push the bot to trade more when losing
+    logger.warn(`[Learning] DEFENSIVE MODE: Prepending capital preservation STOP rule (overrides escalation conversion logic)`);
+    const corrective = `STOP: DEFENSIVE MODE — win rate ${stats.win_rate.toFixed(1)}%, P&L $${stats.total_pnl.toFixed(2)}. Capital preservation is priority #1. Only escalate HIGH-confidence signals with 3+ strong confirmations. Reject all MODERATE and WEAK signals.`;
+    analysis.haiku_rules = [corrective, ...toArray(analysis.haiku_rules)];
+  } else if (totalEscalated >= 20) { // Only enforce with sufficient data
     if (currentEscRate > ESC_CONV_TARGET_MAX) {
       logger.warn(`[Learning] Escalation conversion rate ${escConvRate}% exceeds target max ${ESC_CONV_TARGET_MAX}% — prepending corrective STOP rule`);
       const corrective = `STOP: Escalation conversion at ${escConvRate}% (target ${ESC_CONV_TARGET_MIN}-${ESC_CONV_TARGET_MAX}%). Be MORE selective — only escalate STRONG signals with 3+ confirmations.`;
@@ -82,10 +110,6 @@ async function run() {
       analysis.haiku_rules = [corrective, ...toArray(analysis.haiku_rules)];
     }
   }
-
-  // ── Step 3c: Validate Sonnet's generated rules ────────────
-
-  validateAnalysis(analysis);
 
   // ── Step 4: Update prompt files ───────────────────────────
 
@@ -471,7 +495,7 @@ async function calculateStats() {
 
 // ── Sonnet Analysis Call ────────────────────────────────────
 
-async function callSonnetForAnalysis(stats) {
+async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRows = []) {
   const hasTrades = stats.total_trades > 0;
 
   // Adapt prompt framing based on what data exists
@@ -492,6 +516,59 @@ async function callSonnetForAnalysis(stats) {
     prompt += `Profit factor: ${stats.profit_factor === Infinity ? '∞' : stats.profit_factor.toFixed(2)}\n`;
     prompt += `Hold time: Winners ${stats.avg_hold_winners.toFixed(1)}h, Losers ${stats.avg_hold_losers.toFixed(1)}h\n`;
     prompt += `Best: +$${stats.best_trade.toFixed(2)} | Worst: $${stats.worst_trade.toFixed(2)}\n\n`;
+
+    // Performance trajectory from recent learning history
+    if (trajectoryRows.length > 0) {
+      prompt += `PERFORMANCE TRAJECTORY (last ${trajectoryRows.length} nightly runs, newest first):\n`;
+      for (const row of trajectoryRows) {
+        const date = new Date(row.created_at).toISOString().split('T')[0];
+        prompt += `${date}: ${row.total_trades} trades, ${parseFloat(row.win_rate).toFixed(1)}% WR, $${parseFloat(row.total_pnl).toFixed(2)} P&L\n`;
+      }
+
+      // Compute trajectory direction
+      if (trajectoryRows.length >= 2) {
+        const newest = trajectoryRows[0];
+        const oldest = trajectoryRows[trajectoryRows.length - 1];
+        const wrDelta = parseFloat(newest.win_rate) - parseFloat(oldest.win_rate);
+        const pnlDelta = parseFloat(newest.total_pnl) - parseFloat(oldest.total_pnl);
+        let direction;
+        if (wrDelta < -10 || pnlDelta < -100) {
+          direction = 'DECLINING';
+        } else if (wrDelta > 10 || pnlDelta > 100) {
+          direction = 'IMPROVING';
+        } else {
+          direction = 'STABLE';
+        }
+        prompt += `Direction: ${direction} (WR ${wrDelta >= 0 ? '+' : ''}${wrDelta.toFixed(1)}%, P&L ${pnlDelta >= 0 ? '+' : ''}$${pnlDelta.toFixed(2)} over ${trajectoryRows.length} runs)\n`;
+
+        if (direction === 'DECLINING') {
+          prompt += `\n*** PERFORMANCE IS DECLINING — PRIORITIZE CAPITAL PRESERVATION ***\n`;
+          prompt += `- Generate MORE STOP/REJECT/REDUCE rules than START/ESCALATE rules\n`;
+          prompt += `- Focus on what is LOSING money, not what was missed\n`;
+          prompt += `- Tighten entry criteria — require stronger confirmations\n`;
+          prompt += `- Do NOT increase aggressiveness when the bot is losing\n\n`;
+        }
+      }
+
+      if (defensiveMode) {
+        prompt += `\n╔══════════════════════════════════════════════════╗\n`;
+        prompt += `║  *** DEFENSIVE MODE ACTIVE ***                   ║\n`;
+        prompt += `║  Win rate: ${stats.win_rate.toFixed(1)}% | P&L: $${stats.total_pnl.toFixed(2).padEnd(10)}        ║\n`;
+        prompt += `║  Capital preservation is the #1 priority.        ║\n`;
+        prompt += `║                                                  ║\n`;
+        prompt += `║  MANDATORY CONSTRAINTS:                          ║\n`;
+        prompt += `║  - At least 60% of rules must be STOP/REJECT     ║\n`;
+        prompt += `║  - NO new START/ESCALATE rules for patterns      ║\n`;
+        prompt += `║    that have lost money in the last 30 days      ║\n`;
+        prompt += `║  - Max escalation target: ${DEFENSIVE_MAX_ESC_TARGET}%                  ║\n`;
+        prompt += `║  - Every START rule must cite specific evidence   ║\n`;
+        prompt += `║    of profitability (>70% WR, positive P&L)      ║\n`;
+        prompt += `╚══════════════════════════════════════════════════╝\n\n`;
+      }
+
+      prompt += '\n';
+    }
+
   } else {
     prompt = `This is a new trading bot with no closed trades yet. Analyze the signal data below — especially missed opportunities — to generate initial rules and calibrate aggressiveness.\n\n`;
   }
@@ -671,20 +748,93 @@ async function callSonnetForAnalysis(stats) {
   // Sonnet PASS reasoning themes
   if (stats.pass_reasoning_themes.length > 0) {
     prompt += `SONNET PASS REASONING THEMES (why Sonnet rejects signals):\n`;
+    const totalThemeCnt = stats.pass_reasoning_themes.reduce((sum, t) => sum + parseInt(t.cnt), 0);
     for (const t of stats.pass_reasoning_themes) {
-      prompt += `${t.rejection_theme}: ${t.cnt} times\n`;
+      const pct = totalThemeCnt > 0 ? (parseInt(t.cnt) / totalThemeCnt * 100).toFixed(0) : 0;
+      prompt += `${t.rejection_theme}: ${t.cnt} times (${pct}%)\n`;
+    }
+    // Warn when "Insufficient volume" dominates PASS reasons
+    const volumeTheme = stats.pass_reasoning_themes.find(t =>
+      t.rejection_theme && t.rejection_theme.toLowerCase().includes('volume')
+    );
+    if (volumeTheme && totalThemeCnt > 0) {
+      const volumePct = parseInt(volumeTheme.cnt) / totalThemeCnt * 100;
+      if (volumePct > 50) {
+        prompt += `\n*** WARNING: "${volumeTheme.rejection_theme}" accounts for ${volumePct.toFixed(0)}% of all PASS rejections. ***\n`;
+        prompt += `Sonnet is likely over-filtering on volume. Haiku already applies a 2x volume floor.\n`;
+        prompt += `Generate a sonnet_rule to STOP citing insufficient volume when volume >2.5x AND 2+ confirmations present.\n\n`;
+      }
     }
     prompt += '\n';
   }
 
   prompt += `Generate JSON with: haiku_rules (string array — what to escalate/skip), sonnet_rules (string array — what to prioritize), exit_rules (string array — exit timing rules for the exit evaluator), haiku_few_shots (array of {description, input, output, outcome}), sonnet_few_shots (array of {description, signal, decision, outcome}), haiku_escalation_calibration (string array of pattern-level rules like "STOP escalating X" / "START escalating Y"), rule_changes (what changed and why). All rules must be plain strings, not objects.\n\n`;
 
-  prompt += `CONSTRAINTS: Max 15 haiku_rules (combined). >=40% must be ESCALATE/START. Target ${ESC_CONV_TARGET_MIN}-${ESC_CONV_TARGET_MAX}% escalation conversion. No STOP rules with <5 samples. MISSED_OPPORTUNITY = Sonnet error, not Haiku. No blanket rejections — only STOP patterns with confirmed CORRECT_PASS (price didn't move). Include SELL-side rules. No duplicate rules. LOSING TRADE PATTERNS must generate REJECT/REDUCE rules — do not only focus on missed opportunities.\n\n`;
+  // ── RULE QUALITY SPEC ──
+  // These constraints prevent common failure modes in rule generation.
+  prompt += `═══ RULE QUALITY REQUIREMENTS — EVERY RULE MUST FOLLOW THESE ═══\n\n`;
 
-  if (hasTrades) {
-    prompt += `Focus on: >70% WR patterns (promote), <40% WR patterns (warn), missed opportunities (both non-escalated and Sonnet PASS), optimal hold times, DCA effectiveness.`;
+  prompt += `VALID RULE VERBS:\n`;
+  prompt += `- haiku_rules: ESCALATE, REJECT, REDUCE, START, STOP (these are the ONLY valid prefixes)\n`;
+  prompt += `- sonnet_rules: APPROVE, REJECT, START, STOP (these are the ONLY valid prefixes)\n`;
+  prompt += `- exit_rules: EXIT, HOLD, PARTIAL_EXIT, TRAIL (these are the ONLY valid prefixes)\n`;
+  prompt += `- NEVER use: MONITOR, PRIORITIZE, CONSIDER, NOTE, CRITICAL, SKIP, or narrative commentary as a rule\n`;
+  prompt += `- Every rule must be an actionable instruction the AI can follow when evaluating a single signal/position\n\n`;
+
+  prompt += `AVAILABLE DATA PER MODEL (rules MUST only reference data the model can see):\n`;
+  prompt += `- Haiku receives a 4-line compact format per signal:\n`;
+  prompt += `  Line 1: symbol, price, trend direction + strength\n`;
+  prompt += `  Line 2: RSI value + signal (oversold/overbought/neutral), MACD crossover (bullish/bearish), volume ratio + trend\n`;
+  prompt += `  Line 3: price vs SMA200, golden-cross/death-cross, EMA signal (bullish/bearish), BB position + width\n`;
+  prompt += `  Line 4: nearest support levels, nearest resistance levels\n`;
+  prompt += `  Plus: tier, thresholds crossed, and existing position (entry price, P&L%, hold time, size)\n`;
+  prompt += `- Haiku does NOT have: candlestick patterns (engulfing/hammer/doji), multi-timeframe data (4h/1d), candle counts, historical price changes (e.g. "up 8% in 4h"), divergence detection, consolidation duration, or higher-lows analysis\n`;
+  prompt += `- Sonnet receives: Haiku's assessment + same technical data + news context + portfolio state\n`;
+  prompt += `- Exit evaluator receives: position details + current technicals + urgency score\n`;
+  prompt += `- NEVER generate a haiku_rule referencing data Haiku cannot see. Instead, use the indicators Haiku HAS: RSI value, MACD direction, volume ratio, EMA/SMA signals, BB position, support/resistance levels, trend direction, tier, confidence\n\n`;
+
+  prompt += `STATISTICAL SIGNIFICANCE:\n`;
+  prompt += `- With <10 trades, rules should be TENTATIVE — prefix with "TENTATIVE:" and keep thresholds moderate\n`;
+  prompt += `- With <5 trades, do NOT generate aggressive REJECT or hard-stop rules — the data is noise, not signal\n`;
+  prompt += `- Never treat a 0% or 100% WR from <5 trades as meaningful — it WILL regress to the mean\n`;
+  prompt += `- Weight rules by sample size: a pattern with 20 trades at 65% WR is far more reliable than 2 trades at 0% WR\n\n`;
+
+  prompt += `VOLUME THRESHOLD AWARENESS:\n`;
+  prompt += `- Haiku already filters signals before they reach Sonnet. Do NOT stack volume thresholds across layers.\n`;
+  prompt += `- Haiku volume floor: 2x. If haiku_rules require >3x, sonnet_rules should NOT add another >4x filter on top.\n`;
+  prompt += `- Reasonable volume thresholds: 2-3x for standard signals, 4-5x for high-conviction, 6x+ only for breakout plays.\n`;
+  prompt += `- If "Insufficient volume" is the dominant PASS theme, thresholds may already be too high — consider lowering, not raising.\n\n`;
+
+  prompt += `EXIT RULE CONSTRAINTS:\n`;
+  prompt += `- The exit evaluator's base prompt says "no rigid stop losses — exit when thesis changes, not on arbitrary percentages"\n`;
+  prompt += `- T1 blue chips can tolerate 15-20% drawdowns if thesis intact. T2 tolerates 10-15%.\n`;
+  prompt += `- Do NOT generate hard percentage stops that contradict this (e.g., "exit at -3% no exceptions" is invalid)\n`;
+  prompt += `- Trailing stops must be wide enough for crypto volatility: minimum 3% for T2, 5% for T1\n`;
+  prompt += `- Time-based stops should be >8h minimum — crypto trends need time to develop\n\n`;
+
+  prompt += `RULE DISTINCTNESS:\n`;
+  prompt += `- Each rule must cover a DIFFERENT scenario. Do not generate 3 variations of "golden cross + volume + MACD"\n`;
+  prompt += `- If two rules would fire on the same signal, merge them into one\n`;
+  prompt += `- Balance the ruleset: mix of entry patterns, rejection filters, and edge cases\n\n`;
+
+  prompt += `CONTRADICTION AVOIDANCE:\n`;
+  prompt += `- REJECT/STOP rules MUST target a specific signal pattern (e.g., "REJECT VOLUME_SPIKE STRONG with RSI >70 — 3/3 losses")\n`;
+  prompt += `- NEVER generate generic theme-level rejections (e.g., "REJECT signals with insufficient volume", "REDUCE signals citing volume")\n`;
+  prompt += `- Generic rejections contradict specific ESCALATE rules and are automatically removed by the validator\n`;
+  prompt += `- Each REJECT rule must cite: the specific pattern, sample count, and loss rate from the data above\n`;
+  prompt += `- If you want to restrict a broad category, use multiple specific rules instead of one blanket rule\n\n`;
+
+  if (defensiveMode) {
+    prompt += `CONSTRAINTS: Max 15 haiku_rules (combined). >=60% MUST be STOP/REJECT/REDUCE (DEFENSIVE MODE). Max escalation target: ${DEFENSIVE_MAX_ESC_TARGET}%. No STOP rules with <5 samples. LOSING TRADE PATTERNS are the #1 priority — generate REJECT/REDUCE rules for every losing pattern. START rules allowed ONLY for patterns with >70% WR and positive P&L. Include SELL-side rules. No duplicate rules.\n\n`;
+    prompt += `Focus on: CAPITAL PRESERVATION. What is losing money? What patterns should be stopped? Which losing trades should never have been taken? Only promote patterns with strong evidence of profitability (>70% WR, positive P&L, 5+ samples). Do NOT generate rules to trade more.`;
   } else {
-    prompt += `Focus on: missed opportunities (what should have been escalated or bought), signal quality (which triggers produce real moves), and calibrating Haiku escalation thresholds and Sonnet confidence. The bot may be too conservative — analyze whether passes were justified.`;
+    prompt += `CONSTRAINTS: Max 15 haiku_rules (combined). >=40% must be ESCALATE/START. Target ${ESC_CONV_TARGET_MIN}-${ESC_CONV_TARGET_MAX}% escalation conversion. No STOP rules with <5 samples. MISSED_OPPORTUNITY = Sonnet error, not Haiku. No blanket rejections — only STOP patterns with confirmed CORRECT_PASS (price didn't move). Include SELL-side rules. No duplicate rules. LOSING TRADE PATTERNS must generate REJECT/REDUCE rules — do not only focus on missed opportunities.\n\n`;
+
+    if (hasTrades) {
+      prompt += `Focus on: >70% WR patterns (promote), <40% WR patterns (warn), missed opportunities (both non-escalated and Sonnet PASS), optimal hold times, DCA effectiveness.`;
+    } else {
+      prompt += `Focus on: missed opportunities (what should have been escalated or bought), signal quality (which triggers produce real moves), and calibrating Haiku escalation thresholds and Sonnet confidence. The bot may be too conservative — analyze whether passes were justified.`;
+    }
   }
 
   try {
@@ -726,22 +876,48 @@ async function callSonnetForAnalysis(stats) {
 
 // ── Rule Validator ──────────────────────────────────────────
 
-function validateAnalysis(analysis) {
+function validateAnalysis(analysis, defensiveMode = false) {
   const haikuRules = toArray(analysis.haiku_rules);
   const calibrationRules = toArray(analysis.haiku_escalation_calibration);
   const allHaikuRules = [...haikuRules, ...calibrationRules];
   const issues = [];
 
-  // Check that >=40% of combined haiku rules are ESCALATE/START type
+  // ── Filter non-actionable rules ──
+  // Rules must start with a valid verb. Anything else is commentary, not a rule.
+  const VALID_HAIKU_VERBS = /^(ESCALATE|REJECT|REDUCE|START|STOP|TENTATIVE)/i;
+  const VALID_SONNET_VERBS = /^(APPROVE|REJECT|START|STOP|TENTATIVE)/i;
+  const VALID_EXIT_VERBS = /^(EXIT|HOLD|PARTIAL_EXIT|TRAIL|TENTATIVE)/i;
+
+  const filterInvalidVerbs = (rules, validPattern, label) => {
+    return rules.filter(r => {
+      const text = typeof r === 'string' ? r : JSON.stringify(r);
+      if (!validPattern.test(text.trim())) {
+        issues.push(`Removed non-actionable ${label} rule (invalid verb): "${text.substring(0, 60)}"`);
+        return false;
+      }
+      return true;
+    });
+  };
+
+  analysis.haiku_rules = filterInvalidVerbs(toArray(analysis.haiku_rules), VALID_HAIKU_VERBS, 'haiku');
+  analysis.haiku_escalation_calibration = filterInvalidVerbs(toArray(analysis.haiku_escalation_calibration), VALID_HAIKU_VERBS, 'haiku_calibration');
+  analysis.sonnet_rules = filterInvalidVerbs(toArray(analysis.sonnet_rules), VALID_SONNET_VERBS, 'sonnet');
+  analysis.exit_rules = filterInvalidVerbs(toArray(analysis.exit_rules || []), VALID_EXIT_VERBS, 'exit');
+
+  // Check ESCALATE/START ratio — threshold depends on defensive mode
+  const minEscalateRatio = defensiveMode ? DEFENSIVE_MIN_ESCALATE_RATIO : 0.4;
   if (allHaikuRules.length > 0) {
     const escalateCount = allHaikuRules.filter(r => {
       const text = (typeof r === 'string' ? r : JSON.stringify(r)).toUpperCase();
       return text.startsWith('ESCALATE') || text.startsWith('START') || text.includes('START ESCALATING');
     }).length;
     const escalateRatio = escalateCount / allHaikuRules.length;
-    if (escalateRatio < 0.4) {
-      issues.push(`Only ${(escalateRatio * 100).toFixed(0)}% of haiku rules are ESCALATE/START (need >=40%). Adding balance.`);
+    if (escalateRatio < minEscalateRatio) {
+      issues.push(`Only ${(escalateRatio * 100).toFixed(0)}% of haiku rules are ESCALATE/START (need >=${(minEscalateRatio * 100).toFixed(0)}%).${defensiveMode ? ' (Defensive mode — lower threshold OK)' : ' Adding balance.'}`);
       // Don't remove rules, just log the imbalance — the escalation guardrail handles correction
+    }
+    if (defensiveMode && escalateRatio > 0.4) {
+      issues.push(`WARNING: Defensive mode active but ${(escalateRatio * 100).toFixed(0)}% of rules are ESCALATE/START (>40%) — too aggressive for a losing streak. Consider reducing START rules.`);
     }
   }
 
@@ -776,18 +952,38 @@ function validateAnalysis(analysis) {
   const approveRules = allRulesFlat.filter(r => /^(APPROVE|ESCALATE|START)/i.test(r.text));
   const rejectRules = allRulesFlat.filter(r => /^(REJECT|REDUCE|STOP|SKIP)/i.test(r.text));
 
+  // Specific indicator keywords that suggest two rules target the same pattern.
+  // Generic strength terms (STRONG/MODERATE/WEAK) are excluded — they appear in
+  // nearly every rule and don't indicate a true contradiction.
+  const SPECIFIC_KEYWORDS = /\b(T[12]|RSI|MACD|BB|VOLUME|EMA|SMA200|GOLDEN.CROSS|DEATH.CROSS|SUPPORT|RESISTANCE)\b/gi;
+
   for (const approve of approveRules) {
     for (const reject of rejectRules) {
-      // Extract pattern keywords (indicator names, tiers, strengths)
-      const approveKeywords = approve.text.toUpperCase().match(/\b(T[123]|STRONG|MODERATE|WEAK|RSI|MACD|BB|VOLUME|EMA|BULLISH|BEARISH)\b/g) || [];
-      const rejectKeywords = reject.text.toUpperCase().match(/\b(T[123]|STRONG|MODERATE|WEAK|RSI|MACD|BB|VOLUME|EMA|BULLISH|BEARISH)\b/g) || [];
+      // Extract only specific indicator keywords (not generic strength terms)
+      const approveKeywords = [...new Set((approve.text.toUpperCase().match(SPECIFIC_KEYWORDS) || []).map(k => k.replace(/[.-]/g, '_')))];
+      const rejectKeywords = [...new Set((reject.text.toUpperCase().match(SPECIFIC_KEYWORDS) || []).map(k => k.replace(/[.-]/g, '_')))];
 
       if (approveKeywords.length >= 2 && rejectKeywords.length >= 2) {
         const overlap = approveKeywords.filter(k => rejectKeywords.includes(k));
-        if (overlap.length >= 2) {
-          // Contradictory pair found — remove the REJECT (bias toward trading given the original problem was over-rejection)
-          issues.push(`Contradictory rules detected: "${approve.text.substring(0, 50)}" vs "${reject.text.substring(0, 50)}" — removing REJECT rule`);
-          analysis[reject.source] = toArray(analysis[reject.source]).filter(r => r !== reject.original);
+        // Require 3+ specific indicator overlaps AND matching tier/strength for a true contradiction.
+        // Without tier/strength matching, rules targeting different contexts are falsely flagged.
+        const approveUpper = approve.text.toUpperCase();
+        const rejectUpper = reject.text.toUpperCase();
+        const sameTier = (approveUpper.includes('T1') && rejectUpper.includes('T1')) ||
+                         (approveUpper.includes('T2') && rejectUpper.includes('T2')) ||
+                         (!approveUpper.match(/\bT[12]\b/) && !rejectUpper.match(/\bT[12]\b/));
+        const sameStrength = ['STRONG', 'MODERATE', 'WEAK'].some(s =>
+          approveUpper.includes(s) && rejectUpper.includes(s));
+        if (overlap.length >= 3 && (sameTier || sameStrength)) {
+          if (defensiveMode) {
+            // Defensive mode: preserve REJECT, remove APPROVE — bias toward capital preservation
+            issues.push(`Contradictory rules detected (DEFENSIVE): "${approve.text.substring(0, 50)}" vs "${reject.text.substring(0, 50)}" — removing APPROVE rule`);
+            analysis[approve.source] = toArray(analysis[approve.source]).filter(r => r !== approve.original);
+          } else {
+            // Normal mode: remove REJECT (bias toward trading given the original problem was over-rejection)
+            issues.push(`Contradictory rules detected: "${approve.text.substring(0, 50)}" vs "${reject.text.substring(0, 50)}" — removing REJECT rule`);
+            analysis[reject.source] = toArray(analysis[reject.source]).filter(r => r !== reject.original);
+          }
         }
       }
     }
@@ -1136,8 +1332,8 @@ async function updateOutcomes() {
     AND decisions.outcome = 'PENDING'
   `);
 
-  // PASS decisions older than 24h: evaluate against actual price movement
-  // BUY signals where price rose >threshold% sustained for N candles in 24h → MISSED_OPPORTUNITY
+  // PASS decisions older than configured window: evaluate against actual price movement
+  // BUY signals where price rose >threshold% sustained for N candles → MISSED_OPPORTUNITY
   const missedBuys = await query(`
     UPDATE decisions d SET
       outcome = 'MISSED_OPPORTUNITY',
@@ -1149,16 +1345,16 @@ async function updateOutcomes() {
       JOIN signals s ON d2.signal_id = s.id
       LEFT JOIN indicator_snapshots i ON i.symbol = s.symbol
         AND i.created_at > s.created_at
-        AND i.created_at < s.created_at + INTERVAL '24 hours'
+        AND i.created_at < s.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
       WHERE d2.action = 'PASS' AND d2.outcome = 'PENDING'
         AND s.signal_type = 'BUY'
-        AND d2.created_at < NOW() - INTERVAL '24 hours'
-      GROUP BY d2.id, s.price
+        AND d2.created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+      GROUP BY d2.id, s.price, s.symbol, s.created_at
       HAVING s.price > 0 AND ((MAX(i.price) - s.price) / s.price * 100) > $1
         AND (SELECT COUNT(*) FROM indicator_snapshots i2
              WHERE i2.symbol = s.symbol
                AND i2.created_at > s.created_at
-               AND i2.created_at < s.created_at + INTERVAL '24 hours'
+               AND i2.created_at < s.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
                AND ((i2.price - s.price) / s.price * 100) > $1
             ) >= $2
     ) sub
@@ -1168,7 +1364,7 @@ async function updateOutcomes() {
     logger.info(`[Learning] Marked ${missedBuys.rowCount} BUY PASS decisions as MISSED_OPPORTUNITY`);
   }
 
-  // SELL signals where price dropped >threshold% sustained for N candles in 24h → MISSED_OPPORTUNITY
+  // SELL signals where price dropped >threshold% sustained for N candles → MISSED_OPPORTUNITY
   const missedSells = await query(`
     UPDATE decisions d SET
       outcome = 'MISSED_OPPORTUNITY',
@@ -1180,16 +1376,16 @@ async function updateOutcomes() {
       JOIN signals s ON d2.signal_id = s.id
       LEFT JOIN indicator_snapshots i ON i.symbol = s.symbol
         AND i.created_at > s.created_at
-        AND i.created_at < s.created_at + INTERVAL '24 hours'
+        AND i.created_at < s.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
       WHERE d2.action = 'PASS' AND d2.outcome = 'PENDING'
         AND s.signal_type = 'SELL'
-        AND d2.created_at < NOW() - INTERVAL '24 hours'
-      GROUP BY d2.id, s.price
+        AND d2.created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+      GROUP BY d2.id, s.price, s.symbol, s.created_at
       HAVING s.price > 0 AND ((s.price - MIN(i.price)) / s.price * 100) > $1
         AND (SELECT COUNT(*) FROM indicator_snapshots i2
              WHERE i2.symbol = s.symbol
                AND i2.created_at > s.created_at
-               AND i2.created_at < s.created_at + INTERVAL '24 hours'
+               AND i2.created_at < s.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
                AND ((s.price - i2.price) / s.price * 100) > $1
             ) >= $2
     ) sub
@@ -1199,11 +1395,11 @@ async function updateOutcomes() {
     logger.info(`[Learning] Marked ${missedSells.rowCount} SELL PASS decisions as MISSED_OPPORTUNITY`);
   }
 
-  // Remaining PASS decisions older than 24h: mark as CORRECT_PASS
+  // Remaining PASS decisions older than evaluation window: mark as CORRECT_PASS
   await query(`
     UPDATE decisions SET outcome = 'CORRECT_PASS'
     WHERE action = 'PASS' AND outcome = 'PENDING'
-    AND created_at < NOW() - INTERVAL '24 hours'
+    AND created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
   `);
 
   // Also tag non-escalated BUY signals that moved >threshold% sustained as MISSED_OPPORTUNITY
@@ -1217,16 +1413,16 @@ async function updateOutcomes() {
       FROM signals s2
       LEFT JOIN indicator_snapshots i ON i.symbol = s2.symbol
         AND i.created_at > s2.created_at
-        AND i.created_at < s2.created_at + INTERVAL '24 hours'
+        AND i.created_at < s2.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
       WHERE s2.escalated = false AND s2.signal_type = 'BUY'
         AND s2.outcome = 'PENDING'
-        AND s2.created_at < NOW() - INTERVAL '24 hours'
-      GROUP BY s2.id, s2.price
+        AND s2.created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+      GROUP BY s2.id, s2.price, s2.symbol, s2.created_at
       HAVING s2.price > 0 AND ((MAX(i.price) - s2.price) / s2.price * 100) > $1
         AND (SELECT COUNT(*) FROM indicator_snapshots i2
              WHERE i2.symbol = s2.symbol
                AND i2.created_at > s2.created_at
-               AND i2.created_at < s2.created_at + INTERVAL '24 hours'
+               AND i2.created_at < s2.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
                AND ((i2.price - s2.price) / s2.price * 100) > $1
             ) >= $2
     ) sub
@@ -1247,16 +1443,16 @@ async function updateOutcomes() {
       FROM signals s2
       LEFT JOIN indicator_snapshots i ON i.symbol = s2.symbol
         AND i.created_at > s2.created_at
-        AND i.created_at < s2.created_at + INTERVAL '24 hours'
+        AND i.created_at < s2.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
       WHERE s2.escalated = false AND s2.signal_type = 'SELL'
         AND s2.outcome = 'PENDING'
-        AND s2.created_at < NOW() - INTERVAL '24 hours'
-      GROUP BY s2.id, s2.price
+        AND s2.created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+      GROUP BY s2.id, s2.price, s2.symbol, s2.created_at
       HAVING s2.price > 0 AND ((s2.price - MIN(i.price)) / s2.price * 100) > $1
         AND (SELECT COUNT(*) FROM indicator_snapshots i2
              WHERE i2.symbol = s2.symbol
                AND i2.created_at > s2.created_at
-               AND i2.created_at < s2.created_at + INTERVAL '24 hours'
+               AND i2.created_at < s2.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
                AND ((s2.price - i2.price) / s2.price * 100) > $1
             ) >= $2
     ) sub
@@ -1266,11 +1462,11 @@ async function updateOutcomes() {
     logger.info(`[Learning] Marked ${missedSellSignals.rowCount} non-escalated SELL signals as MISSED_OPPORTUNITY`);
   }
 
-  // Remaining non-escalated signals older than 24h: mark as NOT_TRADED
+  // Remaining non-escalated signals older than evaluation window: mark as NOT_TRADED
   await query(`
     UPDATE signals SET outcome = 'NOT_TRADED'
     WHERE escalated = false AND outcome = 'PENDING'
-    AND created_at < NOW() - INTERVAL '24 hours'
+    AND created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
   `);
 
   await query('COMMIT');
@@ -1286,41 +1482,58 @@ async function updateOutcomes() {
 const toArray = (val) => Array.isArray(val) ? val : [];
 
 async function saveLearningRules(analysis) {
-  // Deactivate old rules (>7 days)
-  await query(`
-    UPDATE learning_rules SET is_active = false
-    WHERE is_active = true AND created_at < NOW() - INTERVAL '7 days'
-  `);
+  try {
+    await query('BEGIN');
 
-  // Deactivate all current rules of the types we're about to insert (prevents duplicates)
-  const typesToReplace = [];
-  if (toArray(analysis.haiku_rules).length > 0) typesToReplace.push('haiku_escalation');
-  if (toArray(analysis.sonnet_rules).length > 0) typesToReplace.push('sonnet_decision');
-  if (toArray(analysis.haiku_escalation_calibration).length > 0) typesToReplace.push('haiku_calibration');
-  if (typesToReplace.length > 0) {
-    const deactivated = await query(`
-      UPDATE learning_rules SET is_active = false
-      WHERE is_active = true AND rule_type = ANY($1)
-    `, [typesToReplace]);
-    if (deactivated.rowCount > 0) {
-      logger.info(`[Learning] Deactivated ${deactivated.rowCount} old rules for types: ${typesToReplace.join(', ')}`);
-    }
-  }
-
-  const allRules = [
-    ...toArray(analysis.haiku_rules).map(r => ({ type: 'haiku_escalation', text: typeof r === 'string' ? r : JSON.stringify(r) })),
-    ...toArray(analysis.sonnet_rules).map(r => ({ type: 'sonnet_decision', text: typeof r === 'string' ? r : JSON.stringify(r) })),
-    ...toArray(analysis.haiku_escalation_calibration).map(r => ({ type: 'haiku_calibration', text: typeof r === 'string' ? r : JSON.stringify(r) })),
-  ];
-
-  for (const rule of allRules) {
+    // Deactivate old rules (>7 days)
     await query(`
-      INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at)
-      VALUES ($1, $2, true, NOW())
-    `, [rule.type, rule.text]);
-  }
+      UPDATE learning_rules SET is_active = false
+      WHERE is_active = true AND created_at < NOW() - INTERVAL '7 days'
+    `);
 
-  logger.info(`[Learning] Saved ${allRules.length} learning rules`);
+    // Deactivate all current rules of the types we're about to insert (prevents duplicates)
+    const typesToReplace = [];
+    if (toArray(analysis.haiku_rules).length > 0) typesToReplace.push('haiku_escalation');
+    if (toArray(analysis.sonnet_rules).length > 0) typesToReplace.push('sonnet_decision');
+    if (toArray(analysis.haiku_escalation_calibration).length > 0) typesToReplace.push('haiku_calibration');
+    if (typesToReplace.length > 0) {
+      const deactivated = await query(`
+        UPDATE learning_rules SET is_active = false
+        WHERE is_active = true AND rule_type = ANY($1)
+      `, [typesToReplace]);
+      if (deactivated.rowCount > 0) {
+        logger.info(`[Learning] Deactivated ${deactivated.rowCount} old rules for types: ${typesToReplace.join(', ')}`);
+      }
+    }
+
+    const allRules = [
+      ...toArray(analysis.haiku_rules).map(r => ({ type: 'haiku_escalation', text: typeof r === 'string' ? r : JSON.stringify(r) })),
+      ...toArray(analysis.sonnet_rules).map(r => ({ type: 'sonnet_decision', text: typeof r === 'string' ? r : JSON.stringify(r) })),
+      ...toArray(analysis.haiku_escalation_calibration).map(r => ({ type: 'haiku_calibration', text: typeof r === 'string' ? r : JSON.stringify(r) })),
+    ];
+
+    // Reset sequence to avoid PK conflicts (can drift after manual inserts or partial failures)
+    await query(`SELECT setval(pg_get_serial_sequence('learning_rules', 'id'), COALESCE((SELECT MAX(id) FROM learning_rules), 0) + 1, false)`);
+
+    for (const rule of allRules) {
+      await query(`
+        INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at)
+        VALUES ($1, $2, true, NOW())
+        ON CONFLICT (id) DO UPDATE SET
+          rule_type = EXCLUDED.rule_type,
+          rule_text = EXCLUDED.rule_text,
+          is_active = true,
+          created_at = NOW()
+      `, [rule.type, rule.text]);
+    }
+
+    await query('COMMIT');
+    logger.info(`[Learning] Saved ${allRules.length} learning rules`);
+  } catch (error) {
+    await query('ROLLBACK').catch(() => {});
+    logger.error(`[Learning] saveLearningRules failed, rolled back: ${error.message}`);
+    throw error;
+  }
 }
 
 async function saveLearningHistory(stats, analysis) {

@@ -9,6 +9,7 @@ const CRYPTOCOMPARE_NEWS_URL = 'https://min-api.cryptocompare.com/data/v2/news/'
 // Cache: symbol -> { results, timestamp }
 const newsCache = new Map();
 const CACHE_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours — crypto news cycles are slow, saves API calls
+const MAX_CACHE_SIZE = 200; // Prevent unbounded growth
 
 /**
  * Format cached results into compact text for AI consumption.
@@ -108,6 +109,11 @@ export async function getNewsContext(symbol, coinName, maxItems = 3) {
   try {
     // Try CryptoCompare first (free)
     const results = await fetchCryptoCompareNews(symbol, coinName);
+    if (newsCache.size >= MAX_CACHE_SIZE) {
+      // Evict oldest entry
+      const oldestKey = newsCache.keys().next().value;
+      newsCache.delete(oldestKey);
+    }
     newsCache.set(symbol, { results, timestamp: Date.now() });
     logger.info(`[News] CryptoCompare: ${symbol} (${results.length} results)`);
     return formatNewsResults(coinName, results, maxItems);
@@ -119,6 +125,10 @@ export async function getNewsContext(symbol, coinName, maxItems = 3) {
     // Fallback to Brave Search (paid)
     const results = await fetchBraveNews(coinName);
     if (results.length > 0) {
+      if (newsCache.size >= MAX_CACHE_SIZE) {
+        const oldestKey = newsCache.keys().next().value;
+        newsCache.delete(oldestKey);
+      }
       newsCache.set(symbol, { results, timestamp: Date.now() });
       logger.info(`[News] Brave fallback: ${symbol} (${results.length} results)`);
       return formatNewsResults(coinName, results, maxItems);

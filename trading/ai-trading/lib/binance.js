@@ -132,26 +132,36 @@ export async function placeOrder(symbol, side, quantity, price = null) {
   const isPaper = process.env.PAPER_TRADING === 'true';
 
   if (isPaper) {
-    const currentPrice = price || await getCurrentPrice(symbol);
+    const basePrice = price || await getCurrentPrice(symbol);
+    // Simulate realistic slippage: 0.02% adverse for market orders
+    const slippagePct = 0.0002;
+    const fillPrice = side === 'BUY'
+      ? basePrice * (1 + slippagePct)
+      : basePrice * (1 - slippagePct);
+    const fillCost = fillPrice * quantity;
+    const feeRate = parseFloat(process.env.TRADING_FEE_RATE || '0.001');
+    const commission = fillCost * feeRate;
+
     const mockOrder = {
       symbol,
       orderId: `PAPER_${Date.now()}`,
       side,
       type: 'MARKET',
       quantity,
-      price: currentPrice,
+      price: fillPrice,
       status: 'FILLED',
       executedQty: quantity,
-      cummulativeQuoteQty: currentPrice * quantity,
+      cummulativeQuoteQty: fillCost,
       fills: [{
-        price: currentPrice,
+        price: fillPrice,
         qty: quantity,
-        commission: 0,
+        commission,
         commissionAsset: 'USDT',
       }],
     };
 
-    logger.info(`[Binance] PAPER TRADE: ${side} ${quantity} ${symbol} @ $${currentPrice}`);
+    const slippage = ((fillPrice - basePrice) / basePrice * 100).toFixed(3);
+    logger.info(`[Binance] PAPER TRADE: ${side} ${quantity} ${symbol} @ $${fillPrice.toFixed(4)} (slip: ${slippage}%, fee: $${commission.toFixed(2)})`);
     return mockOrder;
   }
 

@@ -36,6 +36,10 @@ let portfolioCache = null;
 // Sonnet deduplication — tracks last escalation time per symbol
 const lastSonnetEvaluation = new Map();
 
+// Daily trade counter — resets at midnight UTC
+let dailyTradeCount = 0;
+let dailyTradeDate = new Date().toISOString().split('T')[0];
+
 // ── Startup ─────────────────────────────────────────────────
 
 async function start() {
@@ -120,6 +124,21 @@ async function runCycle() {
 
   logger.info(`[Engine] === Cycle ${cycleCount} ===`);
 
+  // 0. Reset daily trade counter at midnight UTC
+  const today = new Date().toISOString().split('T')[0];
+  if (today !== dailyTradeDate) {
+    logger.info(`[Engine] New trading day ${today} — resetting daily trade count (was ${dailyTradeCount})`);
+    dailyTradeCount = 0;
+    dailyTradeDate = today;
+  }
+
+  // 0b. Check max trades per day
+  const maxTradesPerDay = tradingConfig.account.max_trades_per_day || 20;
+  if (dailyTradeCount >= maxTradesPerDay) {
+    logger.warn(`[Engine] Daily trade limit reached (${dailyTradeCount}/${maxTradesPerDay}). Skipping cycle.`);
+    return;
+  }
+
   // 1. Check circuit breaker
   const cb = await checkCircuitBreaker();
   if (cb.is_active) {
@@ -155,6 +174,13 @@ async function runCycle() {
     const atMaxPositions = openPositions.length >= tradingConfig.account.max_concurrent_positions;
 
     const toEscalate = [];
+    // Mark filtered signals so they don't show as "pending" in the DB
+    const markFiltered = (signalId, reason) => {
+      if (signalId) {
+        query('UPDATE signals SET outcome = $1 WHERE id = $2 AND outcome = $3', [`FILTERED:${reason}`, signalId, 'PENDING']).catch(() => {});
+      }
+    };
+
     for (let i = 0; i < scanResult.triggered.length; i++) {
       const triggered = scanResult.triggered[i];
       const haikuResult = haikuResults[i];
@@ -164,12 +190,21 @@ async function runCycle() {
         continue;
       }
 
+      // Dynamic confidence floor — tightens when escalation conversion rate exceeds target
+      const { floor: dynamicConfFloor, stats: confFloorStats } = await getEscalationConfidenceFloor();
+      if (haikuResult.confidence < dynamicConfFloor) {
+        logger.info(`[Engine] ${triggered.symbol}: Below dynamic confidence floor ${dynamicConfFloor.toFixed(2)} (conf:${haikuResult.confidence}, conversion:${confFloorStats?.convRate?.toFixed(1) || '?'}%)`);
+        markFiltered(haikuResult.signal_id, 'CONF_FLOOR');
+        continue;
+      }
+
       // Require at least 2 triggers — unless Haiku is STRONG with high confidence
       if (triggered.thresholds_crossed.length < 2) {
         if (haikuResult.strength === 'STRONG' && haikuResult.confidence >= 0.7) {
           logger.info(`[Engine] ${triggered.symbol}: Single trigger but Haiku STRONG conf:${haikuResult.confidence} — allowing escalation`);
         } else {
           logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — single trigger (${triggered.thresholds_crossed[0]})`);
+          markFiltered(haikuResult.signal_id, 'SINGLE_TRIGGER');
           continue;
         }
       }
@@ -179,6 +214,7 @@ async function runCycle() {
         const position = await getPositionBySymbol(triggered.symbol);
         if (!position) {
           logger.info(`[Engine] ${triggered.symbol}: Skipped SELL escalation — no open position`);
+          markFiltered(haikuResult.signal_id, 'NO_POSITION');
           continue;
         }
       }
@@ -186,6 +222,7 @@ async function runCycle() {
       // Skip BUY escalations when portfolio is at max positions
       if (haikuResult.signal === 'BUY' && atMaxPositions) {
         logger.info(`[Engine] ${triggered.symbol}: Skipped BUY escalation — portfolio at max positions (${openPositions.length}/${tradingConfig.account.max_concurrent_positions})`);
+        markFiltered(haikuResult.signal_id, 'MAX_POSITIONS');
         continue;
       }
 
@@ -195,6 +232,7 @@ async function runCycle() {
       if (lastEval && haikuResult.signal !== 'SELL' && (Date.now() - lastEval) < dedupMinutes * 60 * 1000) {
         const minutesAgo = ((Date.now() - lastEval) / 60000).toFixed(0);
         logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — Sonnet evaluated ${minutesAgo}m ago (dedup: ${dedupMinutes}m)`);
+        markFiltered(haikuResult.signal_id, 'DEDUP');
         continue;
       }
 
@@ -235,6 +273,7 @@ async function runCycle() {
       for (let i = 0; i < results.length; i++) {
         if (results[i].status === 'fulfilled' && results[i].value.executed) {
           tradesExecuted++;
+          dailyTradeCount++;
         } else if (results[i].status === 'rejected') {
           logger.error(`[Engine] Error processing ${toEscalate[i].triggered.symbol}: ${results[i].reason?.message}`);
         }
@@ -429,15 +468,22 @@ async function executeSell(decision, triggered) {
   }
 
   // Determine exit percent — Sonnet may specify partial exit
-  const exitPercent = decision.position_details?.exit_percent || 100;
+  const intendedExitPercent = decision.position_details?.exit_percent || 100;
   const currentPrice = await getCurrentPrice(symbol);
-  const exitSize = parseFloat(position.current_size) * (exitPercent / 100);
+  const exitSize = parseFloat(position.current_size) * (intendedExitPercent / 100);
 
   const order = await placeOrder(symbol, 'SELL', exitSize);
   const fillPrice = order.price;
+  const fillQty = parseFloat(order.executedQty) || exitSize;
+
+  // Use actual filled quantity to compute real exit percent (handles partial fills)
+  const actualExitPercent = Math.min((fillQty / parseFloat(position.current_size)) * 100, 100);
+  if (Math.abs(actualExitPercent - intendedExitPercent) > 1) {
+    logger.warn(`[Engine] ${symbol}: Partial fill — intended ${intendedExitPercent}% but filled ${actualExitPercent.toFixed(1)}%`);
+  }
 
   const closeResult = await closePosition(
-    position.id, fillPrice, exitPercent,
+    position.id, fillPrice, actualExitPercent,
     decision.reasoning, decision.confidence, decision.decision_id,
     tradingConfig.account.paper_trading
   );
@@ -617,6 +663,7 @@ async function runExitScanCycle() {
 
       if (result.executed) {
         exitsExecuted++;
+        dailyTradeCount++;
         await queueEvent('EXIT_SCANNER_ACTION', position.symbol, {
           action: decision.action,
           urgency_score: urgency.score,
@@ -756,6 +803,58 @@ async function recordLoss(symbol, pnl) {
 
 async function resetCircuitBreaker() {
   await query('UPDATE circuit_breaker SET consecutive_losses = 0, updated_at = NOW() WHERE id = 1');
+}
+
+// ── Dynamic Escalation Confidence Floor (cached 1hr) ────────
+
+let escConfFloorCache = { floor: null, stats: null, expiry: 0 };
+
+async function getEscalationConfidenceFloor() {
+  if (escConfFloorCache.floor !== null && Date.now() < escConfFloorCache.expiry) {
+    return escConfFloorCache;
+  }
+
+  const baseFloor = tradingConfig.escalation.min_confidence_to_escalate || 0.60;
+  const targetMax = tradingConfig.learning?.escalation_conversion_target_max || 30;
+
+  try {
+    const result = await query(`
+      SELECT
+        COUNT(*) FILTER (WHERE action IN ('BUY','SELL','DCA','PARTIAL_EXIT') AND executed = true) AS traded,
+        COUNT(*) AS total
+      FROM decisions
+      WHERE created_at > NOW() - INTERVAL '24 hours'
+    `);
+
+    const { traded, total } = result.rows[0];
+    const totalNum = parseInt(total) || 0;
+    const tradedNum = parseInt(traded) || 0;
+
+    if (totalNum < 3) {
+      // Not enough data to compute meaningful rate
+      escConfFloorCache = { floor: baseFloor, stats: { convRate: 0, totalNum, tradedNum, elevated: false }, expiry: Date.now() + 60 * 60 * 1000 };
+      return escConfFloorCache;
+    }
+
+    const convRate = (tradedNum / totalNum) * 100;
+
+    let floor = baseFloor;
+    let elevated = false;
+    if (convRate > targetMax) {
+      const overshootRatio = (convRate - targetMax) / targetMax;
+      const boost = Math.min(overshootRatio * 0.15, 0.20);
+      floor = baseFloor + boost;
+      elevated = true;
+      logger.info(`[Engine] Escalation confidence floor ELEVATED: ${floor.toFixed(2)} (conversion ${convRate.toFixed(1)}% > ${targetMax}% target, boost +${boost.toFixed(2)})`);
+    }
+
+    escConfFloorCache = { floor, stats: { convRate, totalNum, tradedNum, elevated }, expiry: Date.now() + 60 * 60 * 1000 };
+    return escConfFloorCache;
+  } catch (error) {
+    logger.error(`[Engine] getEscalationConfidenceFloor error: ${error.message}`);
+    escConfFloorCache = { floor: baseFloor, stats: null, expiry: Date.now() + 5 * 60 * 1000 };
+    return escConfFloorCache;
+  }
 }
 
 // ── Learning Rules (cached 1hr — only changes nightly) ──────
