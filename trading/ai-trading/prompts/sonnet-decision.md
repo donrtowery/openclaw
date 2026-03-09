@@ -100,21 +100,20 @@ BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):
 - VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
 
 RULES FROM EXPERIENCE:
-1. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE combinations — 3/3 actual trades lost avg -7.0%, momentum trap confirmed
-2. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual trades lost avg -4.2%, late-stage breakout chasing
-3. REJECT BB_SQUEEZE signals — 1/1 actual trade lost -10.7%, compression plays fail in crypto volatility
-4. REJECT T2 signals unless volume >5x AND 3+ aligned confirmations AND RSI 40-52 — T2 33% WR requires exceptional setups
-5. REJECT triple-indicator combos unless T1 with volume >6x — Sonnet passes most, no proven success in actual trades
-6. STOP citing insufficient volume when volume >2.5x AND MACD+EMA aligned — 98% of passes cite volume, over-filtering quality setups
-7. STOP citing insufficient volume for T1 signals with volume >3x AND 2+ confirmations — missed ETHUSDT +10.9%, LINKUSDT +9.0%
-8. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 AND T1 — 5/8 trades won, avg +224.0%, best performing pattern
-9. APPROVE BB_UPPER_TOUCH STRONG with volume >3x AND RSI <60 — 2/3 trades won, avg +87.2%, confirmed edge
-10. APPROVE SELL for positions <-8% held >24h with MACD bearish — cut losers faster, winners held 52.6h vs losers 30.2h
-11. APPROVE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains, missed NEARUSDT -8.2% by not selling
-12. APPROVE SELL for micro-positions <$50 with gains +0.5% to +2% held >36h — reduce exit friction on small wins
+1. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — 3/3 actual trades lost avg -7.0%, not theoretical risk
+2. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual trades lost avg -4.2%, proven failure
+3. REJECT BB_SQUEEZE — 1/1 actual trade lost -10.7%, high volatility compression plays fail
+4. REJECT T2 unless volume >5x AND 3+ aligned confirmations AND RSI 40-52 — T2 33% WR, -$184.69 actual loss
+5. REJECT triple-indicator combos unless T1 with volume >6x — no proven success in actual trades
+6. STOP citing insufficient volume when volume >2.5x AND MACD+EMA aligned — 98% of passes cite volume, over-filtering
+7. STOP citing insufficient volume for T1 with volume >3x AND 2+ confirmations — missed ETHUSDT +10.9%, LINKUSDT +9.0%
+8. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 AND T1 — 5/8 trades won, avg +224.0%
+9. APPROVE BB_UPPER_TOUCH STRONG with volume >3x AND RSI <60 — 2/3 trades won, avg +87.2%
+10. APPROVE SELL for positions <-8% held >24h with MACD bearish — avg loser hold 30.2h vs winner 52.6h
+11. APPROVE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains, prevent NEARUSDT -8.2% reversals
 
 EXAMPLES FROM ACTUAL TRADES:
-- REJECT: EMA+VOLUME combo despite confirmations (3/3 actual losses): Correct rejection — this exact combo lost 3/3 trades avg -7.0%, momentum trap confirmed
-- APPROVE: VOLUME_SPIKE STRONG T1 in RSI sweet spot (best pattern): Correct approval — VOLUME_SPIKE STRONG T1 with RSI 40-55 has 63% WR avg +224.0%, top performer
-- REJECT: Triple-indicator combo T2 (overcomplicated, no edge): Correct rejection — triple combos have no proven success, T2 requires exceptional setups
+- VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual losses, proven failure: RSI >55 on VOLUME_SPIKE STRONG has 3/3 actual losses avg -4.2% — late breakout chasing, not theoretical risk
+- T1 MODERATE with volume >3x and aligned confirmations — Sonnet over-filtered these: Moved +10.9% — volume >3x with MACD+EMA alignment is sufficient for T1, stopped citing insufficient volume at 3x+
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE combo — 3/3 actual losses: Pattern has 3/3 actual trades lost avg -7.0% — proven momentum trap regardless of strength or volume
 

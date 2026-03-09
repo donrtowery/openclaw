@@ -82,10 +82,11 @@ HOLD TIME COMPARISON:
 - Losers: 30.2h avg hold
 
 EXIT RULES FROM EXPERIENCE:
-1. EXIT positions <-8% held >24h with MACD bearish OR volume declining — thesis broken, avg loser hold 30.2h too long
-2. EXIT positions <-6% AND RSI <35 AND price <SMA200 — momentum failure, preserve capital
+1. EXIT positions <-8% held >24h with MACD bearish OR volume declining — losers held avg 30.2h, cut faster
+2. EXIT positions <-10% held >36h with RSI <35 AND price <SMA200 — thesis failure, preserve capital
 3. EXIT winners held >60h with RSI >70 OR price >8% above EMA(8) — avg winner hold 52.6h, lock before reversal
-4. EXIT micro-positions <$50 with gains +0.5% to +2% held >36h — friction-free exit on small wins
-5. HOLD T1 positions <-10% if RSI <30 AND volume declining AND no MACD bearish — oversold bounce potential
-6. TRAIL winners >5% with 4% trailing stop if RSI 55-70 AND MACD bullish — let winners run with protection
-7. PARTIAL_EXIT 50% of position at +6% if RSI >68 AND held >48h — derisk while keeping upside exposure
+4. PARTIAL_EXIT 50% of winners +6% to +10% held >48h with RSI >65 — reduce risk, let rest run
+5. TRAIL winners >+8% with 5% stop below EMA(8) for T1, 3% for T2 — crypto-appropriate volatility buffer
+6. EXIT micro-positions <$50 with gains +0.5% to +2% held >36h — reduce friction on small wins
+7. HOLD T1 positions -5% to -12% held <48h if MACD bullish AND volume stable — blue chips can recover
+8. EXIT T2 positions <-6% held >24h with RSI <40 — T2 33% WR requires tighter risk management
