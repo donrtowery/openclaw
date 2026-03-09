@@ -48,10 +48,16 @@ export function calcMACD(closes) {
     const histogram = Math.round(current.histogram * 1000) / 1000;
 
     let crossover = 'NEUTRAL';
-    if (prev.MACD <= prev.signal && current.MACD > current.signal) crossover = 'BULLISH';
-    else if (prev.MACD >= prev.signal && current.MACD < current.signal) crossover = 'BEARISH';
-    else if (current.MACD > current.signal) crossover = 'BULLISH_TREND';
-    else if (current.MACD < current.signal) crossover = 'BEARISH_TREND';
+    if (prev.MACD != null && prev.signal != null) {
+      if (prev.MACD <= prev.signal && current.MACD > current.signal) crossover = 'BULLISH';
+      else if (prev.MACD >= prev.signal && current.MACD < current.signal) crossover = 'BEARISH';
+      else if (current.MACD > current.signal) crossover = 'BULLISH_TREND';
+      else if (current.MACD < current.signal) crossover = 'BEARISH_TREND';
+    } else {
+      // Previous values unavailable — detect trend only, not crossover
+      if (current.MACD > current.signal) crossover = 'BULLISH_TREND';
+      else if (current.MACD < current.signal) crossover = 'BEARISH_TREND';
+    }
 
     return { macd, signal, histogram, crossover };
   } catch (err) {

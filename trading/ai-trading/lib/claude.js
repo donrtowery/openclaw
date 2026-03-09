@@ -636,8 +636,8 @@ function enforceConfidenceThresholds(decision, config) {
     decision.action = 'HOLD';
   }
 
-  // PARTIAL_EXIT uses a fixed lower threshold (less risky than full SELL)
-  const partialExitThreshold = 0.50;
+  // PARTIAL_EXIT threshold — configurable, defaults to sonnet_minimum_for_exit
+  const partialExitThreshold = thresholds.sonnet_minimum_for_partial_exit ?? thresholds.sonnet_minimum_for_exit ?? 0.55;
   if (decision.action === 'PARTIAL_EXIT' && decision.confidence < partialExitThreshold) {
     logger.warn(`[Sonnet] PARTIAL_EXIT confidence ${decision.confidence} < ${partialExitThreshold}, downgrading to HOLD`);
     decision.action = 'HOLD';

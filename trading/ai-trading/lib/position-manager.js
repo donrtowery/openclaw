@@ -144,10 +144,15 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
       const entryTime = new Date(pos.entry_time);
       const holdHours = (Date.now() - entryTime.getTime()) / (1000 * 60 * 60);
       const totalProfit = parseFloat(pos.total_profit_taken || 0) + pnl;
-      // Use entry_cost (original investment including DCAs before partial exits) for P&L%
-      // This avoids inflated percentages when partial exits have reduced total_cost
-      const originalCost = parseFloat(pos.entry_cost) || parseFloat(pos.total_cost);
-      const finalPnlPercent = originalCost > 0 ? (totalProfit / originalCost) * 100 : 0;
+      // Query total capital deployed (entry + all DCAs) — the true denominator for P&L%
+      // This handles DCA'd positions correctly (entry_cost only has initial entry)
+      // and isn't reduced by partial exits (unlike total_cost)
+      const capitalResult = await client.query(
+        "SELECT COALESCE(SUM(cost), 0) as total_deployed FROM trades WHERE position_id = $1 AND trade_type IN ('ENTRY', 'DCA')",
+        [positionId]
+      );
+      const totalCapitalDeployed = parseFloat(capitalResult.rows[0].total_deployed) || parseFloat(pos.total_cost);
+      const finalPnlPercent = totalCapitalDeployed > 0 ? (totalProfit / totalCapitalDeployed) * 100 : 0;
 
       await client.query(`
         UPDATE positions
@@ -161,8 +166,8 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
       logger.info(`[Position] CLOSED #${positionId} @ $${exitPrice.toFixed(2)} | P&L: $${totalProfit.toFixed(2)} (${finalPnlPercent.toFixed(2)}%) | fees: $${newTotalFees.toFixed(2)} | held ${holdHours.toFixed(1)}h`);
     } else {
       const remainingSize = Math.max(0, currentSize - exitSize);
-      // Preserve cost basis ratio: remaining coins keep their avg cost, not a subtracted remainder
-      const remainingCost = remainingSize * avgEntry;
+      // Preserve proportional cost including fees — remaining coins keep their share of total_cost
+      const remainingCost = currentSize > 0 ? (remainingSize / currentSize) * parseFloat(pos.total_cost) : 0;
       const partialExits = (pos.partial_exits || 0) + 1;
       const totalProfit = parseFloat(pos.total_profit_taken || 0) + pnl;
 

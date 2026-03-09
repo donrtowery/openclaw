@@ -95,7 +95,7 @@ Valid JSON only:
 EXIT TIMING ANALYSIS:
 - slow_loss_cut: 10 trades, avg P&L -5.6%, avg max gain 0.6%, avg hold 30.2h
 - late_exit_winner: 2 trades, avg P&L 0.7%, avg max gain 7.6%, avg hold 51.4h
-- good_exit: 6 trades, avg P&L 344.7%, avg max gain 7.5%, avg hold 53.0h
+- good_exit: 6 trades, avg P&L 5.2%, avg max gain 7.5%, avg hold 53.0h
 
 HOLD TIME COMPARISON:
 - Winners: 52.6h avg hold

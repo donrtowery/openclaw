@@ -12,15 +12,15 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const SONNET_MODEL = process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250929';
 
 const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
-const SNAPSHOT_RETENTION_DAYS = config.learning.snapshot_retention_days || 30;
-const MISSED_OPP_THRESHOLD = config.learning.missed_opportunity_threshold_pct || 5.0;
-const SUSTAINED_CANDLES = config.learning.sustained_candles_required || 6;
-const ESC_CONV_TARGET_MIN = config.learning.escalation_conversion_target_min || 15;
-const ESC_CONV_TARGET_MAX = config.learning.escalation_conversion_target_max || 30;
-const PASS_EVAL_WINDOW_HOURS = Math.max(1, parseInt(config.learning.pass_evaluation_window_hours) || 48);
-const DEFENSIVE_WIN_RATE_THRESHOLD = config.learning.defensive_mode_win_rate_threshold || 50;
-const DEFENSIVE_MAX_ESC_TARGET = config.learning.defensive_mode_max_escalation_target || 15;
-const DEFENSIVE_MIN_ESCALATE_RATIO = config.learning.defensive_mode_min_escalate_ratio || 0.2;
+const SNAPSHOT_RETENTION_DAYS = config.learning?.snapshot_retention_days || 30;
+const MISSED_OPP_THRESHOLD = config.learning?.missed_opportunity_threshold_pct || 5.0;
+const SUSTAINED_CANDLES = config.learning?.sustained_candles_required || 6;
+const ESC_CONV_TARGET_MIN = config.learning?.escalation_conversion_target_min || 15;
+const ESC_CONV_TARGET_MAX = config.learning?.escalation_conversion_target_max || 30;
+const PASS_EVAL_WINDOW_HOURS = Math.max(1, parseInt(config.learning?.pass_evaluation_window_hours) || 48);
+const DEFENSIVE_WIN_RATE_THRESHOLD = config.learning?.defensive_mode_win_rate_threshold || 50;
+const DEFENSIVE_MAX_ESC_TARGET = config.learning?.defensive_mode_max_escalation_target || 15;
+const DEFENSIVE_MIN_ESCALATE_RATIO = config.learning?.defensive_mode_min_escalate_ratio || 0.2;
 
 async function run() {
   logger.info('[Learning] === Nightly Learning Job Started ===');
@@ -95,9 +95,26 @@ async function run() {
 
   const currentEscRate = parseFloat(escConvRate);
   if (defensiveMode) {
-    // In defensive mode, corrective rule is ALWAYS a STOP — never push the bot to trade more when losing
-    logger.warn(`[Learning] DEFENSIVE MODE: Prepending capital preservation STOP rule (overrides escalation conversion logic)`);
-    const corrective = `STOP: DEFENSIVE MODE — win rate ${stats.win_rate.toFixed(1)}%, P&L $${stats.total_pnl.toFixed(2)}. Capital preservation is priority #1. Only escalate HIGH-confidence BUY signals with 3+ strong confirmations. Reject all MODERATE and WEAK BUY signals. SELL signals are EXEMPT — always escalate SELL/exit signals regardless of defensive mode.`;
+    // Check for defensive mode stagnation — if barely any new trades across recent sessions, relax
+    let defensiveStagnant = false;
+    if (trajectoryRows.length >= 3) {
+      const recentTradeCount = parseInt(trajectoryRows[0]?.total_trades) || 0;
+      const oldestTradeCount = parseInt(trajectoryRows[trajectoryRows.length - 1]?.total_trades) || 0;
+      if (recentTradeCount - oldestTradeCount <= 2) {
+        defensiveStagnant = true;
+      }
+    }
+
+    let corrective;
+    if (defensiveStagnant) {
+      // Stagnant defensive mode — relax to allow T1 MODERATE signals to break the deadlock
+      logger.warn(`[Learning] DEFENSIVE MODE STAGNANT: Only ${parseInt(trajectoryRows[0]?.total_trades || 0) - parseInt(trajectoryRows[trajectoryRows.length - 1]?.total_trades || 0)} new trades across ${trajectoryRows.length} sessions. Relaxing to cautious mode.`);
+      corrective = `STOP: CAUTIOUS MODE (relaxed from defensive) — win rate ${stats.win_rate.toFixed(1)}%, P&L $${stats.total_pnl.toFixed(2)}. Allow T1 MODERATE signals with confidence >=0.65 and 2+ confirmations. Reject T2 MODERATE and all WEAK BUY signals. SELL signals are EXEMPT — always escalate SELL/exit signals.`;
+    } else {
+      // Standard defensive mode
+      logger.warn(`[Learning] DEFENSIVE MODE: Prepending capital preservation STOP rule (overrides escalation conversion logic)`);
+      corrective = `STOP: DEFENSIVE MODE — win rate ${stats.win_rate.toFixed(1)}%, P&L $${stats.total_pnl.toFixed(2)}. Capital preservation is priority #1. Only escalate HIGH-confidence BUY signals with 3+ strong confirmations. Reject all MODERATE and WEAK BUY signals. SELL signals are EXEMPT — always escalate SELL/exit signals regardless of defensive mode.`;
+    }
     analysis.haiku_rules = [corrective, ...toArray(analysis.haiku_rules)];
   } else if (totalEscalated >= 20) { // Only enforce with sufficient data
     if (currentEscRate > ESC_CONV_TARGET_MAX) {
@@ -275,12 +292,14 @@ async function calculateStats() {
       AVG(hold_hours) as avg_hold_hours
     FROM positions
     WHERE status = 'CLOSED' AND exit_time > NOW() - INTERVAL '30 days'
-      AND ABS(realized_pnl_percent) < 200
+      AND ABS(realized_pnl_percent) < 50
     GROUP BY exit_category
   `);
 
   // Missed opportunities: signals not escalated where price moved favorably within 24h
-  // Uses indicator_snapshots for actual price data instead of just checking if a trade happened
+  // Uses indicator_snapshots for actual price data. Requires price didn't dip >3% in first
+  // 4 hours (consistent with outcome updater) to avoid showing "opportunities" that would
+  // have been stopped out by intermediate drawdowns.
   const missedResult = await query(`
     SELECT s.symbol, s.signal_type, s.strength, s.confidence,
       s.price as signal_price, s.created_at,
@@ -301,6 +320,11 @@ async function calculateStats() {
       AND s.created_at > NOW() - INTERVAL '30 days'
       AND s.created_at < NOW() - INTERVAL '24 hours'
       AND sub.max_price_24h IS NOT NULL
+      AND COALESCE((SELECT MIN(i2.price) FROM indicator_snapshots i2
+           WHERE i2.symbol = s.symbol
+             AND i2.created_at > s.created_at
+             AND i2.created_at < s.created_at + INTERVAL '4 hours'
+          ), s.price) >= s.price * 0.97
     ORDER BY potential_gain_pct DESC
     LIMIT 20
   `);
@@ -891,7 +915,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
   prompt += `- When a pattern is mostly unprofitable but has a profitable sub-pattern (e.g., VOLUME_SPIKE STRONG is 3/3 losers overall but T1+RSI40-52+vol>5x is 63% WR), use ONE consolidated rule with the exception built in, not separate REJECT + START rules\n\n`;
 
   if (defensiveMode) {
-    prompt += `CONSTRAINTS: Max 15 haiku_rules (combined). >=60% MUST be STOP/REJECT/REDUCE (DEFENSIVE MODE). Max escalation target: ${DEFENSIVE_MAX_ESC_TARGET}%. No STOP rules with <5 samples. LOSING TRADE PATTERNS are the #1 priority — generate REJECT/REDUCE rules for every losing pattern. START rules allowed ONLY for patterns with >70% WR and positive P&L. Include SELL-side rules. No duplicate rules.\n\n`;
+    prompt += `CONSTRAINTS: Max 15 haiku_rules (combined). >=60% MUST be STOP/REJECT/REDUCE (DEFENSIVE MODE). STOP/REJECT rules MUST target BUY/DCA patterns only — NEVER generate STOP/REJECT rules for SELL signals (SELL is always exempt). Max escalation target: ${DEFENSIVE_MAX_ESC_TARGET}%. No STOP rules with <5 samples. LOSING TRADE PATTERNS are the #1 priority — generate REJECT/REDUCE rules for every losing pattern. START rules allowed ONLY for patterns with >70% WR and positive P&L. Include SELL-side ESCALATE rules. No duplicate rules.\n\n`;
     prompt += `Focus on: CAPITAL PRESERVATION. What is losing money? What patterns should be stopped? Which losing trades should never have been taken? Only promote patterns with strong evidence of profitability (>70% WR, positive P&L, 5+ samples). Do NOT generate rules to trade more.`;
   } else {
     prompt += `CONSTRAINTS: Max 15 haiku_rules (combined). >=40% must be ESCALATE/START. Target ${ESC_CONV_TARGET_MIN}-${ESC_CONV_TARGET_MAX}% escalation conversion. No STOP rules with <5 samples. MISSED_OPPORTUNITY = Sonnet error, not Haiku. No blanket rejections — only STOP patterns with confirmed CORRECT_PASS (price didn't move). Include SELL-side rules. No duplicate rules. LOSING TRADE PATTERNS must generate REJECT/REDUCE rules — do not only focus on missed opportunities.\n\n`;
@@ -1126,6 +1150,7 @@ async function updatePromptFiles(stats, analysis) {
       const convRate = parseInt(r.total_escalated) > 0 ? (parseInt(r.led_to_trade) / parseInt(r.total_escalated) * 100).toFixed(0) : 0;
       haikuSection += `- ${r.strength}: ${r.total_escalated} escalated, ${convRate}% converted\n`;
     }
+    haikuSection += `Note: Conversion rate reflects Sonnet's filtering, not your accuracy. Low STRONG conversion means Sonnet applies additional filters. High WEAK conversion is survivorship bias (small sample of exceptional signals).\n`;
     haikuSection += '\n';
   }
 
@@ -1148,14 +1173,26 @@ async function updatePromptFiles(stats, analysis) {
     haikuSection += '\n';
   }
 
-  // START escalating patterns
+  // START escalating patterns — exclude patterns that also appear in BAD TRADE PATTERNS
   if (stats.missed_escalation_patterns.length > 0) {
-    haikuSection += `START ESCALATING (you filtered these out but price moved favorably):\n`;
-    for (const p of stats.missed_escalation_patterns.slice(0, 5)) {
+    const badPatternKeys = new Set(
+      stats.losing_patterns.map(p => {
+        const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
+        return `${triggers}|${p.strength}`;
+      })
+    );
+    const filteredMissed = stats.missed_escalation_patterns.filter(p => {
       const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
-      haikuSection += `- ${triggers} (${p.trend}) ${p.strength}: ${p.total} missed, avg +${parseFloat(p.avg_gain_pct).toFixed(1)}% gain\n`;
+      return !badPatternKeys.has(`${triggers}|${p.strength}`);
+    });
+    if (filteredMissed.length > 0) {
+      haikuSection += `START ESCALATING (you filtered these out but price moved favorably):\n`;
+      for (const p of filteredMissed.slice(0, 5)) {
+        const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
+        haikuSection += `- ${triggers} (${p.trend}) ${p.strength}: ${p.total} missed, avg +${parseFloat(p.avg_gain_pct).toFixed(1)}% gain\n`;
+      }
+      haikuSection += '\n';
     }
-    haikuSection += '\n';
   }
 
   // SONNET WAS WRONG section — show MISSED_OPPORTUNITY PASS decisions
@@ -1169,15 +1206,15 @@ async function updatePromptFiles(stats, analysis) {
     haikuSection += `Keep escalating signals like these — Sonnet needs to see them.\n\n`;
   }
 
-  // Missed SELL signals — Haiku didn't escalate SELL signals but price dropped
+  // Missed SELL signals — Sonnet passed on these (Haiku correctly escalated them)
   if (stats.missed_sell_pass_decisions.length > 0) {
-    haikuSection += `MISSED SELL SIGNALS (you didn't escalate these SELL signals but price dropped):\n`;
+    haikuSection += `SONNET MISSED THESE SELL SIGNALS (you correctly escalated, but Sonnet chose PASS and price dropped):\n`;
     for (const m of stats.missed_sell_pass_decisions.slice(0, 5)) {
       haikuSection += `- ${m.symbol} ${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed → price dropped -${parseFloat(m.potential_drop_pct).toFixed(1)}%`;
       if (m.reasoning) haikuSection += ` | Sonnet's reason: ${m.reasoning.substring(0, 80)}`;
       haikuSection += '\n';
     }
-    haikuSection += `Escalate SELL signals for existing positions — missed sells mean unrealized losses.\n\n`;
+    haikuSection += `Keep escalating SELL signals like these — Sonnet needs to see them.\n\n`;
   } else if (stats.missed_sell_opportunities.length > 0) {
     const missedSellFiltered = stats.missed_sell_opportunities.filter(m => parseFloat(m.potential_drop_pct) > MISSED_OPP_THRESHOLD);
     if (missedSellFiltered.length > 0) {
@@ -1630,18 +1667,10 @@ async function saveLearningRules(analysis) {
       ...toArray(analysis.exit_rules).map(r => ({ type: 'sonnet_exit', text: typeof r === 'string' ? r : JSON.stringify(r) })),
     ];
 
-    // Reset sequence to avoid PK conflicts (can drift after manual inserts or partial failures)
-    await client.query(`SELECT setval(pg_get_serial_sequence('learning_rules', 'id'), COALESCE((SELECT MAX(id) FROM learning_rules), 0) + 1, false)`);
-
     for (const rule of allRules) {
       await client.query(`
         INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at)
         VALUES ($1, $2, true, NOW())
-        ON CONFLICT (id) DO UPDATE SET
-          rule_type = EXCLUDED.rule_type,
-          rule_text = EXCLUDED.rule_text,
-          is_active = true,
-          created_at = NOW()
       `, [rule.type, rule.text]);
     }
 

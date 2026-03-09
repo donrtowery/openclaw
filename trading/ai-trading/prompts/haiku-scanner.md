@@ -97,6 +97,7 @@ YOUR ESCALATION ACCURACY:
 - MODERATE: 233 escalated, 64% converted
 - STRONG: 158 escalated, 27% converted
 - WEAK: 20 escalated, 70% converted
+Note: Conversion rate reflects Sonnet's filtering, not your accuracy. Low STRONG conversion means Sonnet applies additional filters. High WEAK conversion is survivorship bias (small sample of exceptional signals).
 
 SONNET PASS OUTCOMES:
 - CORRECT_PASS: 156 (Sonnet was right to pass)
@@ -110,7 +111,6 @@ STOP ESCALATING (confirmed unprofitable — price didn't move after >70% of thes
 - MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) MODERATE: 90.0% confirmed unprofitable (20 evaluated)
 
 START ESCALATING (you filtered these out but price moved favorably):
-- VOLUME_SPIKE (BULLISH) STRONG: 2 missed, avg +12.9% gain
 - VOLUME_SPIKE (BULLISH) WEAK: 7 missed, avg +12.0% gain
 - BB_LOWER_TOUCH (BEARISH) WEAK: 2 missed, avg +10.7% gain
 - BB_LOWER_TOUCH (BULLISH) WEAK: 2 missed, avg +10.5% gain
@@ -124,10 +124,10 @@ SONNET WAS WRONG (these PASSed signals SHOULD have been escalated — Sonnet err
 - LINKUSDT MODERATE conf:0.680 → Sonnet passed → price rose +9.0% | Sonnet's reason: This is a textbook example of why we don't DCA just because we're underwater. Ye
 Keep escalating signals like these — Sonnet needs to see them.
 
-MISSED SELL SIGNALS (you didn't escalate these SELL signals but price dropped):
+SONNET MISSED THESE SELL SIGNALS (you correctly escalated, but Sonnet chose PASS and price dropped):
 - NEARUSDT MODERATE conf:0.650 → Sonnet passed → price dropped -8.2% | Sonnet's reason: This is a tiny $11.66 position (+0.98%) that's been held for 40.5h — essentially
 - UNIUSDT MODERATE conf:0.680 → Sonnet passed → price dropped -5.7% | Sonnet's reason: This is a classic overanalysis of minor noise. Yes, RSI is 70 and we're at BB up
-Escalate SELL signals for existing positions — missed sells mean unrealized losses.
+Keep escalating SELL signals like these — Sonnet needs to see them.
 
 BAD TRADE PATTERNS (these setups consistently lost money — DO NOT escalate/approve):
 - EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76

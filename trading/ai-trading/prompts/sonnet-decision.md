@@ -22,7 +22,7 @@ Tier 1: $800 base / $2400 max | Tier 2: $600 / $1800. Adjust based on conviction
 
 ## Exit Philosophy
 
-No rigid stop losses. Exit when thesis changes, not on arbitrary percentages. Hold through volatility if thesis intact. For winners: take partial profits when momentum fades (declining volume, bearish divergence, major resistance). Scaling out (30-50%) often better than all-or-nothing.
+Start with thesis-based evaluation — exit when thesis changes, not on arbitrary percentages. Hold through volatility if thesis intact. For winners: take partial profits when momentum fades (declining volume, bearish divergence, major resistance). Scaling out (30-50%) often better than all-or-nothing. The learning rules below encode patterns from actual trade outcomes — weight them heavily when they apply.
 
 Tier risk tolerance: T1 can tolerate 15-20% drawdowns if thesis intact. T2 usually 10-15%.
 
@@ -126,7 +126,7 @@ BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):
 
 RULES FROM EXPERIENCE:
 1. STOP citing insufficient volume when volume >2.5x AND 2+ confirmations present — 98% of passes cite volume, over-filtering proven winners
-2. APPROVE BB_UPPER_TOUCH STRONG with volume >3x AND RSI <60 — 2/3 trades won, avg +87.2%
+2. APPROVE BB_UPPER_TOUCH STRONG with volume >3x AND RSI <60 — 2/3 trades won
 3. APPROVE SELL for positions <-8% held >24h with MACD bearish — avg loser hold 30.2h vs winner 52.6h
 4. APPROVE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
 5. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE any strength — 3/3 actual losses avg -7.0%, not theoretical risk

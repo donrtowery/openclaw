@@ -344,7 +344,7 @@ async function runCycle() {
   // 4. Exit scanner — ALWAYS runs, even during circuit breaker / drawdown protection
   const exitConfig = tradingConfig.exit_scanner || {};
   const exitInterval = exitConfig.interval_cycles || 3;
-  if (exitConfig.enabled !== false && cycleCount % exitInterval === 0) {
+  if (exitConfig.enabled !== false && (cycleCount === 1 || cycleCount % exitInterval === 0)) {
     try {
       await runExitScanCycle();
     } catch (error) {
@@ -639,8 +639,8 @@ async function executeDCA(decision, triggered) {
   const avgEntry = parseFloat(position.avg_entry_price);
   const currentPrice = await getCurrentPrice(symbol);
   const dropPercent = ((avgEntry - currentPrice) / avgEntry * 100);
-  if (dropPercent < 3) {
-    const reason = `DCA rejected — price $${currentPrice.toFixed(4)} is only ${dropPercent.toFixed(1)}% below avg entry $${avgEntry.toFixed(4)} (need ≥3% drop)`;
+  if (dropPercent < 5) {
+    const reason = `DCA rejected — price $${currentPrice.toFixed(4)} is only ${dropPercent.toFixed(1)}% below avg entry $${avgEntry.toFixed(4)} (need ≥5% drop)`;
     logger.warn(`[Engine] ${symbol}: ${reason}`);
     return { escalated: true, executed: false, reason };
   }
@@ -678,6 +678,13 @@ async function executeDCA(decision, triggered) {
       logger.warn(`[Engine] ${symbol}: ${reason}`);
       return { escalated: true, executed: false, reason };
     }
+  }
+
+  // Minimum DCA check (Binance MIN_NOTIONAL is typically $10)
+  if (dcaAmountUsd < 10) {
+    const reason = `DCA rejected — amount too small ($${dcaAmountUsd.toFixed(2)})`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
   }
 
   // Check available capital
@@ -910,6 +917,10 @@ async function recordLoss(symbol, pnl) {
     RETURNING consecutive_losses
   `, [symbol, pnl]);
 
+  if (result.rows.length === 0) {
+    logger.warn('[Engine] Circuit breaker row (id=1) not found — skipping loss recording');
+    return;
+  }
   const losses = result.rows[0].consecutive_losses;
 
   if (losses >= maxLosses) {
@@ -1027,7 +1038,7 @@ async function getEscalationConfidenceFloor() {
         COUNT(*) FILTER (WHERE action IN ('BUY','SELL','DCA','PARTIAL_EXIT') AND executed = true) AS traded,
         COUNT(*) AS total
       FROM decisions
-      WHERE created_at > NOW() - INTERVAL '24 hours'
+      WHERE created_at > NOW() - INTERVAL '48 hours'
         AND NOT (action = 'HOLD' AND signal_id IN (
           SELECT id FROM signals WHERE triggered_by @> ARRAY['EXIT_SCANNER']
         ))
@@ -1109,11 +1120,10 @@ async function getExitLearningRules() {
     ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
     LIMIT 5
   `);
-  // Fall back to sonnet_decision rules if no exit-specific rules exist yet
+  // Return empty array if no exit-specific rules — entry rules are irrelevant for exit evaluation
   if (result.rows.length === 0) {
-    const fallback = await getLearningRules();
-    exitRulesCache = { data: fallback, expiry: Date.now() + 60 * 60 * 1000 };
-    return fallback;
+    exitRulesCache = { data: [], expiry: Date.now() + 60 * 60 * 1000 };
+    return [];
   }
   exitRulesCache = { data: result.rows, expiry: Date.now() + 60 * 60 * 1000 };
   return result.rows;
