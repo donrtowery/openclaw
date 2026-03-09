@@ -2,6 +2,7 @@ import { getCandles } from './binance.js';
 import {
   calcRSI, calcMACD, calcSMAs, calcEMAs,
   calcBollingerBands, calcVolume, calcSupportResistance, calcTrend,
+  calcATR, calcStochasticRSI, calcADX,
 } from './indicators.js';
 import logger from './logger.js';
 
@@ -85,6 +86,9 @@ export async function analyzeSymbol(symbol) {
   const volume = calcVolume(candles1h);
   const { support, resistance } = calcSupportResistance(candles1h, price);
   const trend = calcTrend({ rsi, macd, ema, sma, price });
+  const atr = calcATR(candles1h);
+  const stochRsi = calcStochasticRSI(closes1h);
+  const adx = calcADX(candles1h);
 
   return {
     symbol,
@@ -98,6 +102,9 @@ export async function analyzeSymbol(symbol) {
     support,
     resistance,
     trend,
+    atr,
+    stochRsi,
+    adx,
     timestamp: new Date().toISOString(),
   };
 }
@@ -154,7 +161,14 @@ export function formatForClaude(a) {
   }
   if (a.ema) maParts.push(`EMA:${a.ema.signal.toLowerCase()}`);
   if (a.bollingerBands) maParts.push(`BB:${a.bollingerBands.position.toLowerCase()}(${a.bollingerBands.width.toLowerCase()})`);
+  if (a.adx) maParts.push(`ADX:${a.adx.value}(${a.adx.signal.toLowerCase()})`);
   lines.push(maParts.join(' | '));
+
+  // Line 3b: Momentum (StochRSI, ATR)
+  const momentumParts = [];
+  if (a.stochRsi) momentumParts.push(`StochRSI:K${a.stochRsi.k}/D${a.stochRsi.d}(${a.stochRsi.signal.toLowerCase()})`);
+  if (a.atr) momentumParts.push(`ATR:${a.atr.percent}%`);
+  if (momentumParts.length) lines.push(momentumParts.join(' | '));
 
   // Line 4: S/R
   const srParts = [];

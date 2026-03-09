@@ -120,6 +120,13 @@ function detectThresholdCrossings(symbol, current, previous, thresholds) {
     }
   }
 
+  // --- ADX trend strength transition ---
+  if (previous.adx && current.adx) {
+    if (previous.adx.value < 25 && current.adx.value >= 25) {
+      crossed.push('ADX_TREND_STRENGTHENING');
+    }
+  }
+
   // --- Trend change ---
   if (previous.trend && current.trend) {
     if (previous.trend.direction !== 'BULLISH' && current.trend.direction === 'BULLISH') {
@@ -262,7 +269,7 @@ export async function runScanCycle(config) {
 async function saveIndicatorSnapshots(analyses) {
   if (analyses.length === 0) return;
 
-  const COLS = 20;
+  const COLS = 26;
   const values = [];
   const placeholders = [];
 
@@ -291,6 +298,12 @@ async function saveIndicatorSnapshots(analyses) {
       a.support?.[0] ?? null,
       a.resistance?.[0] ?? null,
       a.trend?.direction ?? null,
+      a.atr?.value ?? null,
+      a.atr?.percent ?? null,
+      a.stochRsi?.k ?? null,
+      a.stochRsi?.d ?? null,
+      a.adx?.value ?? null,
+      a.adx?.signal ?? null,
     );
   }
 
@@ -299,7 +312,8 @@ async function saveIndicatorSnapshots(analyses) {
       symbol, price, rsi, macd, macd_signal, macd_histogram,
       sma10, sma30, sma50, sma200, ema9, ema21,
       bb_upper, bb_middle, bb_lower, volume_24h, volume_ratio,
-      support_nearest, resistance_nearest, trend
+      support_nearest, resistance_nearest, trend,
+      atr, atr_percent, stoch_rsi_k, stoch_rsi_d, adx, adx_signal
     ) VALUES ${placeholders.join(',')}
   `, values);
 }

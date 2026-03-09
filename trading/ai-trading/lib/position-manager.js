@@ -80,7 +80,7 @@ export async function addToPosition(positionId, dcaPrice, dcaSize, dcaCost, reas
     await client.query(`
       UPDATE positions
       SET current_size = $1, total_cost = $2, avg_entry_price = $3, current_price = $4,
-          total_fees = $5, updated_at = NOW()
+          total_fees = $5, dca_count = COALESCE(dca_count, 0) + 1, updated_at = NOW()
       WHERE id = $6
     `, [newTotalSize, newTotalCost, newAvgEntry, dcaPrice, newTotalFees, positionId]);
 

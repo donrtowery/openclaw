@@ -21,6 +21,15 @@ export function computeExitUrgency(position, analysis, currentPrice) {
   const holdHours = holdMs / (1000 * 60 * 60);
   const maxGain = parseFloat(position.max_unrealized_gain_percent || 0);
   const drawdownFromPeak = maxGain - pnlPercent;
+  const tier = position.tier || 2;
+  const dcaCount = position.dca_count || 0;
+
+  // ── Tier-based thresholds ──
+  const isT1 = tier === 1;
+  const deepLossThreshold = isT1 ? -15 : -10;
+  const moderateLossThreshold = isT1 ? -8 : -5;
+  const holdTimeThreshold = isT1 ? 72 : 48;
+  const holdTimeMedium = isT1 ? 36 : 24;
 
   // RSI (current state, not crossing)
   if (analysis.rsi) {
@@ -37,6 +46,21 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     }
   }
 
+  // StochRSI overbought confirmation
+  if (analysis.stochRsi?.signal === 'OVERBOUGHT') {
+    score += 10;
+    factors.push(`StochRSI overbought K:${analysis.stochRsi.k}`);
+  } else if (analysis.stochRsi?.signal === 'BEARISH_CROSS') {
+    score += 15;
+    factors.push(`StochRSI bearish cross K:${analysis.stochRsi.k}`);
+  }
+
+  // ADX: weak trend + loss = exit faster (choppy market, not trending)
+  if (analysis.adx && analysis.adx.value < 20 && pnlPercent < -3) {
+    score += 15;
+    factors.push(`ADX ${analysis.adx.value} (weak trend) + loss — choppy market`);
+  }
+
   // Unrealized profit
   if (pnlPercent > 20) {
     score += 25;
@@ -49,12 +73,14 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push(`P&L +${pnlPercent.toFixed(1)}%`);
   }
 
-  // Drawdown from peak (giving back gains)
+  // Drawdown from peak (giving back gains) — tier-adjusted
   if (maxGain > 3) {
-    if (drawdownFromPeak > 10) {
+    const severeDrawdown = isT1 ? 12 : 10;
+    const moderateDrawdown = isT1 ? 7 : 5;
+    if (drawdownFromPeak > severeDrawdown) {
       score += 30;
       factors.push(`Drawdown ${drawdownFromPeak.toFixed(1)}% from peak +${maxGain.toFixed(1)}%`);
-    } else if (drawdownFromPeak > 5) {
+    } else if (drawdownFromPeak > moderateDrawdown) {
       score += 20;
       factors.push(`Drawdown ${drawdownFromPeak.toFixed(1)}% from peak +${maxGain.toFixed(1)}%`);
     } else if (drawdownFromPeak > 3) {
@@ -63,13 +89,22 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     }
   }
 
-  // Hold time
-  if (holdHours > 48) {
+  // ATR-based trailing stop for winners
+  if (analysis.atr && maxGain > 5 && pnlPercent > 0) {
+    const atrTrailPct = analysis.atr.percent * 2.5; // 2.5x ATR trailing stop
+    if (drawdownFromPeak > atrTrailPct) {
+      score += 25;
+      factors.push(`ATR trail triggered: drawdown ${drawdownFromPeak.toFixed(1)}% > ${atrTrailPct.toFixed(1)}% (2.5x ATR)`);
+    }
+  }
+
+  // Hold time — tier-adjusted
+  if (holdHours > holdTimeThreshold) {
     score += 15;
-    factors.push(`Held ${holdHours.toFixed(0)}h (>48h)`);
-  } else if (holdHours > 24) {
+    factors.push(`Held ${holdHours.toFixed(0)}h (>${holdTimeThreshold}h T${tier})`);
+  } else if (holdHours > holdTimeMedium) {
     score += 10;
-    factors.push(`Held ${holdHours.toFixed(0)}h (>24h)`);
+    factors.push(`Held ${holdHours.toFixed(0)}h (>${holdTimeMedium}h)`);
   } else if (holdHours > 12) {
     score += 5;
     factors.push(`Held ${holdHours.toFixed(0)}h (>12h)`);
@@ -98,13 +133,28 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push('Trend: BEARISH');
   }
 
-  // Deep loss
-  if (pnlPercent < -10) {
+  // Deep loss — tier-adjusted
+  if (pnlPercent < deepLossThreshold) {
     score += 20;
-    factors.push(`P&L ${pnlPercent.toFixed(1)}% (deep loss)`);
-  } else if (pnlPercent < -5) {
+    factors.push(`P&L ${pnlPercent.toFixed(1)}% (deep loss, T${tier} threshold ${deepLossThreshold}%)`);
+  } else if (pnlPercent < moderateLossThreshold) {
     score += 10;
     factors.push(`P&L ${pnlPercent.toFixed(1)}% (moderate loss)`);
+  }
+
+  // ── Cut losers faster: loss + hold time + bearish signals ──
+  if (pnlPercent < -5 && holdHours > 12 && analysis.macd?.crossover === 'BEARISH') {
+    score += 15;
+    factors.push(`Loser held ${holdHours.toFixed(0)}h with MACD bearish — cut loss`);
+  }
+
+  // ── DCA'd positions losing — tighter exit ──
+  if (dcaCount >= 2 && pnlPercent < -5) {
+    score += 20;
+    factors.push(`${dcaCount} DCAs + ${pnlPercent.toFixed(1)}% loss — thesis failing`);
+  } else if (dcaCount >= 1 && pnlPercent < -8) {
+    score += 15;
+    factors.push(`DCA'd position at ${pnlPercent.toFixed(1)}% — consider exit`);
   }
 
   return {

@@ -39,7 +39,7 @@ async function run() {
 
   const stats = await calculateStats();
 
-  logger.info(`[Learning] Stats: ${stats.total_trades} trades, ${stats.win_rate.toFixed(1)}% win rate, $${stats.total_pnl.toFixed(2)} total P&L`);
+  logger.info(`[Learning] Stats: ${stats.total_trades} trades, ${stats.win_rate.toFixed(1)}% win rate, $${stats.total_pnl.toFixed(2)} total P&L, Sharpe: ${stats.sharpe_ratio.toFixed(2)}, max streak: ${stats.max_consecutive_losses}`);
   logger.info(`[Learning] Missed BUY opportunities: ${stats.missed_opportunities.length} non-escalated, ${stats.missed_pass_decisions.length} Sonnet PASS`);
   logger.info(`[Learning] Missed SELL opportunities: ${stats.missed_sell_opportunities.length} non-escalated, ${stats.missed_sell_pass_decisions.length} Sonnet PASS`);
 
@@ -450,6 +450,52 @@ async function calculateStats() {
     ORDER BY cnt DESC
   `);
 
+  // Sharpe ratio — risk-adjusted returns
+  const sharpeResult = await query(`
+    SELECT realized_pnl_percent FROM positions
+    WHERE status = 'CLOSED' AND exit_time > NOW() - INTERVAL '30 days'
+    ORDER BY exit_time
+  `);
+  let sharpeRatio = 0;
+  const pnlReturns = sharpeResult.rows.map(r => parseFloat(r.realized_pnl_percent) || 0);
+  if (pnlReturns.length >= 3) {
+    const avgReturn = pnlReturns.reduce((s, r) => s + r, 0) / pnlReturns.length;
+    const variance = pnlReturns.reduce((s, r) => s + Math.pow(r - avgReturn, 2), 0) / pnlReturns.length;
+    const stdDev = Math.sqrt(variance);
+    sharpeRatio = stdDev > 0 ? Math.round((avgReturn / stdDev) * 100) / 100 : 0;
+  }
+
+  // Win rate by signal combo — which triggered_by combinations actually work
+  const signalComboResult = await query(`
+    SELECT array_to_string(s.triggered_by, '+') as signal_combo, s.strength,
+      COUNT(*) as total,
+      COUNT(CASE WHEN p.realized_pnl > 0 THEN 1 END) as wins,
+      COALESCE(AVG(p.realized_pnl_percent), 0) as avg_pnl_pct,
+      COALESCE(SUM(p.realized_pnl), 0) as total_pnl
+    FROM signals s
+    JOIN decisions d ON d.signal_id = s.id
+    JOIN positions p ON p.open_decision_id = d.id AND p.status = 'CLOSED' AND p.exit_time > NOW() - INTERVAL '30 days'
+    GROUP BY signal_combo, s.strength
+    ORDER BY total DESC
+  `);
+
+  // Max consecutive losses (for streak tracking)
+  const streakResult = await query(`
+    SELECT realized_pnl FROM positions
+    WHERE status = 'CLOSED' AND exit_time > NOW() - INTERVAL '30 days'
+    ORDER BY exit_time
+  `);
+  let maxConsecLosses = 0;
+  let currentStreak = 0;
+  for (const row of streakResult.rows) {
+    if (parseFloat(row.realized_pnl) < 0) {
+      currentStreak++;
+      maxConsecLosses = Math.max(maxConsecLosses, currentStreak);
+    } else {
+      currentStreak = 0;
+    }
+  }
+
   // PASS outcome summary — headline count of CORRECT_PASS vs MISSED_OPPORTUNITY
   const passOutcomeSummaryResult = await query(`
     SELECT
@@ -490,6 +536,9 @@ async function calculateStats() {
     pass_reasoning_themes: passReasoningResult.rows,
     losing_patterns: losingPatternResult.rows,
     exit_timing: exitTimingResult.rows,
+    sharpe_ratio: sharpeRatio,
+    signal_combo_stats: signalComboResult.rows,
+    max_consecutive_losses: maxConsecLosses,
   };
 }
 
@@ -513,8 +562,8 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     prompt += `PERFORMANCE (${stats.total_trades} trades):\n`;
     prompt += `Win rate: ${stats.win_rate.toFixed(1)}% (${stats.wins}W/${stats.losses}L)\n`;
     prompt += `P&L: $${stats.total_pnl.toFixed(2)} | Avg win: +$${stats.avg_win.toFixed(2)} | Avg loss: $${stats.avg_loss.toFixed(2)}\n`;
-    prompt += `Profit factor: ${stats.profit_factor === Infinity ? '∞' : stats.profit_factor.toFixed(2)}\n`;
-    prompt += `Hold time: Winners ${stats.avg_hold_winners.toFixed(1)}h, Losers ${stats.avg_hold_losers.toFixed(1)}h\n`;
+    prompt += `Profit factor: ${stats.profit_factor === Infinity ? '∞' : stats.profit_factor.toFixed(2)} | Sharpe ratio: ${stats.sharpe_ratio.toFixed(2)}\n`;
+    prompt += `Hold time: Winners ${stats.avg_hold_winners.toFixed(1)}h, Losers ${stats.avg_hold_losers.toFixed(1)}h | Max consec losses: ${stats.max_consecutive_losses}\n`;
     prompt += `Best: +$${stats.best_trade.toFixed(2)} | Worst: $${stats.worst_trade.toFixed(2)}\n\n`;
 
     // Performance trajectory from recent learning history
@@ -587,6 +636,15 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     for (const s of stats.strength_stats) {
       const wr = parseInt(s.total) > 0 ? (parseInt(s.wins) / parseInt(s.total) * 100).toFixed(0) : 0;
       prompt += `${s.strength}: ${s.total} trades, ${wr}% WR, avg ${parseFloat(s.avg_pnl_pct).toFixed(1)}%\n`;
+    }
+    prompt += '\n';
+  }
+
+  if (stats.signal_combo_stats.length > 0) {
+    prompt += `WIN RATE BY SIGNAL COMBO:\n`;
+    for (const s of stats.signal_combo_stats) {
+      const wr = parseInt(s.total) > 0 ? (parseInt(s.wins) / parseInt(s.total) * 100).toFixed(0) : 0;
+      prompt += `${s.signal_combo} ${s.strength}: ${s.total} trades, ${wr}% WR, avg ${parseFloat(s.avg_pnl_pct).toFixed(1)}%, total $${parseFloat(s.total_pnl).toFixed(2)}\n`;
     }
     prompt += '\n';
   }
@@ -782,10 +840,11 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
   prompt += `- Every rule must be an actionable instruction the AI can follow when evaluating a single signal/position\n\n`;
 
   prompt += `AVAILABLE DATA PER MODEL (rules MUST only reference data the model can see):\n`;
-  prompt += `- Haiku receives a 4-line compact format per signal:\n`;
+  prompt += `- Haiku receives a 5-line compact format per signal:\n`;
   prompt += `  Line 1: symbol, price, trend direction + strength\n`;
-  prompt += `  Line 2: RSI value + signal (oversold/overbought/neutral), MACD crossover (bullish/bearish), volume ratio + trend\n`;
-  prompt += `  Line 3: price vs SMA200, golden-cross/death-cross, EMA signal (bullish/bearish), BB position + width\n`;
+  prompt += `  Line 2: RSI value + signal, MACD crossover, volume ratio + trend\n`;
+  prompt += `  Line 3: price vs SMA200, golden-cross/death-cross, EMA signal, BB position + width, ADX value + signal\n`;
+  prompt += `  Line 3b: StochRSI K/D + signal, ATR percent\n`;
   prompt += `  Line 4: nearest support levels, nearest resistance levels\n`;
   prompt += `  Plus: tier, thresholds crossed, and existing position (entry price, P&L%, hold time, size)\n`;
   prompt += `- Haiku does NOT have: candlestick patterns (engulfing/hammer/doji), multi-timeframe data (4h/1d), candle counts, historical price changes (e.g. "up 8% in 4h"), divergence detection, consolidation duration, or higher-lows analysis\n`;

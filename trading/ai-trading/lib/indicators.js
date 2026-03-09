@@ -1,4 +1,4 @@
-import { RSI, MACD, SMA, EMA, BollingerBands } from 'technicalindicators';
+import { RSI, MACD, SMA, EMA, BollingerBands, ATR, ADX, StochasticRSI } from 'technicalindicators';
 import logger from './logger.js';
 
 /**
@@ -298,4 +298,88 @@ export function calcTrend({ rsi, macd, ema, sma, price }) {
   else if (dominant >= 4) strength = 'MODERATE';
 
   return { direction, strength };
+}
+
+/**
+ * Calculate ATR (Average True Range, 14 period) for volatility measurement.
+ * @param {{ high: number, low: number, close: number }[]} candles
+ * @returns {{ value: number, percent: number } | null}
+ */
+export function calcATR(candles) {
+  try {
+    if (candles.length < 15) return null;
+    const highs = candles.map(c => c.high);
+    const lows = candles.map(c => c.low);
+    const closes = candles.map(c => c.close);
+    const values = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 });
+    if (values.length === 0) return null;
+    const value = Math.round(values[values.length - 1] * 10000) / 10000;
+    const currentPrice = closes[closes.length - 1];
+    const percent = currentPrice > 0 ? Math.round((value / currentPrice) * 10000) / 100 : 0;
+    return { value, percent };
+  } catch (err) {
+    logger.warn(`ATR calc failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Calculate Stochastic RSI (14, 14, 3, 3) for momentum confirmation.
+ * @param {number[]} closes
+ * @returns {{ k: number, d: number, signal: string } | null}
+ */
+export function calcStochasticRSI(closes) {
+  try {
+    if (closes.length < 30) return null;
+    const values = StochasticRSI.calculate({
+      values: closes,
+      rsiPeriod: 14,
+      stochasticPeriod: 14,
+      kPeriod: 3,
+      dPeriod: 3,
+    });
+    if (values.length === 0) return null;
+    const current = values[values.length - 1];
+    const k = Math.round(current.k * 100) / 100;
+    const d = Math.round(current.d * 100) / 100;
+    let signal = 'NEUTRAL';
+    if (k < 20 && d < 20) signal = 'OVERSOLD';
+    else if (k > 80 && d > 80) signal = 'OVERBOUGHT';
+    else if (k > d && k < 30) signal = 'BULLISH_CROSS';
+    else if (k < d && k > 70) signal = 'BEARISH_CROSS';
+    return { k, d, signal };
+  } catch (err) {
+    logger.warn(`StochRSI calc failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Calculate ADX (Average Directional Index, 14 period) for trend strength.
+ * @param {{ high: number, low: number, close: number }[]} candles
+ * @returns {{ value: number, pdi: number, mdi: number, signal: string } | null}
+ */
+export function calcADX(candles) {
+  try {
+    if (candles.length < 28) return null;
+    const highs = candles.map(c => c.high);
+    const lows = candles.map(c => c.low);
+    const closes = candles.map(c => c.close);
+    const values = ADX.calculate({ high: highs, low: lows, close: closes, period: 14 });
+    if (values.length === 0) return null;
+    const current = values[values.length - 1];
+    const value = Math.round(current.adx * 100) / 100;
+    const pdi = Math.round(current.pdi * 100) / 100;
+    const mdi = Math.round(current.mdi * 100) / 100;
+    let signal = 'WEAK_TREND';
+    if (value >= 25) {
+      signal = pdi > mdi ? 'STRONG_BULLISH' : 'STRONG_BEARISH';
+    } else if (value >= 20) {
+      signal = 'MODERATE_TREND';
+    }
+    return { value, pdi, mdi, signal };
+  } catch (err) {
+    logger.warn(`ADX calc failed: ${err.message}`);
+    return null;
+  }
 }

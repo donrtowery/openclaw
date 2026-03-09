@@ -25,6 +25,11 @@
       "note": "Tier 3 deactivated in DB. Only T1 and T2 are traded."
     }
   },
+  "dca": {
+    "max_dca_count": 2,
+    "max_dca_pct_of_original": 50,
+    "note": "Max 2 DCAs per position. Each DCA capped at 50% of original entry cost."
+  },
   "scanner": {
     "interval_minutes": 5,
     "candle_history": 200,

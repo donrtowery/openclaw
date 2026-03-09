@@ -62,7 +62,7 @@ YOUR ESCALATION ACCURACY:
 - WEAK: 20 escalated, 70% converted
 
 SONNET PASS OUTCOMES:
-- CORRECT_PASS: 153 (Sonnet was right to pass)
+- CORRECT_PASS: 154 (Sonnet was right to pass)
 - MISSED_OPPORTUNITY: 38 (price moved favorably after pass)
 
 STOP ESCALATING (confirmed unprofitable — price didn't move after >70% of these):
@@ -98,23 +98,22 @@ BAD TRADE PATTERNS (these setups consistently lost money — DO NOT escalate/app
 
 RULES FROM EXPERIENCE:
 1. STOP: DEFENSIVE MODE — win rate 44.4%, P&L $-105.13. Capital preservation is priority #1. Only escalate HIGH-confidence signals with 3+ strong confirmations. Reject all MODERATE and WEAK signals.
-2. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE regardless of strength — 3/3 losses avg -7.0%, momentum trap
-3. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 losses avg -4.2%, chasing failed breakout
-4. REJECT T2 signals unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 67%
-5. REJECT signals with DCA opportunity unless P&L <-12% AND hold <36h — 2/2 DCA trades 0% WR
-6. REJECT MODERATE signals with volume <3.5x — 64% conversion vs 15% target, over-escalating
-7. REJECT triple-indicator combos (MACD+EMA+VOLUME, MACD+EMA+TREND) — Sonnet passes most, no proven edge
-8. REJECT MACD+VOLUME crossovers with RSI >50 — subset of EMA+VOLUME losing pattern
-9. REJECT signals on coins with open losing position >-5% — avoid averaging down without thesis change
-10. ESCALATE SELL for positions P&L <-8% held >24h with MACD bearish OR volume declining — cut losers faster
-11. ESCALATE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
-12. ESCALATE SELL for micro-positions <$50 with gains +0.5% to +2% held >36h — reduce exit friction
-13. ESCALATE SELL for positions <-6% AND RSI <35 AND price <SMA200 — thesis failure, preserve capital
-14. STOP escalating MODERATE signals unless volume >4x OR 3+ aligned confirmations — reduce noise
-15. STOP escalating any signal during active DEFENSIVE MODE unless T1 AND volume >6x AND RSI 40-50
+2. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE at any strength — 3/3 losses avg -7.0%, proven momentum trap
+3. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 losses avg -4.2%, chasing failed breakouts
+4. REJECT BB_SQUEEZE signals at any strength — 1/1 loss -10.7%, high-risk compression plays
+5. REJECT T2 signals unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 67%
+6. REJECT triple-indicator combos (MACD+EMA+VOLUME, MACD+EMA+TREND) unless T1 — overcomplicated, no proven edge
+7. REJECT signals with DCA opportunity flag — 2/2 DCA trades 0% WR, averaging down fails
+8. STOP escalating MODERATE signals with volume <3.5x — 64% conversion wastes API calls vs 15% target
+9. STOP escalating signals on coins with open position P&L <-5% — avoid compounding losing bets
+10. ESCALATE SELL for positions <-8% held >24h with MACD bearish OR volume declining — avg loser hold 30.2h, cut faster
+11. ESCALATE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — avg winner hold 52.6h, lock gains before reversal
+12. ESCALATE SELL for positions <-6% AND RSI <35 AND price <SMA200 — thesis failure, preserve capital
+13. ESCALATE VOLUME_SPIKE STRONG with RSI 40-55 AND T1 — 8 trades 63% WR avg +224.0%, best performing pattern
+14. STOP escalating BB_SQUEEZE signals — 1/1 actual loss -10.7%
 
 EXAMPLES FROM ACTUAL TRADES:
-- REJECT: EMA+VOLUME crossover with elevated RSI — proven losing pattern: Avoided -7.0% avg loss pattern (EMA+VOLUME crossover), RSI >55 confirms overbought momentum trap
-- REJECT: T2 signal without exceptional confirmation — 33% WR requires stricter filter: T2 requires volume >5x, this shows 3.8x — below threshold for T2 33% WR tier
-- ESCALATE SELL: Losing position held too long with bearish confirmation: Position <-8% held >24h with MACD bearish — cut loser before reaching avg -37.98 loss
+- REJECT: EMA_BULLISH_CROSSOVER+VOLUME_SPIKE momentum trap (3/3 losses): Avoided momentum trap — pattern has 3/3 losses avg -7.0%, RSI >55 confirms late entry
+- REJECT: VOLUME_SPIKE STRONG with RSI >55 (3/3 losses): Avoided chasing — VOLUME_SPIKE STRONG with RSI >55 has 3/3 losses avg -4.2%
+- ESCALATE: VOLUME_SPIKE STRONG + T1 + RSI sweet spot (5/8 wins, +224%): Strong edge — T1 VOLUME_SPIKE STRONG with RSI 40-55 has 63% WR avg +224.0%
 

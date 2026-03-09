@@ -65,21 +65,24 @@ async function start() {
     symbolNames.set(row.symbol, row.name);
   }
 
-  // 4. Initialize scanner
+  // 4. Startup state reconciliation
+  await reconcileState();
+
+  // 5. Initialize scanner
   await initScanner();
 
-  // 5. Queue engine start event
+  // 6. Queue engine start event
   await queueEvent('ENGINE_START', null, {
     paper_trading: tradingConfig.account.paper_trading,
     symbols: symbolResult.rows.length,
     capital: tradingConfig.account.total_capital,
   });
 
-  // 6. Set up graceful shutdown
+  // 7. Set up graceful shutdown
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  // 7. Start scan loop
+  // 8. Start scan loop
   isRunning = true;
   const intervalMs = (tradingConfig.scanner.interval_minutes || 5) * 60 * 1000;
 
@@ -121,6 +124,7 @@ async function runCycle() {
   cycleCount++;
   const cycleStart = Date.now();
   invalidatePortfolioCache();
+  recordHeartbeat();
 
   logger.info(`[Engine] === Cycle ${cycleCount} ===`);
 
@@ -419,8 +423,27 @@ async function executeBuy(decision, triggered) {
     positionSizeUsd = tierConfig.max_position_usd;
   }
 
-  // Check available capital
+  // Confidence-scaled sizing: scale down for lower confidence
+  const confScaling = tradingConfig.position_sizing.confidence_scaling !== false;
+  if (confScaling && decision.confidence < 0.85) {
+    const scaleFactor = 0.5 + decision.confidence; // 0.65 conf → 0.765x, 0.80 conf → 0.93x
+    const scaledSize = Math.round(positionSizeUsd * Math.min(scaleFactor, 1.0));
+    if (scaledSize < positionSizeUsd) {
+      logger.info(`[Engine] ${symbol}: Confidence-scaled sizing: $${positionSizeUsd} → $${scaledSize} (conf:${decision.confidence})`);
+      positionSizeUsd = scaledSize;
+    }
+  }
+
+  // Portfolio drawdown-aware sizing: reduce when underwater
   const buyPortfolio = await getCachedPortfolio();
+  const portfolioPnlPct = buyPortfolio.total_pnl_percent || 0;
+  if (portfolioPnlPct < -7) {
+    positionSizeUsd = Math.round(positionSizeUsd * 0.5);
+    logger.warn(`[Engine] ${symbol}: Drawdown sizing: 50% reduction (portfolio ${portfolioPnlPct.toFixed(1)}% < -7%)`);
+  } else if (portfolioPnlPct < -5) {
+    positionSizeUsd = Math.round(positionSizeUsd * 0.8);
+    logger.warn(`[Engine] ${symbol}: Drawdown sizing: 20% reduction (portfolio ${portfolioPnlPct.toFixed(1)}% < -5%)`);
+  }
   if (positionSizeUsd > buyPortfolio.available_capital) {
     const reason = `BUY rejected — insufficient capital ($${positionSizeUsd} > $${buyPortfolio.available_capital.toFixed(2)} available)`;
     logger.warn(`[Engine] ${symbol}: ${reason}`);
@@ -501,7 +524,7 @@ async function executeSell(decision, triggered) {
   await queueEvent(eventType, symbol, {
     position_id: position.id,
     price: fillPrice,
-    exit_percent: exitPercent,
+    exit_percent: actualExitPercent,
     pnl: closeResult.pnl,
     pnl_percent: closeResult.pnlPercent,
     confidence: decision.confidence,
@@ -509,7 +532,7 @@ async function executeSell(decision, triggered) {
   });
 
   invalidatePortfolioCache();
-  logger.info(`[Engine] EXECUTED ${eventType}: ${symbol} ${exitPercent}% @ $${fillPrice.toFixed(2)} | P&L: $${closeResult.pnl.toFixed(2)} (${closeResult.pnlPercent.toFixed(2)}%)`);
+  logger.info(`[Engine] EXECUTED ${eventType}: ${symbol} ${actualExitPercent.toFixed(1)}% @ $${fillPrice.toFixed(2)} | P&L: $${closeResult.pnl.toFixed(2)} (${closeResult.pnlPercent.toFixed(2)}%)`);
   sendAlert('SELL', symbol, { price: fillPrice, pnl: closeResult.pnl, pnl_percent: closeResult.pnlPercent }).catch(() => {});
   return { escalated: true, executed: true };
 }
@@ -523,6 +546,22 @@ async function executeDCA(decision, triggered) {
     logger.warn(`[Engine] ${symbol}: ${reason}`);
     return { escalated: true, executed: false, reason };
   }
+
+  // DCA count limit — max 2 DCAs per position
+  const maxDcaCount = tradingConfig.dca?.max_dca_count || 2;
+  const dcaCountResult = await query(
+    "SELECT COUNT(*) as cnt FROM trades WHERE position_id = $1 AND trade_type = 'DCA'",
+    [position.id]
+  );
+  const currentDcaCount = parseInt(dcaCountResult.rows[0].cnt) || 0;
+  if (currentDcaCount >= maxDcaCount) {
+    const reason = `DCA rejected — already ${currentDcaCount} DCAs (max ${maxDcaCount}). Exit and re-enter instead.`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
+  // DCA size limit — each DCA capped at 50% of original entry
+  const maxDcaPctOfOriginal = tradingConfig.dca?.max_dca_pct_of_original || 50;
 
   // Safety net: DCA only makes sense when price is below avg entry
   const avgEntry = parseFloat(position.avg_entry_price);
@@ -538,6 +577,14 @@ async function executeDCA(decision, triggered) {
   const tierKey = `tier_${tier}`;
   const tierConfig = tradingConfig.position_sizing[tierKey];
   let dcaAmountUsd = decision.position_details?.position_size_usd || tierConfig?.base_position_usd || 600;
+
+  // Cap DCA at percentage of original entry cost
+  const originalEntry = parseFloat(position.entry_cost);
+  const maxDcaUsd = originalEntry * (maxDcaPctOfOriginal / 100);
+  if (dcaAmountUsd > maxDcaUsd) {
+    logger.info(`[Engine] ${symbol}: DCA capped at $${maxDcaUsd.toFixed(2)} (${maxDcaPctOfOriginal}% of original $${originalEntry.toFixed(2)})`);
+    dcaAmountUsd = maxDcaUsd;
+  }
 
   // Check total won't exceed tier max
   const currentInvested = parseFloat(position.total_cost);
@@ -803,6 +850,78 @@ async function recordLoss(symbol, pnl) {
 
 async function resetCircuitBreaker() {
   await query('UPDATE circuit_breaker SET consecutive_losses = 0, updated_at = NOW() WHERE id = 1');
+}
+
+// ── Startup State Reconciliation ─────────────────────────────
+
+async function reconcileState() {
+  logger.info('[Engine] Running startup state reconciliation...');
+  let issues = 0;
+
+  // 1. Detect open positions with size = 0 (should be CLOSED)
+  const zeroSizeResult = await query(
+    "SELECT id, symbol FROM positions WHERE status = 'OPEN' AND current_size <= 0"
+  );
+  for (const pos of zeroSizeResult.rows) {
+    logger.warn(`[Engine] Reconcile: Position #${pos.id} ${pos.symbol} has zero size but status=OPEN — closing`);
+    await query(
+      "UPDATE positions SET status = 'CLOSED', exit_time = NOW(), exit_reasoning = 'Auto-reconciled: zero size', updated_at = NOW() WHERE id = $1",
+      [pos.id]
+    );
+    issues++;
+  }
+
+  // 2. Detect stale PENDING signals older than 7 days
+  const staleSignals = await query(
+    "UPDATE signals SET outcome = 'NEUTRAL' WHERE outcome = 'PENDING' AND created_at < NOW() - INTERVAL '7 days' RETURNING id"
+  );
+  if (staleSignals.rows.length > 0) {
+    logger.warn(`[Engine] Reconcile: Marked ${staleSignals.rows.length} stale PENDING signals as NEUTRAL`);
+    issues += staleSignals.rows.length;
+  }
+
+  // 3. Detect stale PENDING decisions older than 7 days
+  const staleDecisions = await query(
+    "UPDATE decisions SET outcome = 'NEUTRAL' WHERE outcome = 'PENDING' AND created_at < NOW() - INTERVAL '7 days' RETURNING id"
+  );
+  if (staleDecisions.rows.length > 0) {
+    logger.warn(`[Engine] Reconcile: Marked ${staleDecisions.rows.length} stale PENDING decisions as NEUTRAL`);
+    issues += staleDecisions.rows.length;
+  }
+
+  // 4. Detect decisions marked executed=true but no corresponding trade
+  const orphanDecisions = await query(`
+    SELECT d.id, d.symbol, d.action FROM decisions d
+    WHERE d.executed = true
+      AND d.action IN ('BUY', 'SELL', 'DCA', 'PARTIAL_EXIT')
+      AND d.created_at > NOW() - INTERVAL '7 days'
+      AND NOT EXISTS (
+        SELECT 1 FROM trades t
+        WHERE t.position_id IN (SELECT p.id FROM positions p WHERE p.open_decision_id = d.id OR p.close_decision_id = d.id)
+          AND t.executed_at > d.created_at - INTERVAL '1 hour'
+      )
+  `);
+  if (orphanDecisions.rows.length > 0) {
+    logger.warn(`[Engine] Reconcile: ${orphanDecisions.rows.length} decision(s) marked executed but no trade found`);
+    for (const d of orphanDecisions.rows) {
+      logger.warn(`[Engine]   Decision #${d.id} ${d.symbol} ${d.action} — may need manual review`);
+    }
+    issues += orphanDecisions.rows.length;
+  }
+
+  if (issues === 0) {
+    logger.info('[Engine] State reconciliation: no issues found');
+  } else {
+    logger.warn(`[Engine] State reconciliation: resolved ${issues} issue(s)`);
+  }
+}
+
+// ── Heartbeat ────────────────────────────────────────────────
+
+let lastHeartbeat = Date.now();
+
+function recordHeartbeat() {
+  lastHeartbeat = Date.now();
 }
 
 // ── Dynamic Escalation Confidence Floor (cached 1hr) ────────
