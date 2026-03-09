@@ -17,7 +17,11 @@ export function computeExitUrgency(position, analysis, currentPrice) {
   const factors = [];
 
   const avgEntry = parseFloat(position.avg_entry_price);
-  const pnlPercent = avgEntry > 0 ? ((currentPrice - avgEntry) / avgEntry) * 100 : 0;
+  if (!(avgEntry > 0)) {
+    logger.warn(`[ExitScanner] ${position.symbol} #${position.id}: corrupt avg_entry_price (${position.avg_entry_price}) — assigning high urgency`);
+    return { score: 80, factors: ['corrupt avg_entry_price — manual review needed'], pnl_percent: 0, hold_hours: 0, drawdown_from_peak: 0, max_gain: 0 };
+  }
+  const pnlPercent = ((currentPrice - avgEntry) / avgEntry) * 100;
   const holdMs = Date.now() - new Date(position.entry_time).getTime();
   const holdHours = holdMs / (1000 * 60 * 60);
   const maxGain = parseFloat(position.max_unrealized_gain_percent || 0);

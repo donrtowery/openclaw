@@ -314,7 +314,7 @@ async function calculateStats() {
     GROUP BY exit_category
   `);
 
-  // Missed opportunities: signals not escalated where price moved favorably within 24h
+  // Missed opportunities: signals not escalated where price moved favorably within eval window
   // Uses indicator_snapshots for actual price data. Requires price didn't dip >3% in first
   // 4 hours (consistent with outcome updater) to avoid showing "opportunities" that would
   // have been stopped out by intermediate drawdowns.
@@ -332,11 +332,11 @@ async function calculateStats() {
       FROM indicator_snapshots i
       WHERE i.symbol = s.symbol
         AND i.created_at > s.created_at
-        AND i.created_at < s.created_at + INTERVAL '24 hours'
+        AND i.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
     ) sub ON true
     WHERE s.escalated = false AND s.signal_type = 'BUY'
       AND s.created_at > NOW() - INTERVAL '30 days'
-      AND s.created_at < NOW() - INTERVAL '24 hours'
+      AND s.created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       AND sub.max_price_24h IS NOT NULL
       AND COALESCE((SELECT MIN(i2.price) FROM indicator_snapshots i2
            WHERE i2.symbol = s.symbol
@@ -347,7 +347,7 @@ async function calculateStats() {
     LIMIT 20
   `);
 
-  // Missed SELL opportunities: SELL signals not escalated where price dropped >2% in 24h
+  // Missed SELL opportunities: SELL signals not escalated where price dropped within eval window
   const missedSellResult = await query(`
     SELECT s.symbol, s.signal_type, s.strength, s.confidence,
       s.price as signal_price, s.created_at,
@@ -362,11 +362,11 @@ async function calculateStats() {
       FROM indicator_snapshots i
       WHERE i.symbol = s.symbol
         AND i.created_at > s.created_at
-        AND i.created_at < s.created_at + INTERVAL '24 hours'
+        AND i.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
     ) sub ON true
     WHERE s.escalated = false AND s.signal_type = 'SELL'
       AND s.created_at > NOW() - INTERVAL '30 days'
-      AND s.created_at < NOW() - INTERVAL '24 hours'
+      AND s.created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       AND sub.min_price_24h IS NOT NULL
       -- Exclude cases where price rallied >3% above signal price in first 4h before dropping
       AND COALESCE((SELECT MAX(i2.price) FROM indicator_snapshots i2
@@ -378,7 +378,7 @@ async function calculateStats() {
     LIMIT 20
   `);
 
-  // Missed PASS decisions: Sonnet passed on BUY signals where price rose >2% in 24h
+  // Missed PASS decisions: Sonnet passed on BUY signals where price rose within eval window
   const missedPassResult = await query(`
     SELECT d.symbol, d.confidence as sonnet_conf, d.reasoning,
       s.strength as haiku_strength, s.confidence as haiku_conf,
@@ -395,11 +395,11 @@ async function calculateStats() {
       FROM indicator_snapshots i
       WHERE i.symbol = s.symbol
         AND i.created_at > s.created_at
-        AND i.created_at < s.created_at + INTERVAL '24 hours'
+        AND i.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
     ) sub ON true
     WHERE d.action = 'PASS' AND s.signal_type = 'BUY'
       AND d.created_at > NOW() - INTERVAL '30 days'
-      AND d.created_at < NOW() - INTERVAL '24 hours'
+      AND d.created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       AND sub.max_price_24h IS NOT NULL
       AND s.price > 0
       AND ((sub.max_price_24h - s.price) / s.price * 100) > $1
@@ -407,7 +407,7 @@ async function calculateStats() {
     LIMIT 20
   `, [MISSED_OPP_THRESHOLD]);
 
-  // Missed SELL PASS decisions: Sonnet passed on SELL signals where price dropped >threshold in 24h
+  // Missed SELL PASS decisions: Sonnet passed on SELL signals where price dropped within eval window
   const missedSellPassResult = await query(`
     SELECT d.symbol, d.confidence as sonnet_conf, d.reasoning,
       s.strength as haiku_strength, s.confidence as haiku_conf,
@@ -424,11 +424,11 @@ async function calculateStats() {
       FROM indicator_snapshots i
       WHERE i.symbol = s.symbol
         AND i.created_at > s.created_at
-        AND i.created_at < s.created_at + INTERVAL '24 hours'
+        AND i.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
     ) sub ON true
     WHERE d.action = 'PASS' AND s.signal_type = 'SELL'
       AND d.created_at > NOW() - INTERVAL '30 days'
-      AND d.created_at < NOW() - INTERVAL '24 hours'
+      AND d.created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       AND sub.min_price_24h IS NOT NULL
       AND s.price > 0
       AND ((s.price - sub.min_price_24h) / s.price * 100) > $1
@@ -1326,7 +1326,7 @@ async function updatePromptFiles(stats, analysis, defensiveMode = false) {
       // Check for winning sub-pattern exception (matches haiku prompt format)
       const matchingWin = winningSubPatterns.get(triggers);
       if (matchingWin) {
-        line += ` (EXCEPTION: sub-pattern with ${matchingWin.wr}% WR on ${matchingWin.total} trades — check haiku rules)`;
+        line += ` (EXCEPTION: sub-pattern wins ${matchingWin.wr}% on ${matchingWin.total} trades — approve if RSI <55 and volume >3x)`;
       }
       sonnetSection += line + '\n';
     }

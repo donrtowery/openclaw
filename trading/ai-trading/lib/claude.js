@@ -91,9 +91,19 @@ export function extractJSON(text) {
     // Fall through to bracket extraction
   }
 
+  // Strip trailing commas before closing brackets (common LLM output artifact)
+  const noTrailingCommas = cleaned.replace(/,\s*([\]}])/g, '$1');
+
+  // Try parse after trailing comma cleanup
+  try {
+    return JSON.parse(noTrailingCommas);
+  } catch {
+    // Fall through to bracket extraction
+  }
+
   // Find the first [ or { and match its closing bracket
-  const arrayStart = cleaned.indexOf('[');
-  const objectStart = cleaned.indexOf('{');
+  const arrayStart = noTrailingCommas.indexOf('[');
+  const objectStart = noTrailingCommas.indexOf('{');
 
   let start;
   if (arrayStart === -1 && objectStart === -1) {
@@ -110,8 +120,8 @@ export function extractJSON(text) {
   let depth = 0;
   let inString = false;
   let escape = false;
-  for (let i = start; i < cleaned.length; i++) {
-    const ch = cleaned[i];
+  for (let i = start; i < noTrailingCommas.length; i++) {
+    const ch = noTrailingCommas[i];
     if (escape) { escape = false; continue; }
     if (ch === '\\' && inString) { escape = true; continue; }
     if (ch === '"') { inString = !inString; continue; }
@@ -119,7 +129,7 @@ export function extractJSON(text) {
     if (ch === '{' || ch === '[') depth++;
     if (ch === '}' || ch === ']') depth--;
     if (depth === 0) {
-      return JSON.parse(cleaned.substring(start, i + 1));
+      return JSON.parse(noTrailingCommas.substring(start, i + 1));
     }
   }
 

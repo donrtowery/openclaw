@@ -68,4 +68,11 @@ export async function testConnection() {
   }
 }
 
+/**
+ * Drain the pool (for graceful shutdown)
+ */
+export async function endPool() {
+  await pool.end();
+}
+
 export default pool;

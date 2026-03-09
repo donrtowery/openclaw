@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { readFileSync } from 'fs';
-import { query } from '../db/connection.js';
+import { query, endPool } from '../db/connection.js';
 import { testConnection } from '../db/connection.js';
 import { testConnectivity, placeOrder, getCurrentPrice, getAllPrices } from '../lib/binance.js';
 import { initScanner, runScanCycle } from '../lib/scanner.js';
@@ -201,9 +201,9 @@ async function runCycle() {
     logger.warn(`[Engine] Circuit breaker ACTIVE (${cb.consecutive_losses} losses). Blocking new entries. Reactivates: ${cb.reactivates_at}`);
   }
   if (drawdownActive) {
-    logger.warn(`[Engine] DRAWDOWN PROTECTION: total P&L ${drawdownPortfolio.total_pnl_percent.toFixed(2)}% exceeds -${maxDrawdownPct}% limit. Blocking new entries.`);
+    logger.warn(`[Engine] DRAWDOWN PROTECTION: unrealized P&L ${drawdownPortfolio.unrealized_pnl_percent.toFixed(2)}% exceeds -${maxDrawdownPct}% limit. Blocking new entries.`);
     await queueEvent('DRAWDOWN_PAUSE', null, {
-      total_pnl_percent: drawdownPortfolio.total_pnl_percent,
+      unrealized_pnl_percent: drawdownPortfolio.unrealized_pnl_percent,
       max_drawdown_percent: maxDrawdownPct,
     });
   }
@@ -571,7 +571,7 @@ async function executeSell(decision, triggered) {
   }
 
   // Determine exit percent — Sonnet may specify partial exit
-  const intendedExitPercent = decision.position_details?.exit_percent || 100;
+  const intendedExitPercent = parseFloat(decision.position_details?.exit_percent) || 100;
   const currentPrice = await getCurrentPrice(symbol);
   const currentSize = parseFloat(position.current_size);
   if (!currentSize || isNaN(currentSize) || currentSize <= 0) {
@@ -763,23 +763,36 @@ async function runExitScanCycle() {
     consecutive_losses: cb.consecutive_losses,
   };
 
-  // Pre-fetch news for all candidates in parallel (tier-based item count)
+  // Deduplicate candidates by symbol (keep highest urgency)
+  const seenSymbols = new Map();
+  for (const candidate of exitResult.candidates) {
+    const sym = candidate.position.symbol;
+    if (!seenSymbols.has(sym) || candidate.urgency.score > seenSymbols.get(sym).urgency.score) {
+      seenSymbols.set(sym, candidate);
+    }
+  }
+  const dedupedCandidates = [...seenSymbols.values()];
+  if (dedupedCandidates.length < exitResult.candidates.length) {
+    logger.info(`[Engine] Exit candidates deduped: ${exitResult.candidates.length} → ${dedupedCandidates.length}`);
+  }
+
+  // Log all candidates (dedup set after Sonnet success, not before — failed calls shouldn't block entry-side)
+  for (const candidate of dedupedCandidates) {
+    logger.info(`[Engine] Exit eval: ${candidate.position.symbol} urgency ${candidate.urgency.score} — ${candidate.urgency.factors.join(', ')}`);
+  }
+
+  // Pre-fetch news for all deduped candidates in parallel (tier-based item count)
   const newsResults = await Promise.allSettled(
-    exitResult.candidates.map(c => {
+    dedupedCandidates.map(c => {
       const coinName = symbolNames.get(c.position.symbol) || c.position.symbol.replace('USDT', '');
       const newsItems = c.position.tier === 1 ? 3 : c.position.tier === 2 ? 2 : 1;
       return getNewsContext(c.position.symbol, coinName, newsItems);
     })
   );
 
-  // Log all candidates (dedup set after Sonnet success, not before — failed calls shouldn't block entry-side)
-  for (const candidate of exitResult.candidates) {
-    logger.info(`[Engine] Exit eval: ${candidate.position.symbol} urgency ${candidate.urgency.score} — ${candidate.urgency.factors.join(', ')}`);
-  }
-
   // Fire all Sonnet exit evals in parallel for better prompt cache hits
   const sonnetResults = await Promise.allSettled(
-    exitResult.candidates.map((candidate, i) => {
+    dedupedCandidates.map((candidate, i) => {
       const news = newsResults[i].status === 'fulfilled' ? newsResults[i].value : 'No recent news available.';
       return callSonnetExitEval(
         candidate.position, candidate.analysis, candidate.urgency,
@@ -791,8 +804,8 @@ async function runExitScanCycle() {
   // Process results sequentially (executions need ordering for portfolio consistency)
   let exitsExecuted = 0;
 
-  for (let i = 0; i < exitResult.candidates.length; i++) {
-    const { position, urgency, currentPrice } = exitResult.candidates[i];
+  for (let i = 0; i < dedupedCandidates.length; i++) {
+    const { position, urgency, currentPrice } = dedupedCandidates[i];
 
     if (sonnetResults[i].status === 'rejected') {
       logger.error(`[Engine] Exit eval failed for ${position.symbol}: ${sonnetResults[i].reason?.message}`);
@@ -806,7 +819,7 @@ async function runExitScanCycle() {
     const decision = sonnetResults[i].value;
 
     if (['SELL', 'PARTIAL_EXIT'].includes(decision.action)) {
-      const exitPercent = decision.position_details?.exit_percent || 100;
+      const exitPercent = parseFloat(decision.position_details?.exit_percent) || 100;
       const isPartial = exitPercent < 99;
 
       const triggered = { symbol: position.symbol, tier: position.tier };
@@ -1130,7 +1143,7 @@ async function getExitLearningRules() {
   const result = await query(`
     SELECT * FROM learning_rules
     WHERE is_active = true
-      AND rule_type IN ('sonnet_exit', 'exit_timing')
+      AND rule_type = 'sonnet_exit'
     ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
     LIMIT 5
   `);
@@ -1172,6 +1185,12 @@ async function shutdown() {
     await queueEvent('ENGINE_STOP', null, { cycle_count: cycleCount });
   } catch {
     // DB may already be closing
+  }
+
+  try {
+    await endPool();
+  } catch {
+    // Pool may already be ended
   }
 
   logger.info(`[Engine] Stopped after ${cycleCount} cycles`);

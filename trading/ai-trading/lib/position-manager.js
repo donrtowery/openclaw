@@ -151,7 +151,7 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
         "SELECT COALESCE(SUM(cost), 0) as total_deployed FROM trades WHERE position_id = $1 AND trade_type IN ('ENTRY', 'DCA')",
         [positionId]
       );
-      const totalCapitalDeployed = parseFloat(capitalResult.rows[0].total_deployed) || parseFloat(pos.total_cost);
+      const totalCapitalDeployed = parseFloat(capitalResult.rows[0].total_deployed) || parseFloat(pos.entry_cost);
       const finalPnlPercent = totalCapitalDeployed > 0 ? (totalProfit / totalCapitalDeployed) * 100 : 0;
 
       await client.query(`
