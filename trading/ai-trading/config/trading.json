@@ -6,6 +6,7 @@
     "max_trades_per_day": 20
   },
   "position_sizing": {
+    "confidence_scaling": true,
     "tier_1": {
       "label": "Blue Chips (BTC, ETH, BNB, SOL, XRP, ADA, AVAX, DOT, LINK, POL)",
       "base_position_usd": 800,
@@ -45,12 +46,12 @@
   "confidence_thresholds": {
     "sonnet_minimum_for_new_entry": 0.65,
     "sonnet_minimum_for_exit": 0.55,
+    "sonnet_minimum_for_partial_exit": 0.55,
     "sonnet_minimum_for_dca": 0.6,
     "note": "Safety net — Sonnet can still make intelligent decisions below these, but actions are downgraded"
   },
   "escalation": {
     "min_confidence_to_escalate": 0.6,
-    "min_strength_to_escalate": "MODERATE",
     "sonnet_dedup_minutes": 30,
     "note": "Haiku decides whether to escalate based on signal quality, not rigid cutoffs. sonnet_dedup_minutes prevents re-escalating same symbol too frequently."
   },

@@ -215,9 +215,11 @@ export async function callHaikuBatch(triggeredSignals, config) {
       const sig = triggeredSignals[i];
       // Match by symbol first (handles out-of-order responses), splice to prevent double-matching
       const matchIdx = availableResults.findIndex(r => r.symbol === sig.symbol);
+      // Always use symbol match or safe fallback — never positional results[i] which may
+      // reference an already-consumed result when model reorders output
       const result = matchIdx !== -1
         ? availableResults.splice(matchIdx, 1)[0]
-        : results[i] || {
+        : {
           symbol: sig.symbol, signal: 'NONE', strength: 'WEAK',
           escalate: false, confidence: 0, reasons: ['No response for this signal'], concerns: [],
         };
@@ -376,16 +378,16 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
     } catch (parseErr) {
       // For critical urgency (>=70), default to SELL instead of HOLD — the exit scanner
       // already determined this position needs urgent attention
-      const isCriticalUrgency = urgency?.score >= 70;
-      const fallbackAction = isCriticalUrgency ? 'SELL' : 'HOLD';
+      // Always default to HOLD on parse failure — never auto-sell without AI analysis.
+      // Critical urgency positions will be re-evaluated on next exit scan cycle.
       logger.error(`[Sonnet-Exit] JSON parse failed (${parseErr.message}), response: ${responseText.substring(0, 500)}`);
-      logger.error(`[Sonnet-Exit] WARNING: Exit eval for ${position.symbol} defaulting to ${fallbackAction} (urgency: ${urgency?.score || 'unknown'}).`);
+      logger.error(`[Sonnet-Exit] WARNING: Exit eval for ${position.symbol} defaulting to HOLD (urgency: ${urgency?.score || 'unknown'}). Will retry next cycle.`);
       parsed = {
-        action: fallbackAction,
+        action: 'HOLD',
         symbol: position.symbol,
-        confidence: isCriticalUrgency ? 0.6 : 0,
-        position_details: isCriticalUrgency ? { exit_percent: 50 } : null,
-        reasoning: `Parse error — defaulting to ${fallbackAction} (urgency ${urgency?.score || 'unknown'})`,
+        confidence: 0,
+        position_details: null,
+        reasoning: `Parse error — defaulting to HOLD (urgency ${urgency?.score || 'unknown'}). Will retry next exit scan.`,
         risk_assessment: 'Unable to assess due to parse error',
         alternative_considered: 'N/A',
       };

@@ -104,10 +104,13 @@ async function start() {
   logger.info(`Paper trading: ${tradingConfig.account.paper_trading}`);
   logger.info(`Capital: $${tradingConfig.account.total_capital} | Max positions: ${tradingConfig.account.max_concurrent_positions}`);
 
-  // Run first scan immediately
+  // Run first scan immediately (catch transient errors like subsequent cycles do)
   try {
     cycleInProgress = true;
     await runCycle();
+  } catch (error) {
+    logger.error(`[Engine] First cycle error: ${error.message}`);
+    logger.error(error.stack);
   } finally {
     cycleInProgress = false;
   }
@@ -190,7 +193,8 @@ async function runCycle() {
   const cb = await checkCircuitBreaker();
   const maxDrawdownPct = tradingConfig.circuit_breaker.max_drawdown_percent || 10;
   const drawdownPortfolio = await getCachedPortfolio();
-  const drawdownActive = drawdownPortfolio.total_pnl_percent < -maxDrawdownPct;
+  // Use unrealized P&L only for drawdown — all-time realized losses would permanently block entries
+  const drawdownActive = drawdownPortfolio.unrealized_pnl_percent < -maxDrawdownPct;
   skipNewEntries = skipNewEntries || cb.is_active || drawdownActive;
 
   if (cb.is_active) {
@@ -481,10 +485,12 @@ async function executeBuy(decision, triggered) {
   }
   let positionSizeUsd = decision.position_details?.position_size_usd || tierConfig?.base_position_usd || 600;
 
-  // Warn if Sonnet's size exceeds tier base (may indicate tier mismatch)
+  // Cap position size at 1.5x tier base to prevent Sonnet over-sizing
   if (decision.position_details?.position_size_usd && tierConfig?.base_position_usd &&
       decision.position_details.position_size_usd > tierConfig.base_position_usd * 1.5) {
-    logger.warn(`[Engine] ${symbol}: Sonnet suggested $${decision.position_details.position_size_usd} but T${tier} base is $${tierConfig.base_position_usd} — capping`);
+    const cappedSize = Math.round(tierConfig.base_position_usd * 1.5);
+    logger.warn(`[Engine] ${symbol}: Sonnet suggested $${decision.position_details.position_size_usd} but T${tier} base is $${tierConfig.base_position_usd} — capping at $${cappedSize}`);
+    positionSizeUsd = cappedSize;
   }
 
   // Cap at tier max
@@ -766,10 +772,9 @@ async function runExitScanCycle() {
     })
   );
 
-  // Log all candidates and mark dedup before parallel Sonnet calls
+  // Log all candidates (dedup set after Sonnet success, not before — failed calls shouldn't block entry-side)
   for (const candidate of exitResult.candidates) {
     logger.info(`[Engine] Exit eval: ${candidate.position.symbol} urgency ${candidate.urgency.score} — ${candidate.urgency.factors.join(', ')}`);
-    lastSonnetEvaluation.set(candidate.position.symbol, Date.now());
   }
 
   // Fire all Sonnet exit evals in parallel for better prompt cache hits
@@ -794,6 +799,9 @@ async function runExitScanCycle() {
       recordExitCooldown(position.symbol);
       continue;
     }
+
+    // Mark dedup only after Sonnet call succeeded (failed calls shouldn't block entry-side escalation)
+    lastSonnetEvaluation.set(position.symbol, Date.now());
 
     const decision = sonnetResults[i].value;
 

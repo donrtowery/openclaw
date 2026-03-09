@@ -261,7 +261,6 @@ export function calcSupportResistance(candles, currentPrice) {
 export function calcTrend({ rsi, macd, ema, sma, price }) {
   let bullish = 0;
   let bearish = 0;
-  const total = 5;
 
   // SMA200 trend
   if (sma?.sma200 != null) {

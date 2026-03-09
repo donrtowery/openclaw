@@ -18,6 +18,12 @@ const SUSTAINED_CANDLES = config.learning?.sustained_candles_required || 6;
 const ESC_CONV_TARGET_MIN = config.learning?.escalation_conversion_target_min || 15;
 const ESC_CONV_TARGET_MAX = config.learning?.escalation_conversion_target_max || 30;
 const PASS_EVAL_WINDOW_HOURS = Math.max(1, parseInt(config.learning?.pass_evaluation_window_hours) || 48);
+// Safety assertion: PASS_EVAL_WINDOW_HOURS is interpolated into SQL make_interval() calls.
+// It MUST be a safe integer. This assertion prevents injection if the parseInt guard above
+// is ever removed or the config source changes.
+if (!Number.isInteger(PASS_EVAL_WINDOW_HOURS) || PASS_EVAL_WINDOW_HOURS < 1 || PASS_EVAL_WINDOW_HOURS > 168) {
+  throw new Error(`PASS_EVAL_WINDOW_HOURS must be an integer 1-168, got: ${PASS_EVAL_WINDOW_HOURS}`);
+}
 const DEFENSIVE_WIN_RATE_THRESHOLD = config.learning?.defensive_mode_win_rate_threshold || 50;
 const DEFENSIVE_MAX_ESC_TARGET = config.learning?.defensive_mode_max_escalation_target || 15;
 const DEFENSIVE_MIN_ESCALATE_RATIO = config.learning?.defensive_mode_min_escalate_ratio || 0.2;
@@ -95,16 +101,25 @@ async function run() {
 
   const currentEscRate = parseFloat(escConvRate);
   if (defensiveMode) {
-    // Check for defensive mode stagnation — if barely any new trades across recent sessions, relax
-    // Threshold is proportional to sessions reviewed: <= 1 trade per session = stagnant
+    // Check for defensive mode stagnation — if barely any new trades since oldest session, relax
+    // Uses actual trade count between history entries to avoid 30-day rolling window shrinkage
     let defensiveStagnant = false;
     if (trajectoryRows.length >= 2) {
-      const recentTradeCount = parseInt(trajectoryRows[0]?.total_trades) || 0;
-      const oldestTradeCount = parseInt(trajectoryRows[trajectoryRows.length - 1]?.total_trades) || 0;
-      const tradeDelta = recentTradeCount - oldestTradeCount;
-      const stagnationThreshold = trajectoryRows.length; // 1 trade per session minimum
-      if (tradeDelta <= stagnationThreshold) {
-        defensiveStagnant = true;
+      const oldestSessionTime = trajectoryRows[trajectoryRows.length - 1]?.created_at;
+      if (oldestSessionTime) {
+        try {
+          const tradesSinceResult = await query(
+            "SELECT COUNT(*) as cnt FROM positions WHERE status = 'CLOSED' AND exit_time > $1",
+            [oldestSessionTime]
+          );
+          const tradesSinceOldest = parseInt(tradesSinceResult.rows[0]?.cnt) || 0;
+          const stagnationThreshold = trajectoryRows.length; // 1 trade per session minimum
+          if (tradesSinceOldest <= stagnationThreshold) {
+            defensiveStagnant = true;
+          }
+        } catch (err) {
+          logger.warn(`[Learning] Stagnation check query failed: ${err.message}`);
+        }
       }
     }
 
@@ -417,6 +432,12 @@ async function calculateStats() {
       AND sub.min_price_24h IS NOT NULL
       AND s.price > 0
       AND ((s.price - sub.min_price_24h) / s.price * 100) > $1
+      -- Exclude cases where price rallied >3% in first 4h before dropping (matches missedSellResult filter)
+      AND COALESCE((SELECT MAX(i2.price) FROM indicator_snapshots i2
+           WHERE i2.symbol = s.symbol
+             AND i2.created_at > s.created_at
+             AND i2.created_at < s.created_at + INTERVAL '4 hours'
+          ), s.price) <= s.price * 1.03
     ORDER BY potential_drop_pct DESC
     LIMIT 20
   `, [MISSED_OPP_THRESHOLD]);
@@ -499,7 +520,7 @@ async function calculateStats() {
   const pnlReturns = sharpeResult.rows.map(r => parseFloat(r.realized_pnl_percent) || 0);
   if (pnlReturns.length >= 3) {
     const avgReturn = pnlReturns.reduce((s, r) => s + r, 0) / pnlReturns.length;
-    const variance = pnlReturns.reduce((s, r) => s + Math.pow(r - avgReturn, 2), 0) / pnlReturns.length;
+    const variance = pnlReturns.reduce((s, r) => s + Math.pow(r - avgReturn, 2), 0) / (pnlReturns.length - 1);
     const stdDev = Math.sqrt(variance);
     sharpeRatio = stdDev > 0 ? Math.round((avgReturn / stdDev) * 100) / 100 : 0;
   }
@@ -658,7 +679,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     }
 
   } else {
-    prompt = `This is a new trading bot with no closed trades yet. Analyze the signal data below — especially missed opportunities — to generate initial rules and calibrate aggressiveness.\n\n`;
+    prompt += `This is a new trading bot with no closed trades yet. Analyze the signal data below — especially missed opportunities — to generate initial rules and calibrate aggressiveness.\n\n`;
   }
 
   if (stats.tier_stats.length > 0) {
@@ -1235,7 +1256,8 @@ async function updatePromptFiles(stats, analysis, defensiveMode = false) {
   }
 
   // SONNET WAS WRONG section — show MISSED_OPPORTUNITY PASS decisions
-  if (stats.missed_pass_decisions.length > 0) {
+  // Suppress during defensive mode to avoid contradicting STOP/REJECT rules
+  if (stats.missed_pass_decisions.length > 0 && !defensiveMode) {
     haikuSection += `SONNET WAS WRONG (these PASSed signals SHOULD have been escalated — Sonnet erred, not you):\n`;
     for (const m of stats.missed_pass_decisions.slice(0, 5)) {
       haikuSection += `- ${m.symbol} ${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed → price rose +${Math.min(parseFloat(m.potential_gain_pct), 20).toFixed(1)}%`;
@@ -1606,6 +1628,12 @@ async function updateOutcomes() {
                AND i2.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
                AND ((s.price - i2.price) / s.price * 100) > $1
             ) >= $2
+        -- Only count as missed if price didn't rally >3% first (would have caused adverse entry)
+        AND COALESCE((SELECT MAX(i3.price) FROM indicator_snapshots i3
+             WHERE i3.symbol = s.symbol
+               AND i3.created_at > s.created_at
+               AND i3.created_at < s.created_at + INTERVAL '4 hours'
+            ), s.price) <= s.price * 1.03
     ) sub
     WHERE d.id = sub.decision_id
   `, [MISSED_OPP_THRESHOLD, SUSTAINED_CANDLES]);
@@ -1706,6 +1734,12 @@ async function updateOutcomes() {
                AND i2.created_at < s2.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
                AND ((s2.price - i2.price) / s2.price * 100) > $1
             ) >= $2
+        -- Only count as missed if price didn't rally >3% first (mirrors BUY anti-dip filter)
+        AND COALESCE((SELECT MAX(i3.price) FROM indicator_snapshots i3
+             WHERE i3.symbol = s2.symbol
+               AND i3.created_at > s2.created_at
+               AND i3.created_at < s2.created_at + INTERVAL '4 hours'
+            ), s2.price) <= s2.price * 1.03
     ) sub
     WHERE s.id = sub.signal_id
   `, [MISSED_OPP_THRESHOLD, SUSTAINED_CANDLES]);

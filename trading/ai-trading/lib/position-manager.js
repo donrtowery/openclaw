@@ -315,7 +315,9 @@ export async function getPortfolioSummary(config) {
     max_positions: maxPositions,
     total_invested: totalInvested,
     total_current_value: totalCurrentValue,
-    available_capital: Math.max(0, totalCapital - totalInvested + realizedPnl + totalPartialProfitTaken),
+    // Cap available capital at totalCapital - totalInvested to prevent over-leverage
+    // (realized profits from closed trades do NOT expand the deployable capital pool)
+    available_capital: Math.max(0, totalCapital - totalInvested),
     total_portfolio_value: (totalCapital - totalInvested) + totalCurrentValue + realizedPnl + totalPartialProfitTaken,
     unrealized_pnl: unrealizedPnl,
     unrealized_pnl_percent: totalInvested > 0 ? (unrealizedPnl / totalInvested * 100) : 0,

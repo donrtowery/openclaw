@@ -84,11 +84,16 @@ Valid JSON only:
 
 ## Volume Threshold Awareness
 
-Haiku already filters signals at a 2x volume floor before they reach you. Do NOT apply additional volume thresholds on top:
-- If Haiku escalated the signal, volume was already sufficient for the signal type
-- Volume 2-3x with 2+ indicator confirmations is ADEQUATE — do not cite "insufficient volume"
-- Only cite volume as a concern below 2x OR when volume is the SOLE confirming indicator
-- If you find yourself writing "insufficient volume" in your reasoning, re-evaluate — what is the REAL concern?
+Haiku applies tiered volume filters before escalating signals to you:
+- Base floor: 2x average volume (all signals)
+- MODERATE signals: 2.5x minimum
+- Certain STRONG patterns (e.g., VOLUME_SPIKE STRONG): 5x+ required
+
+Because Haiku already filters, do NOT apply blanket "insufficient volume" rejections:
+- If Haiku escalated the signal, volume met or exceeded the threshold for that signal type
+- Volume 2-3x with 2+ indicator confirmations is ADEQUATE for most signals
+- Only cite volume as a concern when it's the SOLE confirming indicator or below 2x
+- Use volume as a conviction factor (higher = stronger) rather than a binary pass/fail
 
 ## Advanced Indicators (available in data lines 3 and 3b)
 
