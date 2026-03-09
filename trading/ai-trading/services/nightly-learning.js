@@ -275,7 +275,7 @@ async function calculateStats() {
       AVG(hold_hours) as avg_hold_hours
     FROM positions
     WHERE status = 'CLOSED' AND exit_time > NOW() - INTERVAL '30 days'
-      AND ABS(realized_pnl_percent) < 500
+      AND ABS(realized_pnl_percent) < 200
     GROUP BY exit_category
   `);
 
@@ -887,7 +887,8 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
   prompt += `- NEVER generate generic theme-level rejections (e.g., "REJECT signals with insufficient volume", "REDUCE signals citing volume")\n`;
   prompt += `- Generic rejections contradict specific ESCALATE rules and are automatically removed by the validator\n`;
   prompt += `- Each REJECT rule must cite: the specific pattern, sample count, and loss rate from the data above\n`;
-  prompt += `- If you want to restrict a broad category, use multiple specific rules instead of one blanket rule\n\n`;
+  prompt += `- If you want to restrict a broad category, use multiple specific rules instead of one blanket rule\n`;
+  prompt += `- When a pattern is mostly unprofitable but has a profitable sub-pattern (e.g., VOLUME_SPIKE STRONG is 3/3 losers overall but T1+RSI40-52+vol>5x is 63% WR), use ONE consolidated rule with the exception built in, not separate REJECT + START rules\n\n`;
 
   if (defensiveMode) {
     prompt += `CONSTRAINTS: Max 15 haiku_rules (combined). >=60% MUST be STOP/REJECT/REDUCE (DEFENSIVE MODE). Max escalation target: ${DEFENSIVE_MAX_ESC_TARGET}%. No STOP rules with <5 samples. LOSING TRADE PATTERNS are the #1 priority — generate REJECT/REDUCE rules for every losing pattern. START rules allowed ONLY for patterns with >70% WR and positive P&L. Include SELL-side rules. No duplicate rules.\n\n`;
@@ -910,13 +911,14 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         let timer;
+        const cleanup = () => clearTimeout(timer);
         message = await Promise.race([
           anthropic.messages.create({
             model: SONNET_MODEL,
             max_tokens: 8192,
             system: [{ type: 'text', text: 'You are a conservative trading performance analyst for a utility-focused crypto bot. Quality over quantity — never bias toward more trading. Losing trades matter as much as missed opportunities. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral' } }],
             messages: [{ role: 'user', content: prompt }],
-          }).then(r => { clearTimeout(timer); return r; }),
+          }).then(r => { cleanup(); return r; }, err => { cleanup(); throw err; }),
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Sonnet learning timed out after ${LEARNING_TIMEOUT_MS}ms`)), LEARNING_TIMEOUT_MS); }),
         ]);
         break; // Success
@@ -1302,8 +1304,9 @@ function deduplicateRules(rules) {
     for (const existing of seen) {
       const existingWords = new Set(existing.split(' ').filter(w => w.length > 2));
       const intersection = [...words].filter(w => existingWords.has(w));
-      const overlap = Math.max(words.size, existingWords.size) > 0
-        ? intersection.length / Math.min(words.size, existingWords.size)
+      // Jaccard-style: overlap relative to the candidate rule's word count
+      const overlap = words.size > 0
+        ? intersection.length / words.size
         : 0;
       if (overlap > 0.6) {
         isDuplicate = true;
@@ -1455,6 +1458,12 @@ async function updateOutcomes() {
                AND i2.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
                AND ((i2.price - s.price) / s.price * 100) > $1
             ) >= $2
+        -- Only count as missed if price didn't dip >3% first (would have been stopped out)
+        AND COALESCE((SELECT MIN(i3.price) FROM indicator_snapshots i3
+             WHERE i3.symbol = s.symbol
+               AND i3.created_at > s.created_at
+               AND i3.created_at < s.created_at + INTERVAL '4 hours'
+            ), s.price) >= s.price * 0.97
     ) sub
     WHERE d.id = sub.decision_id
   `, [MISSED_OPP_THRESHOLD, SUSTAINED_CANDLES]);
@@ -1523,6 +1532,12 @@ async function updateOutcomes() {
                AND i2.created_at < s2.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
                AND ((i2.price - s2.price) / s2.price * 100) > $1
             ) >= $2
+        -- Only count as missed if price didn't dip >3% first (would have been stopped out)
+        AND COALESCE((SELECT MIN(i3.price) FROM indicator_snapshots i3
+             WHERE i3.symbol = s2.symbol
+               AND i3.created_at > s2.created_at
+               AND i3.created_at < s2.created_at + INTERVAL '4 hours'
+            ), s2.price) >= s2.price * 0.97
     ) sub
     WHERE s.id = sub.signal_id
   `, [MISSED_OPP_THRESHOLD, SUSTAINED_CANDLES]);

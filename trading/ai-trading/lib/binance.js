@@ -65,6 +65,8 @@ async function request(endpoint, params = {}, method = 'GET', signed = false) {
       throw error;
     }
   }
+  // Unreachable — loop always returns, throws, or continues
+  throw new Error(`Binance API request exhausted all retries for ${endpoint}`);
 }
 
 /**
@@ -133,12 +135,18 @@ export async function placeOrder(symbol, side, quantity, price = null) {
 
   if (isPaper) {
     const basePrice = price || await getCurrentPrice(symbol);
+    // Round to LOT_SIZE step even in paper mode to match real exchange behavior
+    const stepSize = await getStepSize(symbol);
+    const roundedQty = roundToStepSize(quantity, stepSize);
+    if (roundedQty <= 0) {
+      throw new Error(`Paper order quantity ${quantity} rounds to 0 for ${symbol} (step: ${stepSize})`);
+    }
     // Simulate realistic slippage: 0.02% adverse for market orders
     const slippagePct = 0.0002;
     const fillPrice = side === 'BUY'
       ? basePrice * (1 + slippagePct)
       : basePrice * (1 - slippagePct);
-    const fillCost = fillPrice * quantity;
+    const fillCost = fillPrice * roundedQty;
     const feeRate = parseFloat(process.env.TRADING_FEE_RATE || '0.001');
     const commission = fillCost * feeRate;
 
@@ -147,21 +155,21 @@ export async function placeOrder(symbol, side, quantity, price = null) {
       orderId: `PAPER_${Date.now()}`,
       side,
       type: 'MARKET',
-      quantity,
+      quantity: roundedQty,
       price: fillPrice,
       status: 'FILLED',
-      executedQty: quantity,
+      executedQty: roundedQty,
       cummulativeQuoteQty: fillCost,
       fills: [{
         price: fillPrice,
-        qty: quantity,
+        qty: roundedQty,
         commission,
         commissionAsset: 'USDT',
       }],
     };
 
     const slippage = ((fillPrice - basePrice) / basePrice * 100).toFixed(3);
-    logger.info(`[Binance] PAPER TRADE: ${side} ${quantity} ${symbol} @ $${fillPrice.toFixed(4)} (slip: ${slippage}%, fee: $${commission.toFixed(2)})`);
+    logger.info(`[Binance] PAPER TRADE: ${side} ${roundedQty} ${symbol} @ $${fillPrice.toFixed(4)} (slip: ${slippage}%, fee: $${commission.toFixed(2)})`);
     return mockOrder;
   }
 

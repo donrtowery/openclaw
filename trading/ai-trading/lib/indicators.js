@@ -158,8 +158,8 @@ export function calcVolume(candles) {
     if (candles.length < 25) return null;
     // Use second-to-last candle — last candle is still forming and has incomplete volume
     const recent = candles.length >= 2 ? candles.slice(-2)[0].volume : candles.slice(-1)[0].volume;
-    // Exclude last candle from avg (still forming, has incomplete volume)
-    const last24 = candles.slice(-25, -1);
+    // Exclude last candle AND the "current" candle from avg to avoid self-inclusion bias
+    const last24 = candles.slice(-26, -2);
     const avg24h = last24.reduce((s, c) => s + c.volume, 0) / last24.length;
     const ratio = avg24h > 0 ? Math.round((recent / avg24h) * 100) / 100 : 0;
 

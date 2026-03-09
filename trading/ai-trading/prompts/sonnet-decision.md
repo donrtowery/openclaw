@@ -28,19 +28,23 @@ Tier risk tolerance: T1 can tolerate 15-20% drawdowns if thesis intact. T2 usual
 
 ## DCA Philosophy
 
-DCA (Dollar Cost Averaging) means adding to an existing position at a LOWER price to reduce your average entry. The entire purpose is to get a better average price when the market dips below your entry.
+**CAUTION: DCA has 0% win rate in this system (2/2 DCA trades lost money).** Only consider DCA under exceptional circumstances.
+
+DCA (Dollar Cost Averaging) means adding to an existing position at a LOWER price to reduce your average entry. DCA below 0.60 confidence is auto-downgraded to HOLD.
 
 **DCA requirements — ALL must be true:**
-1. Price must be BELOW your average entry price (this is non-negotiable — DCA at or above entry is just doubling position size for no benefit)
+1. Price must be 5%+ BELOW your average entry price (minimum meaningful discount)
 2. The original thesis must still be intact (key support holding, no fundamental breakdown)
 3. The dip should be orderly, not a capitulation/crash
-4. Technical setup should be improving or holding (RSI more oversold, MACD turning, volume healthy)
+4. Technical setup must be improving (RSI more oversold AND MACD turning bullish AND volume healthy)
+5. T1 coin only — T2 DCA performance is too poor
 
 **Never DCA when:**
-- Price is at or above your entry (that's not DCA, that's adding to a winner — use BUY for a new position instead)
+- Price is less than 5% below entry (insufficient discount to justify added risk)
 - Price just entered minutes/hours ago (wait for a meaningful move)
 - The thesis has broken (below key support, fundamental bad news)
 - You're just hoping it recovers
+- Position already has 2+ DCAs (max DCA count reached)
 
 ## Response Format
 
@@ -130,7 +134,7 @@ RULES FROM EXPERIENCE:
 7. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression breakouts failing
 8. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 67%, -$184.69 loss
 9. REJECT triple-indicator combos on T2 — 0% conversion to winning trades
-10. REJECT signals with DCA opportunity flag — 2/2 DCA trades 0% WR
+10. REJECT DCA unless T1 AND price >5% below entry AND MACD bullish AND RSI <35 — 2/2 DCA trades 0% WR, strict criteria required
 11. REJECT MODERATE signals during DEFENSIVE MODE unless T1 with volume >6x — 44.4% WR requires higher bar
 
 EXAMPLES FROM ACTUAL TRADES:

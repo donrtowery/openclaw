@@ -489,7 +489,7 @@ async function executeBuy(decision, triggered) {
   // Confidence-scaled sizing: scale down for lower confidence
   const confScaling = tradingConfig.position_sizing.confidence_scaling !== false;
   if (confScaling && decision.confidence < 0.85) {
-    const scaleFactor = Math.min(decision.confidence / 0.85, 1.0); // 0.65 conf → 0.76x, 0.80 conf → 0.94x
+    const scaleFactor = Math.min(decision.confidence / 0.75, 1.0); // 0.65 conf → 0.87x, 0.75 conf → 1.0x
     const scaledSize = Math.round(positionSizeUsd * scaleFactor);
     if (scaledSize < positionSizeUsd) {
       logger.info(`[Engine] ${symbol}: Confidence-scaled sizing: $${positionSizeUsd} → $${scaledSize} (conf:${decision.confidence})`);
@@ -506,6 +506,11 @@ async function executeBuy(decision, triggered) {
   } else if (portfolioPnlPct < -5) {
     positionSizeUsd = Math.round(positionSizeUsd * 0.8);
     logger.warn(`[Engine] ${symbol}: Drawdown sizing: 20% reduction (portfolio ${portfolioPnlPct.toFixed(1)}% < -5%)`);
+  }
+  if (positionSizeUsd < 10) {
+    const reason = `BUY rejected — position size too small ($${positionSizeUsd.toFixed(2)})`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
   }
   if (positionSizeUsd > buyPortfolio.available_capital) {
     const reason = `BUY rejected — insufficient capital ($${positionSizeUsd} > $${buyPortfolio.available_capital.toFixed(2)} available)`;
@@ -556,7 +561,13 @@ async function executeSell(decision, triggered) {
   // Determine exit percent — Sonnet may specify partial exit
   const intendedExitPercent = decision.position_details?.exit_percent || 100;
   const currentPrice = await getCurrentPrice(symbol);
-  const exitSize = parseFloat(position.current_size) * (intendedExitPercent / 100);
+  const currentSize = parseFloat(position.current_size);
+  if (!currentSize || isNaN(currentSize) || currentSize <= 0) {
+    const reason = 'SELL rejected — position has invalid size';
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+  const exitSize = currentSize * (intendedExitPercent / 100);
 
   const order = await placeOrder(symbol, 'SELL', exitSize);
   const fillPrice = order.price;
@@ -721,7 +732,7 @@ async function runExitScanCycle() {
   }
 
   // Pre-fetch shared context once (not per-candidate)
-  const [cachedPortfolio, learningRules, cb] = await Promise.all([
+  const [cachedPortfolio, exitLearningRules, cb] = await Promise.all([
     getCachedPortfolio(),
     getExitLearningRules(),
     checkCircuitBreaker(),
@@ -754,7 +765,7 @@ async function runExitScanCycle() {
       const news = newsResults[i].status === 'fulfilled' ? newsResults[i].value : 'No recent news available.';
       return callSonnetExitEval(
         candidate.position, candidate.analysis, candidate.urgency,
-        news, portfolio, learningRules, tradingConfig
+        news, portfolio, exitLearningRules, tradingConfig
       );
     })
   );
@@ -895,6 +906,7 @@ async function recordLoss(symbol, pnl) {
     UPDATE circuit_breaker
     SET consecutive_losses = consecutive_losses + 1,
         last_loss_symbol = $1, last_loss_pnl = $2, updated_at = NOW()
+    WHERE id = 1
     RETURNING consecutive_losses
   `, [symbol, pnl]);
 
@@ -1009,12 +1021,16 @@ async function getEscalationConfidenceFloor() {
   const targetMax = tradingConfig.learning?.escalation_conversion_target_max || 30;
 
   try {
+    // Exclude exit scanner HOLDs from denominator — they aren't entry escalations
     const result = await query(`
       SELECT
         COUNT(*) FILTER (WHERE action IN ('BUY','SELL','DCA','PARTIAL_EXIT') AND executed = true) AS traded,
         COUNT(*) AS total
       FROM decisions
       WHERE created_at > NOW() - INTERVAL '24 hours'
+        AND NOT (action = 'HOLD' AND signal_id IN (
+          SELECT id FROM signals WHERE triggered_by @> ARRAY['EXIT_SCANNER']
+        ))
     `);
 
     const { traded, total } = result.rows[0];
@@ -1056,15 +1072,26 @@ async function getLearningRules() {
   if (learningRulesCache.data && Date.now() < learningRulesCache.expiry) {
     return learningRulesCache.data;
   }
-  const result = await query(`
-    SELECT * FROM learning_rules
-    WHERE is_active = true
-      AND rule_type = 'sonnet_decision'
-    ORDER BY sample_size DESC NULLS LAST, created_at DESC
-    LIMIT 8
-  `);
-  learningRulesCache = { data: result.rows, expiry: Date.now() + 60 * 60 * 1000 };
-  return result.rows;
+  // Fetch APPROVE and REJECT rules separately to ensure both types are represented
+  const [approveResult, rejectResult] = await Promise.all([
+    query(`
+      SELECT * FROM learning_rules
+      WHERE is_active = true AND rule_type = 'sonnet_decision'
+        AND rule_text ~* '^(APPROVE|START)'
+      ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
+      LIMIT 4
+    `),
+    query(`
+      SELECT * FROM learning_rules
+      WHERE is_active = true AND rule_type = 'sonnet_decision'
+        AND rule_text ~* '^(REJECT|STOP|REDUCE)'
+      ORDER BY sample_size DESC NULLS LAST, created_at DESC
+      LIMIT 4
+    `),
+  ]);
+  const combined = [...approveResult.rows, ...rejectResult.rows].slice(0, 8);
+  learningRulesCache = { data: combined, expiry: Date.now() + 60 * 60 * 1000 };
+  return combined;
 }
 
 // ── Exit Learning Rules (cached 1hr — exit-specific rules for exit eval) ──
@@ -1094,7 +1121,10 @@ async function getExitLearningRules() {
 
 // ── Graceful Shutdown ───────────────────────────────────────
 
+let shutdownInProgress = false;
 async function shutdown() {
+  if (shutdownInProgress) return;
+  shutdownInProgress = true;
   logger.info('[Engine] Shutting down...');
   isRunning = false;
 

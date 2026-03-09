@@ -22,8 +22,9 @@ const API_TIMEOUT_MS = parseInt(process.env.CLAUDE_API_TIMEOUT_MS || '60000');
  */
 function withTimeout(promise, timeoutMs = API_TIMEOUT_MS, label = 'API call') {
   let timer;
+  const cleanup = () => clearTimeout(timer);
   return Promise.race([
-    promise.then(result => { clearTimeout(timer); return result; }),
+    promise.then(result => { cleanup(); return result; }, err => { cleanup(); throw err; }),
     new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
     }),
@@ -209,13 +210,17 @@ export async function callHaikuBatch(triggeredSignals, config) {
 
     // Log each signal to database and attach signal_id
     const output = [];
+    const availableResults = [...results]; // Copy to allow splicing matched entries
     for (let i = 0; i < triggeredSignals.length; i++) {
       const sig = triggeredSignals[i];
-      // Match by symbol first (handles out-of-order responses), fall back to index
-      const result = results.find(r => r.symbol === sig.symbol) || results[i] || {
-        symbol: sig.symbol, signal: 'NONE', strength: 'WEAK',
-        escalate: false, confidence: 0, reasons: ['No response for this signal'], concerns: [],
-      };
+      // Match by symbol first (handles out-of-order responses), splice to prevent double-matching
+      const matchIdx = availableResults.findIndex(r => r.symbol === sig.symbol);
+      const result = matchIdx !== -1
+        ? availableResults.splice(matchIdx, 1)[0]
+        : results[i] || {
+          symbol: sig.symbol, signal: 'NONE', strength: 'WEAK',
+          escalate: false, confidence: 0, reasons: ['No response for this signal'], concerns: [],
+        };
 
       let signalId = null;
       try {
@@ -551,6 +556,7 @@ function formatHaikuInput(triggeredSignal) {
     msg += `\nEXISTING POSITION:\n`;
     msg += `  Entry: ${entryPrice.toFixed(2)} | Current P&L: ${pnlPercent}% | Hold: ${holdHours}h\n`;
     msg += `  Size: ${parseFloat(position.current_size).toFixed(6)} | Invested: $${parseFloat(position.total_cost).toFixed(2)}\n`;
+    msg += `  DCAs: ${position.dca_count || 0}\n`;
   } else {
     msg += `\nNO OPEN POSITION — do not escalate SELL signals.\n`;
   }

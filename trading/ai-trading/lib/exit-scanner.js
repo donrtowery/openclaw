@@ -161,6 +161,12 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push(`Volume declining with +${pnlPercent.toFixed(1)}% profit — fading interest`);
   }
 
+  // ── Low volume on losing position — no recovery interest ──
+  if (analysis.volume && pnlPercent < -5 && analysis.volume.ratio < 0.8) {
+    score += 15;
+    factors.push(`Low volume ${analysis.volume.ratio.toFixed(1)}x + ${pnlPercent.toFixed(1)}% loss — no recovery interest`);
+  }
+
   // ── DCA'd positions losing — tighter exit (but not premature) ──
   if (dcaCount >= 2 && pnlPercent < -8) {
     score += 20;
@@ -243,8 +249,11 @@ export async function runExitScan(config) {
         const storedPeak = parseFloat(position.max_unrealized_gain_percent || 0);
         if (currentPnlPct > storedPeak) {
           posForUrgency = { ...position, max_unrealized_gain_percent: currentPnlPct };
-          query('UPDATE positions SET max_unrealized_gain_percent = $1, updated_at = NOW() WHERE id = $2', [currentPnlPct, position.id])
-            .catch(err => logger.warn(`[ExitScanner] Failed to update peak gain for ${position.symbol}: ${err.message}`));
+          try {
+            await query('UPDATE positions SET max_unrealized_gain_percent = $1, updated_at = NOW() WHERE id = $2', [currentPnlPct, position.id]);
+          } catch (err) {
+            logger.warn(`[ExitScanner] Failed to update peak gain for ${position.symbol}: ${err.message}`);
+          }
         }
       }
 

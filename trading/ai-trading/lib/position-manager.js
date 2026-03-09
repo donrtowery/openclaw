@@ -116,13 +116,24 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
     if (posResult.rows.length === 0) throw new Error(`Position ${positionId} not found`);
 
     const pos = posResult.rows[0];
+    if (pos.status !== 'OPEN') {
+      await client.query('ROLLBACK');
+      throw new Error(`Position ${positionId} is already ${pos.status}`);
+    }
     const currentSize = parseFloat(pos.current_size);
+    if (!currentSize || isNaN(currentSize) || currentSize <= 0) {
+      await client.query('ROLLBACK');
+      throw new Error(`Position ${positionId} has invalid size: ${pos.current_size}`);
+    }
+    exitPercent = Math.min(Math.max(exitPercent, 0), 100);
     const avgEntry = parseFloat(pos.avg_entry_price);
     const exitSize = currentSize * (exitPercent / 100);
     const exitValue = exitSize * exitPrice;
     const exitFee = exitValue * FEE_RATE;
     const netExitValue = exitValue - exitFee;
-    const costBasis = exitSize * avgEntry;
+    // Use total_cost / current_size for all-in cost (includes entry fees) instead of raw avg_entry_price
+    const allInCostPerUnit = parseFloat(pos.total_cost) / currentSize;
+    const costBasis = exitSize * allInCostPerUnit;
     const pnl = netExitValue - costBasis;
     const pnlPercent = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
     const isFull = exitPercent >= 99;
@@ -299,7 +310,7 @@ export async function getPortfolioSummary(config) {
     max_positions: maxPositions,
     total_invested: totalInvested,
     total_current_value: totalCurrentValue,
-    available_capital: Math.max(0, totalCapital - totalInvested),
+    available_capital: Math.max(0, totalCapital - totalInvested + realizedPnl + totalPartialProfitTaken),
     total_portfolio_value: (totalCapital - totalInvested) + totalCurrentValue + realizedPnl + totalPartialProfitTaken,
     unrealized_pnl: unrealizedPnl,
     unrealized_pnl_percent: totalInvested > 0 ? (unrealizedPnl / totalInvested * 100) : 0,

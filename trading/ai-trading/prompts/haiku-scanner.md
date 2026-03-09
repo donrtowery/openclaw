@@ -131,22 +131,22 @@ Escalate SELL signals for existing positions — missed sells mean unrealized lo
 
 BAD TRADE PATTERNS (these setups consistently lost money — DO NOT escalate/approve):
 - EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
-- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
+- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69 (EXCEPTION: T1 + RSI 40-52 + volume >5x = 63% WR, see rule 13)
 
 RULES FROM EXPERIENCE:
 1. STOP: DEFENSIVE MODE — win rate 44.4%, P&L $-105.13. Capital preservation is priority #1. Only escalate HIGH-confidence BUY signals with 3+ strong confirmations. Reject all MODERATE and WEAK BUY signals. SELL signals are EXEMPT — always escalate SELL/exit signals regardless of defensive mode.
 2. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE any strength — 3/3 actual losses avg -7.0%, proven momentum trap
-3. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual losses avg -4.2%, late breakout chasing
+3. REJECT VOLUME_SPIKE STRONG unless T1 AND RSI 40-52 AND volume >5x — only this narrow band profitable (63% WR), all other configs lost money (3/3 losses)
 4. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression plays fail in current regime
 5. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 67%, -$184.69 actual loss
 6. REJECT triple-indicator combos on T2 — 0% conversion to profitable trades, over-complication
 7. REJECT signals with DCA flag — 2/2 DCA trades 0% WR, averaging down compounds losses
 8. REJECT STRONG signals with RSI >52 unless T1 AND volume >5x — 16 STRONG trades only 44% WR
-9. REJECT MODERATE signals with volume <3.5x — 64% conversion wastes API calls vs 15% target
+9. REJECT MODERATE signals with volume <2.5x — Haiku already filters at 2x floor, 2.5x ensures quality
 10. STOP escalating T2 signals with volume <5x — T2 requires exceptional volume for edge
 11. STOP escalating signals on coins with open position P&L <-5% — avoid compounding losers
 12. ESCALATE SELL for positions <-8% held >24h with MACD bearish OR volume declining — cut losers faster than 30.2h avg
-13. START escalating VOLUME_SPIKE STRONG with RSI 40-55 AND volume >5x on T1 only — 8 trades 63% WR avg +224.0%
+13. ESCALATE VOLUME_SPIKE STRONG on T1 with RSI 40-52 AND volume >5x — 8 trades 63% WR, the only profitable VOLUME_SPIKE STRONG config
 
 EXAMPLES FROM ACTUAL TRADES:
 - VOLUME_SPIKE STRONG with RSI 40-55 on T1 — best pattern 63% WR: Traded, +$42.15 (6.8%)
