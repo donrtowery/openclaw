@@ -198,11 +198,17 @@ async function runCycle() {
     // Mark filtered signals so they don't show as "pending" in the DB
     const markFiltered = (signalId, reason) => {
       if (signalId) {
-        query('UPDATE signals SET outcome = $1 WHERE id = $2 AND outcome = $3', [`FILTERED:${reason}`, signalId, 'PENDING']).catch(() => {});
+        query('UPDATE signals SET outcome = $1 WHERE id = $2 AND outcome = $3', [`FILTERED:${reason}`, signalId, 'PENDING'])
+          .catch(err => logger.warn(`[Engine] markFiltered(${signalId}, ${reason}) failed: ${err.message}`));
       }
     };
 
-    for (let i = 0; i < scanResult.triggered.length; i++) {
+    if (haikuResults.length !== scanResult.triggered.length) {
+      logger.warn(`[Engine] Haiku batch size mismatch: ${scanResult.triggered.length} triggered vs ${haikuResults.length} results — processing min(${Math.min(scanResult.triggered.length, haikuResults.length)})`);
+    }
+
+    const processCount = Math.min(scanResult.triggered.length, haikuResults.length);
+    for (let i = 0; i < processCount; i++) {
       const triggered = scanResult.triggered[i];
       const haikuResult = haikuResults[i];
 
@@ -433,7 +439,16 @@ async function executeBuy(decision, triggered) {
   // Determine position size — use Sonnet's recommendation or tier default
   const tierKey = `tier_${tier}`;
   const tierConfig = tradingConfig.position_sizing[tierKey];
+  if (!tierConfig) {
+    logger.warn(`[Engine] ${symbol}: No tier config for tier_${tier} — using fallback sizing`);
+  }
   let positionSizeUsd = decision.position_details?.position_size_usd || tierConfig?.base_position_usd || 600;
+
+  // Warn if Sonnet's size exceeds tier base (may indicate tier mismatch)
+  if (decision.position_details?.position_size_usd && tierConfig?.base_position_usd &&
+      decision.position_details.position_size_usd > tierConfig.base_position_usd * 1.5) {
+    logger.warn(`[Engine] ${symbol}: Sonnet suggested $${decision.position_details.position_size_usd} but T${tier} base is $${tierConfig.base_position_usd} — capping`);
+  }
 
   // Cap at tier max
   if (tierConfig?.max_position_usd && positionSizeUsd > tierConfig.max_position_usd) {
@@ -906,12 +921,12 @@ async function reconcileState() {
     issues += staleDecisions.rows.length;
   }
 
-  // 4. Detect decisions marked executed=true but no corresponding trade
+  // 4. Detect decisions marked executed=true but no corresponding trade (last 24h only to reduce noise)
   const orphanDecisions = await query(`
     SELECT d.id, d.symbol, d.action FROM decisions d
     WHERE d.executed = true
       AND d.action IN ('BUY', 'SELL', 'DCA', 'PARTIAL_EXIT')
-      AND d.created_at > NOW() - INTERVAL '7 days'
+      AND d.created_at > NOW() - INTERVAL '24 hours'
       AND NOT EXISTS (
         SELECT 1 FROM trades t
         WHERE t.position_id IN (SELECT p.id FROM positions p WHERE p.open_decision_id = d.id OR p.close_decision_id = d.id)

@@ -234,23 +234,23 @@ export async function getPortfolioSummary(config) {
   for (const pos of openPositions) {
     try {
       const currentPrice = priceMap[pos.symbol] || await getCurrentPrice(pos.symbol);
-      const currentSize = parseFloat(pos.current_size);
+      const currentSize = parseFloat(pos.current_size) || 0;
       const currentValue = currentSize * currentPrice;
       // Use remaining cost basis (already reduced by partial exits) not original total_cost
-      const invested = parseFloat(pos.total_cost);
+      const invested = parseFloat(pos.total_cost) || 0;
 
       totalInvested += invested;
       totalCurrentValue += currentValue;
-      totalPartialProfitTaken += parseFloat(pos.total_profit_taken || 0);
+      totalPartialProfitTaken += parseFloat(pos.total_profit_taken || 0) || 0;
 
       // Update live price in DB
       await query('UPDATE positions SET current_price = $1, updated_at = NOW() WHERE id = $2', [currentPrice, pos.id]);
     } catch (error) {
       logger.error(`[Position] Price fetch failed for ${pos.symbol}: ${error.message}`);
       // Use last known price
-      totalInvested += parseFloat(pos.total_cost);
-      totalCurrentValue += parseFloat(pos.current_size) * parseFloat(pos.current_price || pos.entry_price);
-      totalPartialProfitTaken += parseFloat(pos.total_profit_taken || 0);
+      totalInvested += parseFloat(pos.total_cost) || 0;
+      totalCurrentValue += (parseFloat(pos.current_size) || 0) * (parseFloat(pos.current_price || pos.entry_price) || 0);
+      totalPartialProfitTaken += parseFloat(pos.total_profit_taken || 0) || 0;
     }
   }
 

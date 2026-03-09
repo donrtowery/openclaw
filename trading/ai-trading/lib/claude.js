@@ -476,8 +476,9 @@ async function logExitSignal(position, analysis, urgency) {
       bb_upper, bb_middle, bb_lower,
       volume_24h, volume_ratio,
       support_nearest, resistance_nearest, trend,
-      signal_type, strength, confidence, reasoning, escalated, outcome
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+      signal_type, strength, confidence, reasoning, escalated, outcome,
+      adx, adx_pdi, adx_mdi, stochrsi_k, stochrsi_d, atr_percent
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
     RETURNING id
   `, [
     position.symbol,
@@ -507,6 +508,12 @@ async function logExitSignal(position, analysis, urgency) {
     JSON.stringify(urgency.factors),
     true,
     'PENDING',
+    analysis.adx?.value ?? null,
+    analysis.adx?.pdi ?? null,
+    analysis.adx?.mdi ?? null,
+    analysis.stochRsi?.k ?? null,
+    analysis.stochRsi?.d ?? null,
+    analysis.atr?.percent ?? null,
   ]);
 
   return result.rows[0].id;
@@ -634,8 +641,9 @@ async function logSignal(triggeredSignal, haikuResponse, tokensUsed) {
       bb_upper, bb_middle, bb_lower,
       volume_24h, volume_ratio,
       support_nearest, resistance_nearest, trend,
-      signal_type, strength, confidence, reasoning, escalated, outcome
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)
+      signal_type, strength, confidence, reasoning, escalated, outcome,
+      adx, adx_pdi, adx_mdi, stochrsi_k, stochrsi_d, atr_percent
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
     RETURNING id
   `, [
     triggeredSignal.symbol,
@@ -665,6 +673,12 @@ async function logSignal(triggeredSignal, haikuResponse, tokensUsed) {
     JSON.stringify(haikuResponse.reasons || []),
     haikuResponse.escalate || false,
     'PENDING',
+    analysis.adx?.value ?? null,
+    analysis.adx?.pdi ?? null,
+    analysis.adx?.mdi ?? null,
+    analysis.stochRsi?.k ?? null,
+    analysis.stochRsi?.d ?? null,
+    analysis.atr?.percent ?? null,
   ]);
 
   return result.rows[0].id;

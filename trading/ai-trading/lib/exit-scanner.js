@@ -22,7 +22,7 @@ export function computeExitUrgency(position, analysis, currentPrice) {
   const maxGain = parseFloat(position.max_unrealized_gain_percent || 0);
   const drawdownFromPeak = maxGain - pnlPercent;
   const tier = position.tier || 2;
-  const dcaCount = position.dca_count || 0;
+  const dcaCount = parseInt(position.dca_count) || 0;
 
   // ── Tier-based thresholds ──
   const isT1 = tier === 1;
@@ -31,17 +31,20 @@ export function computeExitUrgency(position, analysis, currentPrice) {
   const holdTimeThreshold = isT1 ? 72 : 48;
   const holdTimeMedium = isT1 ? 36 : 24;
 
-  // RSI (current state, not crossing)
+  // RSI (current state, not crossing) — ATR-scaled: high volatility coins get more RSI headroom
   if (analysis.rsi) {
     const rsi = analysis.rsi.value;
+    const atrPct = analysis.atr?.percent || 3;
+    // High ATR (>5%) reduces RSI urgency by ~40%, low ATR (<2%) increases by ~20%
+    const atrScale = atrPct > 5 ? 0.6 : atrPct < 2 ? 1.2 : 1.0;
     if (rsi > 85) {
-      score += 30;
-      factors.push(`RSI ${rsi.toFixed(1)} (extreme overbought)`);
+      score += Math.round(30 * atrScale);
+      factors.push(`RSI ${rsi.toFixed(1)} (extreme overbought${atrScale !== 1 ? `, ATR ${atrPct.toFixed(1)}%` : ''})`);
     } else if (rsi > 75) {
-      score += 15;
-      factors.push(`RSI ${rsi.toFixed(1)} (overbought)`);
+      score += Math.round(15 * atrScale);
+      factors.push(`RSI ${rsi.toFixed(1)} (overbought${atrScale !== 1 ? `, ATR ${atrPct.toFixed(1)}%` : ''})`);
     } else if (rsi > 70) {
-      score += 5;
+      score += Math.round(5 * atrScale);
       factors.push(`RSI ${rsi.toFixed(1)} (approaching overbought)`);
     }
   }

@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { readFileSync, writeFileSync, renameSync } from 'fs';
-import { query, testConnection } from '../db/connection.js';
+import { query, getClient, testConnection } from '../db/connection.js';
 import { queueEvent } from '../lib/events.js';
 import logger from '../lib/logger.js';
 import Anthropic from '@anthropic-ai/sdk';
@@ -113,11 +113,15 @@ async function run() {
 
   // ── Step 4: Update prompt files ───────────────────────────
 
-  await updatePromptFiles(stats, analysis);
+  if (analysis._parseFailure) {
+    logger.warn(`[Learning] Skipping prompt/rule updates — Sonnet parse failure this cycle`);
+  } else {
+    await updatePromptFiles(stats, analysis);
+    await saveLearningRules(analysis);
+  }
 
-  // ── Step 5: Update database ───────────────────────────────
+  // ── Step 5: Save history (always, even on parse failure for diagnostics) ──
 
-  await saveLearningRules(analysis);
   await saveLearningHistory(stats, analysis);
 
   // ── Step 6: Cleanup ───────────────────────────────────────
@@ -513,7 +517,7 @@ async function calculateStats() {
     losses: parseInt(o.losses) || 0,
     win_rate: total > 0 ? (wins / total * 100) : 0,
     total_pnl: parseFloat(o.total_pnl) || 0,
-    profit_factor: totalLossesPnl > 0 ? totalWinsPnl / totalLossesPnl : totalWinsPnl > 0 ? Infinity : 0,
+    profit_factor: totalLossesPnl > 0 ? totalWinsPnl / totalLossesPnl : totalWinsPnl > 0 ? 999 : 0,
     avg_win: parseFloat(o.avg_win) || 0,
     avg_loss: parseFloat(o.avg_loss) || 0,
     best_trade: parseFloat(o.best_trade) || 0,
@@ -924,6 +928,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
         haiku_few_shots: [],
         sonnet_few_shots: [],
         rule_changes: 'Parse failure — no changes this cycle',
+        _parseFailure: true,
       };
     }
     return parsed;
@@ -1219,6 +1224,16 @@ async function updatePromptFiles(stats, analysis) {
     exitSection += '\n';
   }
 
+  // BAD TRADE PATTERNS — losers to avoid
+  if (stats.losing_patterns.length > 0) {
+    exitSection += `BAD TRADE PATTERNS (these setups consistently lost money — exit faster if held):\n`;
+    for (const p of stats.losing_patterns.slice(0, 5)) {
+      const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
+      exitSection += `- ${triggers} (${p.trend}) ${p.strength}: ${p.losses}/${p.total} lost, avg $${parseFloat(p.avg_loss_usd).toFixed(2)}\n`;
+    }
+    exitSection += '\n';
+  }
+
   // Exit rules from Sonnet analysis
   const exitRules = toArray(analysis.exit_rules);
   if (exitRules.length > 0) {
@@ -1333,10 +1348,12 @@ function updatePromptFile(path, learningSection, rules, fewShots) {
 // ── Outcome Updater ─────────────────────────────────────────
 
 async function updateOutcomes() {
-  await query('BEGIN');
+  const client = await getClient();
   try {
+  await client.query('BEGIN');
+
   // Update signals that led to winning trades
-  await query(`
+  await client.query(`
     UPDATE signals SET outcome = 'WIN', outcome_pnl = p.realized_pnl
     FROM decisions d
     JOIN positions p ON p.open_decision_id = d.id
@@ -1346,7 +1363,7 @@ async function updateOutcomes() {
   `);
 
   // Update signals that led to losing trades
-  await query(`
+  await client.query(`
     UPDATE signals SET outcome = 'LOSS', outcome_pnl = p.realized_pnl
     FROM decisions d
     JOIN positions p ON p.open_decision_id = d.id
@@ -1356,7 +1373,7 @@ async function updateOutcomes() {
   `);
 
   // Update decisions that led to wins/losses
-  await query(`
+  await client.query(`
     UPDATE decisions SET outcome = 'WIN', outcome_pnl = p.realized_pnl
     FROM positions p
     WHERE p.open_decision_id = decisions.id
@@ -1364,7 +1381,7 @@ async function updateOutcomes() {
     AND decisions.outcome = 'PENDING'
   `);
 
-  await query(`
+  await client.query(`
     UPDATE decisions SET outcome = 'LOSS', outcome_pnl = p.realized_pnl
     FROM positions p
     WHERE p.open_decision_id = decisions.id
@@ -1373,7 +1390,7 @@ async function updateOutcomes() {
   `);
 
   // Update signals for breakeven trades
-  await query(`
+  await client.query(`
     UPDATE signals SET outcome = 'NEUTRAL', outcome_pnl = 0
     FROM decisions d
     JOIN positions p ON p.open_decision_id = d.id
@@ -1383,7 +1400,7 @@ async function updateOutcomes() {
   `);
 
   // Update decisions for breakeven trades
-  await query(`
+  await client.query(`
     UPDATE decisions SET outcome = 'NEUTRAL', outcome_pnl = 0
     FROM positions p
     WHERE p.open_decision_id = decisions.id
@@ -1393,7 +1410,7 @@ async function updateOutcomes() {
 
   // PASS decisions older than configured window: evaluate against actual price movement
   // BUY signals where price rose >threshold% sustained for N candles → MISSED_OPPORTUNITY
-  const missedBuys = await query(`
+  const missedBuys = await client.query(`
     UPDATE decisions d SET
       outcome = 'MISSED_OPPORTUNITY',
       outcome_pnl = sub.gain_pct
@@ -1424,7 +1441,7 @@ async function updateOutcomes() {
   }
 
   // SELL signals where price dropped >threshold% sustained for N candles → MISSED_OPPORTUNITY
-  const missedSells = await query(`
+  const missedSells = await client.query(`
     UPDATE decisions d SET
       outcome = 'MISSED_OPPORTUNITY',
       outcome_pnl = sub.drop_pct
@@ -1439,7 +1456,7 @@ async function updateOutcomes() {
       WHERE d2.action = 'PASS' AND d2.outcome = 'PENDING'
         AND s.signal_type = 'SELL'
         AND d2.created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
-      GROUP BY d2.id, s.price, s.symbol, s.created_at
+      Group BY d2.id, s.price, s.symbol, s.created_at
       HAVING s.price > 0 AND ((s.price - MIN(i.price)) / s.price * 100) > $1
         AND (SELECT COUNT(*) FROM indicator_snapshots i2
              WHERE i2.symbol = s.symbol
@@ -1455,19 +1472,19 @@ async function updateOutcomes() {
   }
 
   // Remaining PASS decisions older than evaluation window: mark as CORRECT_PASS
-  await query(`
+  await client.query(`
     UPDATE decisions SET outcome = 'CORRECT_PASS'
     WHERE action = 'PASS' AND outcome = 'PENDING'
     AND created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
   `);
 
   // Also tag non-escalated BUY signals that moved >threshold% sustained as MISSED_OPPORTUNITY
-  const missedBuySignals = await query(`
+  const missedBuySignals = await client.query(`
     UPDATE signals s SET
       outcome = 'MISSED_OPPORTUNITY',
       outcome_pnl = sub.gain_pct
     FROM (
-      SELECT s2.id as signal_id,
+      Select s2.id as signal_id,
         ((MAX(i.price) - s2.price) / s2.price * 100) as gain_pct
       FROM signals s2
       LEFT JOIN indicator_snapshots i ON i.symbol = s2.symbol
@@ -1492,7 +1509,7 @@ async function updateOutcomes() {
   }
 
   // Also tag non-escalated SELL signals where price dropped >threshold% sustained as MISSED_OPPORTUNITY
-  const missedSellSignals = await query(`
+  const missedSellSignals = await client.query(`
     UPDATE signals s SET
       outcome = 'MISSED_OPPORTUNITY',
       outcome_pnl = sub.drop_pct
@@ -1522,16 +1539,18 @@ async function updateOutcomes() {
   }
 
   // Remaining non-escalated signals older than evaluation window: mark as NOT_TRADED
-  await query(`
+  await client.query(`
     UPDATE signals SET outcome = 'NOT_TRADED'
     WHERE escalated = false AND outcome = 'PENDING'
     AND created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
   `);
 
-  await query('COMMIT');
+  await client.query('COMMIT');
   } catch (error) {
-    await query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     throw error;
+  } finally {
+    client.release();
   }
   logger.info('[Learning] Outcomes updated');
 }
