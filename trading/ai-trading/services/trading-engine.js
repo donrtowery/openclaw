@@ -32,6 +32,7 @@ const symbolNames = new Map(); // ETHUSDT -> Ethereum
 
 // Per-cycle portfolio summary cache — invalidated after each trade execution
 let portfolioCache = null;
+let portfolioCachePromise = null; // prevents concurrent fetches
 
 // Sonnet deduplication — tracks last escalation time per symbol
 const lastSonnetEvaluation = new Map();
@@ -108,14 +109,24 @@ async function start() {
 // ── Portfolio Cache ──────────────────────────────────────────
 
 async function getCachedPortfolio() {
-  if (!portfolioCache) {
-    portfolioCache = await getPortfolioSummary(tradingConfig);
+  if (portfolioCache) return portfolioCache;
+  // Prevent concurrent fetches — second caller awaits the same promise
+  if (!portfolioCachePromise) {
+    portfolioCachePromise = getPortfolioSummary(tradingConfig).then(result => {
+      portfolioCache = result;
+      portfolioCachePromise = null;
+      return result;
+    }).catch(err => {
+      portfolioCachePromise = null;
+      throw err;
+    });
   }
-  return portfolioCache;
+  return portfolioCachePromise;
 }
 
 function invalidatePortfolioCache() {
   portfolioCache = null;
+  portfolioCachePromise = null;
 }
 
 // ── Main Scan Cycle ─────────────────────────────────────────
@@ -125,6 +136,12 @@ async function runCycle() {
   const cycleStart = Date.now();
   invalidatePortfolioCache();
   recordHeartbeat();
+
+  // Prune stale Sonnet dedup entries (older than 2x dedup window)
+  const dedupTTL = (tradingConfig.escalation.sonnet_dedup_minutes || 30) * 2 * 60 * 1000;
+  for (const [sym, ts] of lastSonnetEvaluation) {
+    if (cycleStart - ts > dedupTTL) lastSonnetEvaluation.delete(sym);
+  }
 
   logger.info(`[Engine] === Cycle ${cycleCount} ===`);
 
@@ -426,8 +443,8 @@ async function executeBuy(decision, triggered) {
   // Confidence-scaled sizing: scale down for lower confidence
   const confScaling = tradingConfig.position_sizing.confidence_scaling !== false;
   if (confScaling && decision.confidence < 0.85) {
-    const scaleFactor = 0.5 + decision.confidence; // 0.65 conf → 0.765x, 0.80 conf → 0.93x
-    const scaledSize = Math.round(positionSizeUsd * Math.min(scaleFactor, 1.0));
+    const scaleFactor = Math.min(decision.confidence / 0.85, 1.0); // 0.65 conf → 0.76x, 0.80 conf → 0.94x
+    const scaledSize = Math.round(positionSizeUsd * scaleFactor);
     if (scaledSize < positionSizeUsd) {
       logger.info(`[Engine] ${symbol}: Confidence-scaled sizing: $${positionSizeUsd} → $${scaledSize} (conf:${decision.confidence})`);
       positionSizeUsd = scaledSize;

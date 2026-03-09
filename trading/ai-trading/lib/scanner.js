@@ -234,11 +234,19 @@ export async function runScanCycle(config) {
     };
   }
 
-  // Prune previousIndicators for symbols no longer in the active list
+  // Prune previousIndicators and signalCooldowns for inactive/expired entries
   const activeSymbolSet = new Set(symbolNames);
   for (const key of previousIndicators.keys()) {
     if (!activeSymbolSet.has(key)) {
       previousIndicators.delete(key);
+    }
+  }
+  const cooldownMs = cooldownMinutes * 60 * 1000;
+  const now = Date.now();
+  for (const [key, ts] of signalCooldowns) {
+    const sym = key.split(':')[0];
+    if (!activeSymbolSet.has(sym) || (now - ts) > cooldownMs * 2) {
+      signalCooldowns.delete(key);
     }
   }
 

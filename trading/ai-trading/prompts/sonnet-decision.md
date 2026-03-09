@@ -85,6 +85,27 @@ Haiku already filters signals at a 2x volume floor before they reach you. Do NOT
 - Only cite volume as a concern below 2x OR when volume is the SOLE confirming indicator
 - If you find yourself writing "insufficient volume" in your reasoning, re-evaluate — what is the REAL concern?
 
+## Advanced Indicators (available in data lines 3 and 3b)
+
+**ADX (Average Directional Index)** — Measures trend STRENGTH, not direction.
+- ADX < 20 (WEAK_TREND): Market is choppy/ranging. Buy signals in weak trends have higher failure rates — reduce position size or PASS. Losses in weak ADX + bearish = exit faster.
+- ADX 20-25 (MODERATE_TREND): Trend developing but not confirmed. Standard confidence levels.
+- ADX >= 25 (STRONG_BULLISH/STRONG_BEARISH): Confirmed trend. BUY in strong bullish ADX = high conviction. SELL signals against strong trend = lower confidence.
+- Key insight: ADX doesn't tell you direction — check PDI vs MDI or use MACD/EMA for that. ADX tells you whether any signal is worth acting on.
+
+**StochRSI (Stochastic RSI)** — More sensitive momentum oscillator than RSI.
+- OVERSOLD (K<20, D<20): Strong buying opportunity IF confirmed by MACD bullish + ADX not weak. Better entry timing than RSI alone.
+- OVERBOUGHT (K>80, D>80): Consider taking profits, especially with bearish MACD. But in strong ADX trends, StochRSI can stay overbought.
+- BULLISH_CROSS (K>D, K<30): Early reversal signal — strongest when RSI is also recovering from oversold.
+- BEARISH_CROSS (K<D, K>70): Early exhaustion signal — strongest with declining volume.
+- Use StochRSI to TIME entries/exits that other indicators have already confirmed.
+
+**ATR (Average True Range)** — Volatility as % of price, critical for position sizing.
+- ATR% determines realistic profit/loss expectations. A 3% ATR coin needs >3% move to be meaningful.
+- High ATR (>5%): Wider drawdowns expected — don't panic-sell on normal volatility. T1 tolerance should scale with ATR.
+- Low ATR (<2%): Smaller moves — profits will be modest, but losses should also be small. Tighter mental stops.
+- ATR trailing stop: Exit if drawdown from peak exceeds 2.5x ATR%. This is already computed by the exit scanner.
+
 
 ## LEARNING DATA
 (Updated: 2026-03-09 | 18 trades | 44.4% win rate)
@@ -100,20 +121,20 @@ BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):
 - VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
 
 RULES FROM EXPERIENCE:
-1. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — 3/3 actual trades lost avg -7.0%, not theoretical risk
-2. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual trades lost avg -4.2%, proven failure
-3. REJECT BB_SQUEEZE — 1/1 actual trade lost -10.7%, high volatility compression plays fail
-4. REJECT T2 unless volume >5x AND 3+ aligned confirmations AND RSI 40-52 — T2 33% WR, -$184.69 actual loss
-5. REJECT triple-indicator combos unless T1 with volume >6x — no proven success in actual trades
-6. STOP citing insufficient volume when volume >2.5x AND MACD+EMA aligned — 98% of passes cite volume, over-filtering
-7. STOP citing insufficient volume for T1 with volume >3x AND 2+ confirmations — missed ETHUSDT +10.9%, LINKUSDT +9.0%
-8. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 AND T1 — 5/8 trades won, avg +224.0%
-9. APPROVE BB_UPPER_TOUCH STRONG with volume >3x AND RSI <60 — 2/3 trades won, avg +87.2%
-10. APPROVE SELL for positions <-8% held >24h with MACD bearish — avg loser hold 30.2h vs winner 52.6h
-11. APPROVE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains, prevent NEARUSDT -8.2% reversals
+1. STOP citing insufficient volume when volume >2.5x AND 2+ confirmations present — 98% of passes cite volume, over-filtering proven winners
+2. APPROVE BB_UPPER_TOUCH STRONG with volume >3x AND RSI <60 — 2/3 trades won, avg +87.2%
+3. APPROVE SELL for positions <-8% held >24h with MACD bearish — avg loser hold 30.2h vs winner 52.6h
+4. APPROVE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
+5. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE any strength — 3/3 actual losses avg -7.0%, not theoretical risk
+6. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual losses avg -4.2%, proven late-chase failure
+7. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression breakouts failing
+8. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 67%, -$184.69 loss
+9. REJECT triple-indicator combos on T2 — 0% conversion to winning trades
+10. REJECT signals with DCA opportunity flag — 2/2 DCA trades 0% WR
+11. REJECT MODERATE signals during DEFENSIVE MODE unless T1 with volume >6x — 44.4% WR requires higher bar
 
 EXAMPLES FROM ACTUAL TRADES:
-- VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual losses, proven failure: RSI >55 on VOLUME_SPIKE STRONG has 3/3 actual losses avg -4.2% — late breakout chasing, not theoretical risk
-- T1 MODERATE with volume >3x and aligned confirmations — Sonnet over-filtered these: Moved +10.9% — volume >3x with MACD+EMA alignment is sufficient for T1, stopped citing insufficient volume at 3x+
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE combo — 3/3 actual losses: Pattern has 3/3 actual trades lost avg -7.0% — proven momentum trap regardless of strength or volume
+- APPROVE VOLUME_SPIKE STRONG RSI 40-55 on T1 despite volume concerns: Traded, +$38.42 (5.9%)
+- REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — actual loss pattern: Correct pass, price dropped -6.1%
+- REJECT T2 with insufficient volume despite strong signals: Correct pass based on tier performance
 

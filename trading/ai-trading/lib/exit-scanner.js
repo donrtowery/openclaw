@@ -53,6 +53,9 @@ export function computeExitUrgency(position, analysis, currentPrice) {
   } else if (analysis.stochRsi?.signal === 'BEARISH_CROSS') {
     score += 15;
     factors.push(`StochRSI bearish cross K:${analysis.stochRsi.k}`);
+  } else if (analysis.stochRsi?.signal === 'APPROACHING_OVERBOUGHT') {
+    score += 5;
+    factors.push(`StochRSI approaching overbought K:${analysis.stochRsi.k}`);
   }
 
   // ADX: weak trend + loss = exit faster (choppy market, not trending)
@@ -148,11 +151,11 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push(`Loser held ${holdHours.toFixed(0)}h with MACD bearish — cut loss`);
   }
 
-  // ── DCA'd positions losing — tighter exit ──
-  if (dcaCount >= 2 && pnlPercent < -5) {
+  // ── DCA'd positions losing — tighter exit (but not premature) ──
+  if (dcaCount >= 2 && pnlPercent < -8) {
     score += 20;
     factors.push(`${dcaCount} DCAs + ${pnlPercent.toFixed(1)}% loss — thesis failing`);
-  } else if (dcaCount >= 1 && pnlPercent < -8) {
+  } else if (dcaCount >= 1 && pnlPercent < -10) {
     score += 15;
     factors.push(`DCA'd position at ${pnlPercent.toFixed(1)}% — consider exit`);
   }
@@ -194,6 +197,13 @@ export async function runExitScan(config) {
   const urgencyThreshold = exitConfig.urgency_threshold || 40;
   const criticalThreshold = exitConfig.critical_threshold || 70;
   const cooldownMinutes = exitConfig.cooldown_minutes || 30;
+
+  // Prune expired exit cooldowns
+  const cooldownMs = cooldownMinutes * 60 * 1000;
+  const now = Date.now();
+  for (const [sym, ts] of exitCooldowns) {
+    if (now - ts > cooldownMs * 2) exitCooldowns.delete(sym);
+  }
 
   const openPositions = await getOpenPositions();
   if (openPositions.length === 0) {

@@ -45,6 +45,28 @@ Valid JSON only:
 - Falling Knife: Extreme RSI + deep bearish MACD + high sell volume + far below SMA200 → TRAP, don't escalate
 - Profit-Taking Signal: Existing position up, RSI >70, histogram shrinking, volume declining → ESCALATE for Sonnet's judgment
 
+## Advanced Indicators (available in data lines 3 and 3b)
+
+**ADX (Average Directional Index)** — Trend strength, NOT direction.
+- ADX < 20 = WEAK_TREND — choppy/ranging market, signals are unreliable. Reduce confidence.
+- ADX 20-25 = MODERATE_TREND — trend developing, proceed with caution.
+- ADX >= 25 = STRONG trend confirmed. Check PDI vs MDI for direction (STRONG_BULLISH or STRONG_BEARISH).
+- ADX rising = trend strengthening. ADX falling = trend weakening, even if price still moving.
+- Use ADX to filter: strong ADX + aligned indicators = high confidence. Weak ADX + any signal = lower confidence.
+
+**StochRSI (Stochastic RSI)** — Momentum within RSI, more sensitive than RSI alone.
+- K < 20: OVERSOLD — potential reversal UP. Confirm with MACD/volume before escalating.
+- K > 80: OVERBOUGHT — potential reversal DOWN. Confirm with other bearish signals.
+- BULLISH_CROSS (K crosses above D below 30): early buy signal, escalate if volume confirms.
+- BEARISH_CROSS (K crosses below D above 70): early sell signal, escalate for exit evaluation.
+- StochRSI can stay extreme longer than RSI — use as confirmation, not sole trigger.
+
+**ATR (Average True Range)** — Volatility measurement as % of price.
+- ATR% < 2%: Low volatility — smaller moves expected, tighter signals.
+- ATR% 2-5%: Normal crypto volatility.
+- ATR% > 5%: High volatility — wider stops needed, signals less reliable.
+- Rising ATR = increasing volatility (breakout likely). Falling ATR = compression (squeeze building).
+
 
 ## LEARNING DATA
 (Updated: 2026-03-09 | 18 trades | 44.4% win rate)
@@ -100,21 +122,19 @@ RULES FROM EXPERIENCE:
 1. STOP: DEFENSIVE MODE — win rate 44.4%, P&L $-105.13. Capital preservation is priority #1. Only escalate HIGH-confidence signals with 3+ strong confirmations. Reject all MODERATE and WEAK signals.
 2. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE any strength — 3/3 actual losses avg -7.0%, proven momentum trap
 3. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual losses avg -4.2%, late breakout chasing
-4. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression plays fail
-5. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 67%, -$184.69 loss
-6. REJECT triple-indicator combos on T2 — 0% conversion to winning trades, over-complication
-7. REJECT signals with DCA flag — 2/2 DCA trades 0% WR, averaging down fails
+4. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression plays fail in current regime
+5. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 67%, -$184.69 actual loss
+6. REJECT triple-indicator combos on T2 — 0% conversion to profitable trades, over-complication
+7. REJECT signals with DCA flag — 2/2 DCA trades 0% WR, averaging down compounds losses
 8. REJECT STRONG signals with RSI >52 unless T1 AND volume >5x — 16 STRONG trades only 44% WR
-9. STOP escalating MODERATE signals with volume <3.5x — 64% conversion wastes API calls vs 15% target
-10. STOP escalating signals on coins with open position P&L <-5% — avoid compounding losers
-11. STOP escalating signals during DEFENSIVE MODE unless T1 AND volume >6x AND RSI 40-50
+9. REJECT MODERATE signals with volume <3.5x — 64% conversion wastes API calls vs 15% target
+10. STOP escalating T2 signals with volume <5x — T2 requires exceptional volume for edge
+11. STOP escalating signals on coins with open position P&L <-5% — avoid compounding losers
 12. ESCALATE SELL for positions <-8% held >24h with MACD bearish OR volume declining — cut losers faster than 30.2h avg
-13. ESCALATE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
-14. ESCALATE BB_UPPER_TOUCH STRONG with volume >3x AND RSI <60 — 3 trades 67% WR avg +87.2%
-15. START escalating VOLUME_SPIKE STRONG with RSI 40-55 on T1 only — 8 trades 63% WR avg +224.0%
+13. START escalating VOLUME_SPIKE STRONG with RSI 40-55 on T1 only — 8 trades 63% WR avg +224.0%
 
 EXAMPLES FROM ACTUAL TRADES:
-- VOLUME_SPIKE STRONG on T1 with ideal RSI — best performing pattern: Traded, won +6.8% — volume 4.2x, RSI in sweet spot 40-55, T1 blue chip, MACD+EMA aligned
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — proven momentum trap, reject: Pattern has 3/3 actual losses avg -7.0% — combo signals momentum trap, RSI >55 late breakout
-- T2 signal with insufficient confirmations — strict T2 filters required: T2 has 33% WR vs T1 67% — volume <5x, only 1 confirmation (MACD), RSI not in 40-52 zone
+- VOLUME_SPIKE STRONG with RSI 40-55 on T1 — best pattern 63% WR: Traded, +$42.15 (6.8%)
+- REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — proven 3/3 loser: Correct pass, price dropped -4.2%
+- REJECT T2 with weak volume — 33% WR -$184.69 loss: Correct pass based on tier risk
 

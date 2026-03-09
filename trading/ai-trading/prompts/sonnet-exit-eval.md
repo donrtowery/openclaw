@@ -69,6 +69,26 @@ Valid JSON only:
 
 **Hold Through Drawdown:** SOL — Peak was +12%, now +8% (4% drawdown). RSI 58, MACD still positive, above SMA50. Normal consolidation after a run — not a reversal. Support at SMA50 holding. HOLD, conf 0.75. Exit if breaks SMA50 or MACD crosses bearish.
 
+## Advanced Exit Indicators (available in data lines 3 and 3b)
+
+**StochRSI for exit timing** — More sensitive than RSI for detecting momentum shifts.
+- OVERBOUGHT (K>80, D>80): Exit urgency increases, especially with declining volume. But in strong trends (ADX>25), StochRSI can stay overbought.
+- BEARISH_CROSS (K crosses below D above 70): Early warning of momentum reversal — partial exit (30-50%) is prudent.
+- APPROACHING_OVERBOUGHT (K>70): Mild caution signal — monitor for cross, don't exit yet.
+- OVERSOLD for losers: If position is losing AND StochRSI oversold, momentum is deeply negative — exit unless ADX shows trend weakening (possible reversal).
+
+**ADX for exit context** — Should you hold or fold?
+- ADX < 20 (WEAK_TREND) + losing position: Choppy market with no clear direction — cut losses faster than normal.
+- ADX >= 25 (STRONG) + winning position: Strong trend in your favor — hold through minor pullbacks, the trend is confirmed.
+- ADX falling from above 25: Trend is weakening — tighten mental stops, prepare for reversal.
+- ADX rising + against your position: Trend strengthening against you — exit or reduce.
+
+**ATR trailing stop** — Volatility-adjusted exit trigger.
+- The exit scanner computes an ATR-based trail: if drawdown from peak exceeds 2.5x ATR%, exit urgency spikes.
+- Use ATR% to judge whether a drawdown is "normal" for this coin. A 5% drawdown on a 4% ATR coin is barely 1.25x ATR — noise. The same drawdown on a 1.5% ATR coin is 3.3x ATR — significant.
+- High ATR (>5%): Expect wider swings — hold through larger drawdowns if thesis intact.
+- Low ATR (<2%): Tighter drawdowns matter more — act on smaller reversals.
+
 ## LEARNING DATA
 (Updated: 2026-03-09 | 18 trades | 44.4% win rate)
 
@@ -82,11 +102,9 @@ HOLD TIME COMPARISON:
 - Losers: 30.2h avg hold
 
 EXIT RULES FROM EXPERIENCE:
-1. EXIT positions <-8% held >24h with MACD bearish OR volume declining — losers held avg 30.2h, cut faster
-2. EXIT positions <-10% held >36h with RSI <35 AND price <SMA200 — thesis failure, preserve capital
-3. EXIT winners held >60h with RSI >70 OR price >8% above EMA(8) — avg winner hold 52.6h, lock before reversal
-4. PARTIAL_EXIT 50% of winners +6% to +10% held >48h with RSI >65 — reduce risk, let rest run
-5. TRAIL winners >+8% with 5% stop below EMA(8) for T1, 3% for T2 — crypto-appropriate volatility buffer
-6. EXIT micro-positions <$50 with gains +0.5% to +2% held >36h — reduce friction on small wins
-7. HOLD T1 positions -5% to -12% held <48h if MACD bullish AND volume stable — blue chips can recover
-8. EXIT T2 positions <-6% held >24h with RSI <40 — T2 33% WR requires tighter risk management
+1. EXIT positions <-8% held >24h with MACD bearish OR declining volume — avg loser held 30.2h vs winner 52.6h
+2. EXIT winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
+3. HOLD T1 winners with RSI 50-70 AND MACD bullish AND hold time <48h — avg winner gains at 52.6h hold
+4. TRAIL winners >6% with 5% trailing stop if RSI <75 AND MACD bullish — protect gains with room to run
+5. EXIT T2 positions at -10% if volume <1.5x AND MACD bearish — T2 tolerance lower than T1
+6. PARTIAL_EXIT 50% of winners >8% held >48h if RSI >68 — de-risk while preserving upside

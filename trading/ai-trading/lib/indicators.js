@@ -347,6 +347,8 @@ export function calcStochasticRSI(closes) {
     else if (k > 80 && d > 80) signal = 'OVERBOUGHT';
     else if (k > d && k < 30) signal = 'BULLISH_CROSS';
     else if (k < d && k > 70) signal = 'BEARISH_CROSS';
+    else if (k > 70) signal = 'APPROACHING_OVERBOUGHT';
+    else if (k < 30) signal = 'APPROACHING_OVERSOLD';
     return { k, d, signal };
   } catch (err) {
     logger.warn(`StochRSI calc failed: ${err.message}`);

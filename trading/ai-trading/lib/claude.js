@@ -29,6 +29,31 @@ function withTimeout(promise, timeoutMs = API_TIMEOUT_MS, label = 'API call') {
   ]);
 }
 
+/**
+ * Retry an async function with exponential backoff.
+ * Retries on timeout, rate limit (429), and server errors (5xx).
+ */
+async function withRetry(fn, { maxAttempts = 3, label = 'API call' } = {}) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const isRetryable = error.message?.includes('timed out')
+        || error.status === 429
+        || (error.status >= 500 && error.status < 600)
+        || error.error?.type === 'overloaded_error';
+
+      if (!isRetryable || attempt === maxAttempts) {
+        throw error;
+      }
+
+      const delayMs = Math.min(1000 * Math.pow(2, attempt - 1) + Math.random() * 500, 10000);
+      logger.warn(`[API] ${label} attempt ${attempt}/${maxAttempts} failed: ${error.message}. Retrying in ${Math.round(delayMs)}ms...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+}
+
 // Cache loaded prompt text to avoid repeated filesystem reads within the same cycle
 let haikuPromptCache = { text: null, mtime: 0 };
 let sonnetPromptCache = { text: null, mtime: 0 };
@@ -131,19 +156,22 @@ export async function callHaikuBatch(triggeredSignals, config) {
   try {
     const startTime = Date.now();
 
-    const message = await withTimeout(
-      anthropic.messages.create({
-        model: HAIKU_MODEL,
-        max_tokens: Math.min(512 * triggeredSignals.length, 4096),
-        system: [{
-          type: 'text',
-          text: systemPrompt,
-          cache_control: { type: 'ephemeral' },
-        }],
-        messages: [{ role: 'user', content: userMessage }],
-      }),
-      API_TIMEOUT_MS,
-      `Haiku batch (${triggeredSignals.length} signals)`
+    const message = await withRetry(
+      () => withTimeout(
+        anthropic.messages.create({
+          model: HAIKU_MODEL,
+          max_tokens: Math.min(512 * triggeredSignals.length, 4096),
+          system: [{
+            type: 'text',
+            text: systemPrompt,
+            cache_control: { type: 'ephemeral' },
+          }],
+          messages: [{ role: 'user', content: userMessage }],
+        }),
+        API_TIMEOUT_MS,
+        `Haiku batch (${triggeredSignals.length} signals)`
+      ),
+      { maxAttempts: 3, label: `Haiku batch (${triggeredSignals.length} signals)` }
     );
 
     const responseText = message.content[0].text;
@@ -159,8 +187,9 @@ export async function callHaikuBatch(triggeredSignals, config) {
     let parsed;
     try {
       parsed = extractJSON(responseText);
-    } catch {
-      logger.error(`[Haiku] JSON parse failed, response: ${responseText.substring(0, 500)}`);
+    } catch (parseErr) {
+      logger.error(`[Haiku] JSON parse failed (${parseErr.message}), response: ${responseText.substring(0, 500)}`);
+      logger.error(`[Haiku] WARNING: All ${triggeredSignals.length} signal(s) in this batch will be dropped. Check model output format.`);
       // Return safe fallback for all signals
       return triggeredSignals.map(sig => ({
         symbol: sig.symbol,
@@ -168,7 +197,7 @@ export async function callHaikuBatch(triggeredSignals, config) {
         strength: 'WEAK',
         escalate: false,
         confidence: 0,
-        reasons: ['Haiku response was not valid JSON'],
+        reasons: ['Haiku response was not valid JSON — batch dropped'],
         concerns: [],
         signal_id: null,
       }));
@@ -228,19 +257,22 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
   try {
     const startTime = Date.now();
 
-    const message = await withTimeout(
-      anthropic.messages.create({
-        model: SONNET_MODEL,
-        max_tokens: 1024,
-        system: [{
-          type: 'text',
-          text: systemPrompt,
-          cache_control: { type: 'ephemeral' },
-        }],
-        messages: [{ role: 'user', content: userMessage }],
-      }),
-      API_TIMEOUT_MS,
-      `Sonnet decision (${triggeredSignal.symbol})`
+    const message = await withRetry(
+      () => withTimeout(
+        anthropic.messages.create({
+          model: SONNET_MODEL,
+          max_tokens: 1024,
+          system: [{
+            type: 'text',
+            text: systemPrompt,
+            cache_control: { type: 'ephemeral' },
+          }],
+          messages: [{ role: 'user', content: userMessage }],
+        }),
+        API_TIMEOUT_MS,
+        `Sonnet decision (${triggeredSignal.symbol})`
+      ),
+      { maxAttempts: 3, label: `Sonnet decision (${triggeredSignal.symbol})` }
     );
 
     const responseText = message.content[0].text;
@@ -254,8 +286,9 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
     let parsed;
     try {
       parsed = extractJSON(responseText);
-    } catch {
-      logger.error(`[Sonnet] JSON parse failed, response: ${responseText.substring(0, 500)}`);
+    } catch (parseErr) {
+      logger.error(`[Sonnet] JSON parse failed (${parseErr.message}), response: ${responseText.substring(0, 500)}`);
+      logger.error(`[Sonnet] WARNING: Decision for ${triggeredSignal.symbol} defaulting to PASS due to parse failure.`);
       parsed = {
         action: 'PASS',
         symbol: triggeredSignal.symbol,
@@ -298,19 +331,22 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
   try {
     const startTime = Date.now();
 
-    const message = await withTimeout(
-      anthropic.messages.create({
-        model: SONNET_MODEL,
-        max_tokens: 768,
-        system: [{
-          type: 'text',
-          text: systemPrompt,
-          cache_control: { type: 'ephemeral' },
-        }],
-        messages: [{ role: 'user', content: userMessage }],
-      }),
-      API_TIMEOUT_MS,
-      `Sonnet exit eval (${position.symbol})`
+    const message = await withRetry(
+      () => withTimeout(
+        anthropic.messages.create({
+          model: SONNET_MODEL,
+          max_tokens: 768,
+          system: [{
+            type: 'text',
+            text: systemPrompt,
+            cache_control: { type: 'ephemeral' },
+          }],
+          messages: [{ role: 'user', content: userMessage }],
+        }),
+        API_TIMEOUT_MS,
+        `Sonnet exit eval (${position.symbol})`
+      ),
+      { maxAttempts: 3, label: `Sonnet exit eval (${position.symbol})` }
     );
 
     const responseText = message.content[0].text;
@@ -324,8 +360,9 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
     let parsed;
     try {
       parsed = extractJSON(responseText);
-    } catch {
-      logger.error(`[Sonnet-Exit] JSON parse failed, response: ${responseText.substring(0, 500)}`);
+    } catch (parseErr) {
+      logger.error(`[Sonnet-Exit] JSON parse failed (${parseErr.message}), response: ${responseText.substring(0, 500)}`);
+      logger.error(`[Sonnet-Exit] WARNING: Exit eval for ${position.symbol} defaulting to HOLD due to parse failure.`);
       parsed = {
         action: 'HOLD',
         symbol: position.symbol,
@@ -637,6 +674,15 @@ async function logSignal(triggeredSignal, haikuResponse, tokensUsed) {
  * Log Sonnet decision with full prompt snapshot for future Haiku training
  */
 async function logDecision(signalId, sonnetResponse, promptSnapshot, tokensUsed) {
+  // Ensure symbol is never NULL — fall back to signal's symbol if Sonnet omits it
+  let symbol = sonnetResponse.symbol;
+  if (!symbol && signalId) {
+    try {
+      const sigRow = await query('SELECT symbol FROM signals WHERE id = $1', [signalId]);
+      symbol = sigRow.rows[0]?.symbol || null;
+    } catch { /* best effort */ }
+  }
+
   const result = await query(`
     INSERT INTO decisions (
       signal_id, symbol, action, confidence, reasoning, risk_assessment,
@@ -647,7 +693,7 @@ async function logDecision(signalId, sonnetResponse, promptSnapshot, tokensUsed)
     RETURNING id
   `, [
     signalId,
-    sonnetResponse.symbol,
+    symbol,
     sonnetResponse.action,
     sonnetResponse.confidence,
     sonnetResponse.reasoning || '',
