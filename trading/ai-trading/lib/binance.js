@@ -219,13 +219,16 @@ let exchangeInfoExpiry = 0;
 async function getStepSize(symbol) {
   if (!exchangeInfoCache || Date.now() > exchangeInfoExpiry) {
     const info = await request('/api/v3/exchangeInfo');
-    exchangeInfoCache = {};
+    // Build cache in local variable and assign atomically to prevent
+    // partial cache state if iteration fails or concurrent calls race
+    const newCache = {};
     for (const s of info.symbols) {
       const lotSize = s.filters.find(f => f.filterType === 'LOT_SIZE');
       if (lotSize) {
-        exchangeInfoCache[s.symbol] = parseFloat(lotSize.stepSize);
+        newCache[s.symbol] = parseFloat(lotSize.stepSize);
       }
     }
+    exchangeInfoCache = newCache;
     exchangeInfoExpiry = Date.now() + 24 * 60 * 60 * 1000; // 24h cache
   }
   return exchangeInfoCache[symbol] || 0.00000001;

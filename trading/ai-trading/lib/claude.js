@@ -307,6 +307,12 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
       };
     }
 
+    // Default PARTIAL_EXIT to 50% if exit_percent not specified (matches exit eval path)
+    if (parsed.action === 'PARTIAL_EXIT' && !parsed.position_details?.exit_percent) {
+      parsed.position_details = parsed.position_details || {};
+      parsed.position_details.exit_percent = 50;
+    }
+
     // Enforce confidence safety net
     parsed = enforceConfidenceThresholds(parsed, config);
 
@@ -368,14 +374,18 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
     try {
       parsed = extractJSON(responseText);
     } catch (parseErr) {
+      // For critical urgency (>=70), default to SELL instead of HOLD — the exit scanner
+      // already determined this position needs urgent attention
+      const isCriticalUrgency = urgency?.score >= 70;
+      const fallbackAction = isCriticalUrgency ? 'SELL' : 'HOLD';
       logger.error(`[Sonnet-Exit] JSON parse failed (${parseErr.message}), response: ${responseText.substring(0, 500)}`);
-      logger.error(`[Sonnet-Exit] WARNING: Exit eval for ${position.symbol} defaulting to HOLD due to parse failure.`);
+      logger.error(`[Sonnet-Exit] WARNING: Exit eval for ${position.symbol} defaulting to ${fallbackAction} (urgency: ${urgency?.score || 'unknown'}).`);
       parsed = {
-        action: 'HOLD',
+        action: fallbackAction,
         symbol: position.symbol,
-        confidence: 0,
-        position_details: null,
-        reasoning: 'Parse error — could not interpret Sonnet response',
+        confidence: isCriticalUrgency ? 0.6 : 0,
+        position_details: isCriticalUrgency ? { exit_percent: 50 } : null,
+        reasoning: `Parse error — defaulting to ${fallbackAction} (urgency ${urgency?.score || 'unknown'})`,
         risk_assessment: 'Unable to assess due to parse error',
         alternative_considered: 'N/A',
       };

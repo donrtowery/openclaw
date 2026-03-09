@@ -178,11 +178,12 @@ async function runCycle() {
     dailyTradeDate = today;
   }
 
-  // 0b. Check max trades per day
+  // 0b. Check max trades per day — block new entries but ALWAYS allow exit scans
   const maxTradesPerDay = tradingConfig.account.max_trades_per_day || 20;
+  let skipNewEntries = false;
   if (dailyTradeCount >= maxTradesPerDay) {
-    logger.warn(`[Engine] Daily trade limit reached (${dailyTradeCount}/${maxTradesPerDay}). Skipping cycle.`);
-    return;
+    logger.warn(`[Engine] Daily trade limit reached (${dailyTradeCount}/${maxTradesPerDay}). Blocking new entries only.`);
+    skipNewEntries = true;
   }
 
   // 1. Check circuit breaker and drawdown — block new entries but ALWAYS allow exit scans
@@ -190,7 +191,7 @@ async function runCycle() {
   const maxDrawdownPct = tradingConfig.circuit_breaker.max_drawdown_percent || 10;
   const drawdownPortfolio = await getCachedPortfolio();
   const drawdownActive = drawdownPortfolio.total_pnl_percent < -maxDrawdownPct;
-  const skipNewEntries = cb.is_active || drawdownActive;
+  skipNewEntries = skipNewEntries || cb.is_active || drawdownActive;
 
   if (cb.is_active) {
     logger.warn(`[Engine] Circuit breaker ACTIVE (${cb.consecutive_losses} losses). Blocking new entries. Reactivates: ${cb.reactivates_at}`);
@@ -208,6 +209,7 @@ async function runCycle() {
   let tradesExecuted = 0;
 
   if (!skipNewEntries) {
+  try {
   const scanResult = await runScanCycle(tradingConfig);
   logger.info(`[Engine] Scanned ${scanResult.symbols_scanned} symbols in ${scanResult.duration_ms}ms — ${scanResult.triggered.length} triggered`);
 
@@ -335,6 +337,10 @@ async function runCycle() {
         }
       }
     }
+  }
+  } catch (error) {
+    logger.error(`[Engine] Entry scanner error: ${error.message}`);
+    logger.error(error.stack);
   }
   } // end if (!skipNewEntries)
 

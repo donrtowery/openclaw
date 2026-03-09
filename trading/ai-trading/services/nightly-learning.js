@@ -96,11 +96,14 @@ async function run() {
   const currentEscRate = parseFloat(escConvRate);
   if (defensiveMode) {
     // Check for defensive mode stagnation — if barely any new trades across recent sessions, relax
+    // Threshold is proportional to sessions reviewed: <= 1 trade per session = stagnant
     let defensiveStagnant = false;
-    if (trajectoryRows.length >= 3) {
+    if (trajectoryRows.length >= 2) {
       const recentTradeCount = parseInt(trajectoryRows[0]?.total_trades) || 0;
       const oldestTradeCount = parseInt(trajectoryRows[trajectoryRows.length - 1]?.total_trades) || 0;
-      if (recentTradeCount - oldestTradeCount <= 2) {
+      const tradeDelta = recentTradeCount - oldestTradeCount;
+      const stagnationThreshold = trajectoryRows.length; // 1 trade per session minimum
+      if (tradeDelta <= stagnationThreshold) {
         defensiveStagnant = true;
       }
     }
@@ -133,7 +136,7 @@ async function run() {
   if (analysis._parseFailure) {
     logger.warn(`[Learning] Skipping prompt/rule updates — Sonnet parse failure this cycle`);
   } else {
-    await updatePromptFiles(stats, analysis);
+    await updatePromptFiles(stats, analysis, defensiveMode);
     await saveLearningRules(analysis);
   }
 
@@ -208,7 +211,7 @@ async function calculateStats() {
   // DCA effectiveness
   const dcaResult = await query(`
     SELECT
-      CASE WHEN p.total_cost > p.entry_cost THEN 'with_dca' ELSE 'no_dca' END as dca_type,
+      CASE WHEN COALESCE(p.dca_count, 0) > 0 THEN 'with_dca' ELSE 'no_dca' END as dca_type,
       COUNT(*) as total,
       COUNT(CASE WHEN p.realized_pnl > 0 THEN 1 END) as wins,
       COALESCE(AVG(p.realized_pnl_percent), 0) as avg_pnl_pct
@@ -350,6 +353,12 @@ async function calculateStats() {
       AND s.created_at > NOW() - INTERVAL '30 days'
       AND s.created_at < NOW() - INTERVAL '24 hours'
       AND sub.min_price_24h IS NOT NULL
+      -- Exclude cases where price rallied >3% above signal price in first 4h before dropping
+      AND COALESCE((SELECT MAX(i2.price) FROM indicator_snapshots i2
+           WHERE i2.symbol = s.symbol
+             AND i2.created_at > s.created_at
+             AND i2.created_at < s.created_at + INTERVAL '4 hours'
+          ), s.price) <= s.price * 1.03
     ORDER BY potential_drop_pct DESC
     LIMIT 20
   `);
@@ -739,20 +748,23 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
   }
 
   // Missed opportunities — consolidated into one section with type markers
+  // Cap displayed gains at 20% to avoid unrealistic peak-price inflation (S5/S8)
+  const MISSED_OPP_DISPLAY_CAP = 20;
+  const capGain = (pct) => Math.min(parseFloat(pct), MISSED_OPP_DISPLAY_CAP).toFixed(1);
   const allMissed = [];
   const missedNonEscalated = stats.missed_opportunities.filter(m => parseFloat(m.potential_gain_pct) > MISSED_OPP_THRESHOLD);
   for (const m of missedNonEscalated.slice(0, 5)) {
-    allMissed.push(`[NOT_ESC] ${m.symbol} ${m.strength} conf:${m.confidence} +${parseFloat(m.potential_gain_pct).toFixed(1)}%`);
+    allMissed.push(`[NOT_ESC] ${m.symbol} ${m.strength} conf:${m.confidence} +${capGain(m.potential_gain_pct)}%`);
   }
   for (const m of stats.missed_pass_decisions.slice(0, 5)) {
-    allMissed.push(`[SONNET_PASS] ${m.symbol} Haiku:${m.haiku_strength} conf:${m.haiku_conf} +${parseFloat(m.potential_gain_pct).toFixed(1)}%`);
+    allMissed.push(`[SONNET_PASS] ${m.symbol} Haiku:${m.haiku_strength} conf:${m.haiku_conf} +${capGain(m.potential_gain_pct)}%`);
   }
   const missedSellNonEscalated = stats.missed_sell_opportunities.filter(m => parseFloat(m.potential_drop_pct) > MISSED_OPP_THRESHOLD);
   for (const m of missedSellNonEscalated.slice(0, 3)) {
-    allMissed.push(`[SELL_NOT_ESC] ${m.symbol} ${m.strength} -${parseFloat(m.potential_drop_pct).toFixed(1)}%`);
+    allMissed.push(`[SELL_NOT_ESC] ${m.symbol} ${m.strength} -${capGain(m.potential_drop_pct)}%`);
   }
   for (const m of stats.missed_sell_pass_decisions.slice(0, 3)) {
-    allMissed.push(`[SELL_PASS] ${m.symbol} Haiku:${m.haiku_strength} -${parseFloat(m.potential_drop_pct).toFixed(1)}%`);
+    allMissed.push(`[SELL_PASS] ${m.symbol} Haiku:${m.haiku_strength} -${capGain(m.potential_drop_pct)}%`);
   }
   if (allMissed.length > 0) {
     prompt += `MISSED OPPORTUNITIES (price moved >${MISSED_OPP_THRESHOLD}% sustained for ${SUSTAINED_CANDLES}+ candles in 24h):\n`;
@@ -809,7 +821,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
   if (stats.missed_pass_decisions.length > 0) {
     prompt += `SONNET BUY ERRORS (wrong to pass — price rose >${MISSED_OPP_THRESHOLD}% sustained):\n`;
     for (const m of stats.missed_pass_decisions.slice(0, 5)) {
-      prompt += `${m.symbol} Haiku:${m.haiku_strength} conf:${m.haiku_conf} → passed → +${parseFloat(m.potential_gain_pct).toFixed(1)}% | ${(m.reasoning || '').substring(0, 60)}\n`;
+      prompt += `${m.symbol} Haiku:${m.haiku_strength} conf:${m.haiku_conf} → passed → +${Math.min(parseFloat(m.potential_gain_pct), 20).toFixed(1)}% | ${(m.reasoning || '').substring(0, 60)}\n`;
     }
     prompt += '\n';
   }
@@ -818,7 +830,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
   if (stats.missed_sell_pass_decisions.length > 0) {
     prompt += `SONNET SELL ERRORS (wrong to pass — price dropped >${MISSED_OPP_THRESHOLD}% sustained):\n`;
     for (const m of stats.missed_sell_pass_decisions.slice(0, 5)) {
-      prompt += `${m.symbol} Haiku:${m.haiku_strength} conf:${m.haiku_conf} → passed → -${parseFloat(m.potential_drop_pct).toFixed(1)}% | ${(m.reasoning || '').substring(0, 60)}\n`;
+      prompt += `${m.symbol} Haiku:${m.haiku_strength} conf:${m.haiku_conf} → passed → -${Math.min(parseFloat(m.potential_drop_pct), 20).toFixed(1)}% | ${(m.reasoning || '').substring(0, 60)}\n`;
     }
     prompt += '\n';
   }
@@ -959,7 +971,16 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     logger.info(`[Learning] Sonnet analysis: ${message.usage.input_tokens}in/${message.usage.output_tokens}out tokens, stop_reason: ${message.stop_reason}`);
 
     if (message.stop_reason === 'max_tokens') {
-      logger.warn(`[Learning] Sonnet response truncated at max_tokens — JSON may be incomplete`);
+      logger.warn(`[Learning] Sonnet response truncated at max_tokens — skipping parse to prevent partial rule sets`);
+      return {
+        haiku_rules: [],
+        sonnet_rules: [],
+        haiku_escalation_calibration: [],
+        haiku_few_shots: [],
+        sonnet_few_shots: [],
+        rule_changes: 'Truncated at max_tokens — no changes this cycle',
+        _parseFailure: true,
+      };
     }
 
     let parsed;
@@ -1015,6 +1036,23 @@ function validateAnalysis(analysis, defensiveMode = false) {
   analysis.sonnet_rules = filterInvalidVerbs(toArray(analysis.sonnet_rules), VALID_SONNET_VERBS, 'sonnet');
   analysis.exit_rules = filterInvalidVerbs(toArray(analysis.exit_rules || []), VALID_EXIT_VERBS, 'exit');
 
+  // ── Convert blanket DCA rejection rules to conditional (S10) ──
+  // Blanket "REJECT DCA" conflicts with Sonnet's conditional DCA rule. Convert to conditional.
+  const convertBlanketDca = (rules) => {
+    return rules.map(r => {
+      const text = typeof r === 'string' ? r : JSON.stringify(r);
+      // Match blanket DCA rejections that don't already have T1/conditional language
+      if (/^REJECT\b.*\bDCA\b/i.test(text) && !/\bT1\b/i.test(text) && !/\bunless\b/i.test(text)) {
+        const replacement = text.replace(/^REJECT\b/i, 'REJECT') + ' unless T1 AND price >5% below entry — escalate only the best DCA candidates for Sonnet';
+        issues.push(`Converted blanket DCA rejection to conditional: "${text.substring(0, 50)}" → added T1 exception`);
+        return replacement;
+      }
+      return r;
+    });
+  };
+  analysis.haiku_rules = convertBlanketDca(toArray(analysis.haiku_rules));
+  analysis.haiku_escalation_calibration = convertBlanketDca(toArray(analysis.haiku_escalation_calibration));
+
   // Check ESCALATE/START ratio — threshold depends on defensive mode
   const minEscalateRatio = defensiveMode ? DEFENSIVE_MIN_ESCALATE_RATIO : 0.4;
   if (allHaikuRules.length > 0) {
@@ -1067,7 +1105,7 @@ function validateAnalysis(analysis, defensiveMode = false) {
   // Specific indicator keywords that suggest two rules target the same pattern.
   // Generic strength terms (STRONG/MODERATE/WEAK) are excluded — they appear in
   // nearly every rule and don't indicate a true contradiction.
-  const SPECIFIC_KEYWORDS = /\b(T[12]|RSI|MACD|BB|VOLUME|EMA|SMA200|GOLDEN.CROSS|DEATH.CROSS|SUPPORT|RESISTANCE)\b/gi;
+  const SPECIFIC_KEYWORDS = /\b(T[12]|RSI|MACD|BB|VOLUME|EMA|SMA200|GOLDEN.CROSS|DEATH.CROSS|SUPPORT|RESISTANCE|ADX|STOCHRSI|ATR)\b/gi;
 
   for (const approve of approveRules) {
     for (const reject of rejectRules) {
@@ -1113,7 +1151,7 @@ function validateAnalysis(analysis, defensiveMode = false) {
 
 // ── Prompt File Updater ─────────────────────────────────────
 
-async function updatePromptFiles(stats, analysis) {
+async function updatePromptFiles(stats, analysis, defensiveMode = false) {
   const date = new Date().toISOString().split('T')[0];
 
   // Shared performance header
@@ -1174,7 +1212,8 @@ async function updatePromptFiles(stats, analysis) {
   }
 
   // START escalating patterns — exclude patterns that also appear in BAD TRADE PATTERNS
-  if (stats.missed_escalation_patterns.length > 0) {
+  // Suppress during defensive mode to avoid contradicting STOP/REJECT rules
+  if (stats.missed_escalation_patterns.length > 0 && !defensiveMode) {
     const badPatternKeys = new Set(
       stats.losing_patterns.map(p => {
         const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
@@ -1189,7 +1228,7 @@ async function updatePromptFiles(stats, analysis) {
       haikuSection += `START ESCALATING (you filtered these out but price moved favorably):\n`;
       for (const p of filteredMissed.slice(0, 5)) {
         const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
-        haikuSection += `- ${triggers} (${p.trend}) ${p.strength}: ${p.total} missed, avg +${parseFloat(p.avg_gain_pct).toFixed(1)}% gain\n`;
+        haikuSection += `- ${triggers} (${p.trend}) ${p.strength}: ${p.total} missed, avg +${Math.min(parseFloat(p.avg_gain_pct), 20).toFixed(1)}% gain\n`;
       }
       haikuSection += '\n';
     }
@@ -1199,7 +1238,7 @@ async function updatePromptFiles(stats, analysis) {
   if (stats.missed_pass_decisions.length > 0) {
     haikuSection += `SONNET WAS WRONG (these PASSed signals SHOULD have been escalated — Sonnet erred, not you):\n`;
     for (const m of stats.missed_pass_decisions.slice(0, 5)) {
-      haikuSection += `- ${m.symbol} ${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed → price rose +${parseFloat(m.potential_gain_pct).toFixed(1)}%`;
+      haikuSection += `- ${m.symbol} ${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed → price rose +${Math.min(parseFloat(m.potential_gain_pct), 20).toFixed(1)}%`;
       if (m.reasoning) haikuSection += ` | Sonnet's reason: ${m.reasoning.substring(0, 80)}`;
       haikuSection += '\n';
     }
@@ -1210,7 +1249,7 @@ async function updatePromptFiles(stats, analysis) {
   if (stats.missed_sell_pass_decisions.length > 0) {
     haikuSection += `SONNET MISSED THESE SELL SIGNALS (you correctly escalated, but Sonnet chose PASS and price dropped):\n`;
     for (const m of stats.missed_sell_pass_decisions.slice(0, 5)) {
-      haikuSection += `- ${m.symbol} ${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed → price dropped -${parseFloat(m.potential_drop_pct).toFixed(1)}%`;
+      haikuSection += `- ${m.symbol} ${m.haiku_strength} conf:${m.haiku_conf} → Sonnet passed → price dropped -${Math.min(parseFloat(m.potential_drop_pct), 20).toFixed(1)}%`;
       if (m.reasoning) haikuSection += ` | Sonnet's reason: ${m.reasoning.substring(0, 80)}`;
       haikuSection += '\n';
     }
@@ -1220,7 +1259,7 @@ async function updatePromptFiles(stats, analysis) {
     if (missedSellFiltered.length > 0) {
       haikuSection += `MISSED SELL SIGNALS (you didn't escalate these SELL signals but price dropped):\n`;
       for (const m of missedSellFiltered.slice(0, 5)) {
-        haikuSection += `- ${m.symbol} ${m.strength} conf:${m.confidence} @ $${parseFloat(m.signal_price).toFixed(4)} → min $${parseFloat(m.min_price_24h).toFixed(4)} (-${parseFloat(m.potential_drop_pct).toFixed(1)}%)\n`;
+        haikuSection += `- ${m.symbol} ${m.strength} conf:${m.confidence} @ $${parseFloat(m.signal_price).toFixed(4)} → min $${parseFloat(m.min_price_24h).toFixed(4)} (-${Math.min(parseFloat(m.potential_drop_pct), 20).toFixed(1)}%)\n`;
       }
       haikuSection += `Start escalating SELL signals like these — missed sells mean unrealized losses.\n\n`;
     }
@@ -1247,10 +1286,27 @@ async function updatePromptFiles(stats, analysis) {
   // ── Sonnet section with losing trade patterns ──
   let sonnetSection = perfHeader;
   if (stats.losing_patterns.length > 0) {
+    // Build exception lookup from winning signal combos (for cross-referencing)
+    const winningSubPatterns = new Map();
+    if (stats.signal_combo_stats) {
+      for (const s of stats.signal_combo_stats) {
+        const wr = parseInt(s.total) > 0 ? parseInt(s.wins) / parseInt(s.total) * 100 : 0;
+        if (wr >= 55 && parseInt(s.total) >= 2) {
+          winningSubPatterns.set(s.signal_combo, { wr: wr.toFixed(0), total: s.total });
+        }
+      }
+    }
+
     sonnetSection += `BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):\n`;
     for (const p of stats.losing_patterns.slice(0, 5)) {
       const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
-      sonnetSection += `- ${triggers} (${p.trend}) ${p.strength}: ${p.losses}/${p.total} lost, avg $${parseFloat(p.avg_loss_usd).toFixed(2)}\n`;
+      let line = `- ${triggers} (${p.trend}) ${p.strength}: ${p.losses}/${p.total} lost, avg $${parseFloat(p.avg_loss_usd).toFixed(2)}`;
+      // Check for winning sub-pattern exception (matches haiku prompt format)
+      const matchingWin = winningSubPatterns.get(triggers);
+      if (matchingWin) {
+        line += ` (EXCEPTION: sub-pattern with ${matchingWin.wr}% WR on ${matchingWin.total} trades — check haiku rules)`;
+      }
+      sonnetSection += line + '\n';
     }
     sonnetSection += '\n';
   }
@@ -1410,12 +1466,16 @@ function updatePromptFile(path, learningSection, rules, fewShots) {
 // ── Outcome Updater ─────────────────────────────────────────
 
 async function updateOutcomes() {
-  const client = await getClient();
+  // Break into smaller transactions to avoid lock contention with live trading engine.
+  // Each logical group runs in its own transaction.
+
+  // ── Group 1: Trade outcome updates (signals + decisions for closed positions) ──
+  const client1 = await getClient();
   try {
-  await client.query('BEGIN');
+  await client1.query('BEGIN');
 
   // Update signals that led to winning trades
-  await client.query(`
+  await client1.query(`
     UPDATE signals SET outcome = 'WIN', outcome_pnl = p.realized_pnl
     FROM decisions d
     JOIN positions p ON p.open_decision_id = d.id
@@ -1425,7 +1485,7 @@ async function updateOutcomes() {
   `);
 
   // Update signals that led to losing trades
-  await client.query(`
+  await client1.query(`
     UPDATE signals SET outcome = 'LOSS', outcome_pnl = p.realized_pnl
     FROM decisions d
     JOIN positions p ON p.open_decision_id = d.id
@@ -1435,7 +1495,7 @@ async function updateOutcomes() {
   `);
 
   // Update decisions that led to wins/losses
-  await client.query(`
+  await client1.query(`
     UPDATE decisions SET outcome = 'WIN', outcome_pnl = p.realized_pnl
     FROM positions p
     WHERE p.open_decision_id = decisions.id
@@ -1443,7 +1503,7 @@ async function updateOutcomes() {
     AND decisions.outcome = 'PENDING'
   `);
 
-  await client.query(`
+  await client1.query(`
     UPDATE decisions SET outcome = 'LOSS', outcome_pnl = p.realized_pnl
     FROM positions p
     WHERE p.open_decision_id = decisions.id
@@ -1452,7 +1512,7 @@ async function updateOutcomes() {
   `);
 
   // Update signals for breakeven trades
-  await client.query(`
+  await client1.query(`
     UPDATE signals SET outcome = 'NEUTRAL', outcome_pnl = 0
     FROM decisions d
     JOIN positions p ON p.open_decision_id = d.id
@@ -1462,13 +1522,27 @@ async function updateOutcomes() {
   `);
 
   // Update decisions for breakeven trades
-  await client.query(`
+  await client1.query(`
     UPDATE decisions SET outcome = 'NEUTRAL', outcome_pnl = 0
     FROM positions p
     WHERE p.open_decision_id = decisions.id
     AND p.status = 'CLOSED' AND p.realized_pnl = 0
     AND decisions.outcome = 'PENDING'
   `);
+
+  await client1.query('COMMIT');
+  } catch (error) {
+    await client1.query('ROLLBACK').catch(() => {});
+    logger.error(`[Learning] Trade outcome update failed: ${error.message}`);
+    throw error;
+  } finally {
+    client1.release();
+  }
+
+  // ── Group 2: PASS decision evaluations ──
+  const client = await getClient();
+  try {
+  await client.query('BEGIN');
 
   // PASS decisions older than configured window: evaluate against actual price movement
   // BUY signals where price rose >threshold% sustained for N candles → MISSED_OPPORTUNITY
@@ -1540,14 +1614,41 @@ async function updateOutcomes() {
   }
 
   // Remaining PASS decisions older than evaluation window: mark as CORRECT_PASS
+  // Only mark if indicator_snapshots data exists for the symbol — no data = inconclusive
   await client.query(`
     UPDATE decisions SET outcome = 'CORRECT_PASS'
     WHERE action = 'PASS' AND outcome = 'PENDING'
     AND created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
+    AND signal_id IN (
+      SELECT s.id FROM signals s
+      WHERE EXISTS (
+        SELECT 1 FROM indicator_snapshots i
+        WHERE i.symbol = s.symbol
+        AND i.created_at > s.created_at
+        AND i.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
+      )
+    )
   `);
 
+  // PASS decisions with no indicator data: leave as PENDING (will be retried or age out)
+  // This prevents falsely reinforcing rejection patterns when we have no evidence
+
+  await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    logger.error(`[Learning] PASS evaluation failed: ${error.message}`);
+    throw error;
+  } finally {
+    client.release();
+  }
+
+  // ── Group 3: Non-escalated signal evaluations ──
+  const client3 = await getClient();
+  try {
+  await client3.query('BEGIN');
+
   // Also tag non-escalated BUY signals that moved >threshold% sustained as MISSED_OPPORTUNITY
-  const missedBuySignals = await client.query(`
+  const missedBuySignals = await client3.query(`
     UPDATE signals s SET
       outcome = 'MISSED_OPPORTUNITY',
       outcome_pnl = sub.gain_pct
@@ -1583,7 +1684,7 @@ async function updateOutcomes() {
   }
 
   // Also tag non-escalated SELL signals where price dropped >threshold% sustained as MISSED_OPPORTUNITY
-  const missedSellSignals = await client.query(`
+  const missedSellSignals = await client3.query(`
     UPDATE signals s SET
       outcome = 'MISSED_OPPORTUNITY',
       outcome_pnl = sub.drop_pct
@@ -1613,18 +1714,19 @@ async function updateOutcomes() {
   }
 
   // Remaining non-escalated signals older than evaluation window: mark as NOT_TRADED
-  await client.query(`
+  await client3.query(`
     UPDATE signals SET outcome = 'NOT_TRADED'
     WHERE escalated = false AND outcome = 'PENDING'
     AND created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
   `);
 
-  await client.query('COMMIT');
+  await client3.query('COMMIT');
   } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client3.query('ROLLBACK').catch(() => {});
+    logger.error(`[Learning] Non-escalated signal evaluation failed: ${error.message}`);
     throw error;
   } finally {
-    client.release();
+    client3.release();
   }
   logger.info('[Learning] Outcomes updated');
 }
