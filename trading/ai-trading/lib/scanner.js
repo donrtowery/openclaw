@@ -120,10 +120,25 @@ function detectThresholdCrossings(symbol, current, previous, thresholds) {
     }
   }
 
-  // --- ADX trend strength transition ---
+  // --- ADX trend strength transitions ---
   if (previous.adx && current.adx) {
     if (previous.adx.value < 25 && current.adx.value >= 25) {
       crossed.push('ADX_TREND_STRENGTHENING');
+    }
+    if (previous.adx.value >= 25 && current.adx.value < 20) {
+      crossed.push('ADX_TREND_WEAKENING');
+    }
+  }
+
+  // --- StochRSI crossing ---
+  if (previous.stochRsi && current.stochRsi) {
+    // Bearish cross: K was above D, now K crossed below D in overbought zone
+    if (previous.stochRsi.k > previous.stochRsi.d && current.stochRsi.k < current.stochRsi.d && current.stochRsi.k > 70) {
+      crossed.push('STOCHRSI_BEARISH_CROSS');
+    }
+    // Bullish cross: K was below D, now K crossed above D in oversold zone
+    if (previous.stochRsi.k < previous.stochRsi.d && current.stochRsi.k > current.stochRsi.d && current.stochRsi.k < 30) {
+      crossed.push('STOCHRSI_BULLISH_CROSS');
     }
   }
 

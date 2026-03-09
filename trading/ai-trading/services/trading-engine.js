@@ -26,6 +26,7 @@ const tradingConfig = JSON.parse(readFileSync('config/trading.json', 'utf8'));
 let isRunning = false;
 let scanIntervalId = null;
 let cycleCount = 0;
+let cycleInProgress = false;
 
 // Symbol name lookup (filled on init)
 const symbolNames = new Map(); // ETHUSDT -> Ethereum
@@ -97,11 +98,18 @@ async function start() {
   // Then schedule recurring scans
   scanIntervalId = setInterval(async () => {
     if (!isRunning) return;
+    if (cycleInProgress) {
+      logger.warn('[Engine] Previous cycle still running — skipping this interval');
+      return;
+    }
     try {
+      cycleInProgress = true;
       await runCycle();
     } catch (error) {
       logger.error(`[Engine] Cycle error: ${error.message}`);
       logger.error(error.stack);
+    } finally {
+      cycleInProgress = false;
     }
   }, intervalMs);
 }
@@ -253,12 +261,15 @@ async function runCycle() {
         continue;
       }
 
-      // Sonnet dedup — skip if recently evaluated (unless it's a SELL with open position)
+      // Sonnet dedup — skip if recently evaluated
+      // SELL signals use shorter dedup (10 min) to avoid same-cycle double eval while still allowing timely exits
       const dedupMinutes = tradingConfig.escalation.sonnet_dedup_minutes || 30;
+      const sellDedupMinutes = Math.min(10, dedupMinutes);
+      const effectiveDedupMinutes = haikuResult.signal === 'SELL' ? sellDedupMinutes : dedupMinutes;
       const lastEval = lastSonnetEvaluation.get(triggered.symbol);
-      if (lastEval && haikuResult.signal !== 'SELL' && (Date.now() - lastEval) < dedupMinutes * 60 * 1000) {
+      if (lastEval && (Date.now() - lastEval) < effectiveDedupMinutes * 60 * 1000) {
         const minutesAgo = ((Date.now() - lastEval) / 60000).toFixed(0);
-        logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — Sonnet evaluated ${minutesAgo}m ago (dedup: ${dedupMinutes}m)`);
+        logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — Sonnet evaluated ${minutesAgo}m ago (dedup: ${effectiveDedupMinutes}m)`);
         markFiltered(haikuResult.signal_id, 'DEDUP');
         continue;
       }
@@ -543,13 +554,11 @@ async function executeSell(decision, triggered) {
     tradingConfig.account.paper_trading
   );
 
-  // Circuit breaker tracking
-  if (closeResult.isFull) {
-    if (closeResult.pnl < 0) {
-      await recordLoss(symbol, closeResult.pnl);
-    } else {
-      await resetCircuitBreaker();
-    }
+  // Circuit breaker tracking — track both full and partial exit losses
+  if (closeResult.pnl < 0) {
+    await recordLoss(symbol, closeResult.pnl);
+  } else if (closeResult.isFull) {
+    await resetCircuitBreaker();
   }
 
   const eventType = closeResult.isFull ? 'SELL' : 'PARTIAL_EXIT';
@@ -637,8 +646,8 @@ async function executeDCA(decision, triggered) {
     return { escalated: true, executed: false, reason };
   }
 
-  const estimatedPrice = await getCurrentPrice(symbol);
-  const estimatedQty = dcaAmountUsd / estimatedPrice;
+  // Reuse currentPrice from earlier check instead of a second API call
+  const estimatedQty = dcaAmountUsd / currentPrice;
   const order = await placeOrder(symbol, 'BUY', estimatedQty);
   const fillPrice = order.price;
   const fillQty = parseFloat(order.executedQty) || estimatedQty;
@@ -683,7 +692,7 @@ async function runExitScanCycle() {
   // Pre-fetch shared context once (not per-candidate)
   const [cachedPortfolio, learningRules, cb] = await Promise.all([
     getCachedPortfolio(),
-    getLearningRules(),
+    getExitLearningRules(),
     checkCircuitBreaker(),
   ]);
 
@@ -864,9 +873,9 @@ async function recordLoss(symbol, pnl) {
     await query(`
       UPDATE circuit_breaker
       SET is_active = true, activated_at = NOW(),
-          reactivates_at = NOW() + INTERVAL '${cooldownHours} hours'
+          reactivates_at = NOW() + make_interval(hours => $1)
       WHERE id = 1
-    `);
+    `, [cooldownHours]);
     logger.warn(`[Engine] CIRCUIT BREAKER ACTIVATED — ${losses} consecutive losses. Pausing for ${cooldownHours}h.`);
     sendAlert('CIRCUIT_BREAKER', null, { consecutive_losses: losses, cooldown_hours: cooldownHours }).catch(() => {});
     await queueEvent('CIRCUIT_BREAKER', null, {
@@ -1027,6 +1036,31 @@ async function getLearningRules() {
   return result.rows;
 }
 
+// ── Exit Learning Rules (cached 1hr — exit-specific rules for exit eval) ──
+
+let exitRulesCache = { data: null, expiry: 0 };
+
+async function getExitLearningRules() {
+  if (exitRulesCache.data && Date.now() < exitRulesCache.expiry) {
+    return exitRulesCache.data;
+  }
+  const result = await query(`
+    SELECT * FROM learning_rules
+    WHERE is_active = true
+      AND rule_type IN ('sonnet_exit', 'exit_timing')
+    ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
+    LIMIT 5
+  `);
+  // Fall back to sonnet_decision rules if no exit-specific rules exist yet
+  if (result.rows.length === 0) {
+    const fallback = await getLearningRules();
+    exitRulesCache = { data: fallback, expiry: Date.now() + 60 * 60 * 1000 };
+    return fallback;
+  }
+  exitRulesCache = { data: result.rows, expiry: Date.now() + 60 * 60 * 1000 };
+  return result.rows;
+}
+
 // ── Graceful Shutdown ───────────────────────────────────────
 
 async function shutdown() {
@@ -1035,6 +1069,18 @@ async function shutdown() {
 
   if (scanIntervalId) {
     clearInterval(scanIntervalId);
+  }
+
+  // Wait for in-progress cycle to finish (up to 60s)
+  if (cycleInProgress) {
+    logger.info('[Engine] Waiting for in-progress cycle to complete...');
+    const deadline = Date.now() + 60000;
+    while (cycleInProgress && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (cycleInProgress) {
+      logger.warn('[Engine] Cycle did not complete within 60s — forcing shutdown');
+    }
   }
 
   try {

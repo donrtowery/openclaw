@@ -174,7 +174,20 @@ export async function placeOrder(symbol, side, quantity, price = null) {
   };
 
   logger.info(`[Binance] REAL TRADE: ${side} ${quantity} ${symbol}`);
-  return await request('/api/v3/order', params, 'POST', true);
+  const result = await request('/api/v3/order', params, 'POST', true);
+
+  // Normalize Binance API string responses to numbers for consistent downstream handling
+  const executedQty = parseFloat(result.executedQty) || quantity;
+  const cummulativeQuoteQty = parseFloat(result.cummulativeQuoteQty) || 0;
+  // Compute fill price from actual fills (more accurate than reported price for market orders)
+  const fillPrice = cummulativeQuoteQty > 0 ? cummulativeQuoteQty / executedQty : parseFloat(result.price) || 0;
+
+  return {
+    ...result,
+    price: fillPrice,
+    executedQty,
+    cummulativeQuoteQty,
+  };
 }
 
 /**

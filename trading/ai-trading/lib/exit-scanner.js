@@ -1,5 +1,6 @@
 import { analyzeSymbol } from './technical-analysis.js';
 import { getOpenPositions } from './position-manager.js';
+import { query } from '../db/connection.js';
 import logger from './logger.js';
 
 // Separate cooldown map from entry scanner — keyed by symbol
@@ -226,6 +227,19 @@ export async function runExitScan(config) {
       }
 
       const currentPrice = analysis.price;
+
+      // Update peak gain before urgency calc to avoid stale data
+      const avgEntry = parseFloat(position.avg_entry_price);
+      if (avgEntry > 0) {
+        const currentPnlPct = ((currentPrice - avgEntry) / avgEntry) * 100;
+        const storedPeak = parseFloat(position.max_unrealized_gain_percent || 0);
+        if (currentPnlPct > storedPeak) {
+          position.max_unrealized_gain_percent = currentPnlPct;
+          query('UPDATE positions SET max_unrealized_gain_percent = $1, updated_at = NOW() WHERE id = $2', [currentPnlPct, position.id])
+            .catch(err => logger.warn(`[ExitScanner] Failed to update peak gain for ${position.symbol}: ${err.message}`));
+        }
+      }
+
       const urgency = computeExitUrgency(position, analysis, currentPrice);
 
       logger.info(`[ExitScanner] ${position.symbol}: urgency ${urgency.score} | P&L ${urgency.pnl_percent.toFixed(1)}% | held ${urgency.hold_hours.toFixed(0)}h`);

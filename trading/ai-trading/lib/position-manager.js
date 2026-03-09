@@ -145,7 +145,7 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
       logger.info(`[Position] CLOSED #${positionId} @ $${exitPrice.toFixed(2)} | P&L: $${totalProfit.toFixed(2)} (${finalPnlPercent.toFixed(2)}%) | fees: $${newTotalFees.toFixed(2)} | held ${holdHours.toFixed(1)}h`);
     } else {
       const remainingSize = Math.max(0, currentSize - exitSize);
-      const remainingCost = parseFloat(pos.total_cost) - costBasis;
+      const remainingCost = Math.max(0, parseFloat(pos.total_cost) - costBasis);
       const partialExits = (pos.partial_exits || 0) + 1;
       const totalProfit = parseFloat(pos.total_profit_taken || 0) + pnl;
 
@@ -293,7 +293,7 @@ export async function getPortfolioSummary(config) {
     max_positions: maxPositions,
     total_invested: totalInvested,
     total_current_value: totalCurrentValue,
-    available_capital: totalCapital - totalInvested,
+    available_capital: Math.max(0, totalCapital - totalInvested),
     total_portfolio_value: (totalCapital - totalInvested) + totalCurrentValue + realizedPnl + totalPartialProfitTaken,
     unrealized_pnl: unrealizedPnl,
     unrealized_pnl_percent: totalInvested > 0 ? (unrealizedPnl / totalInvested * 100) : 0,

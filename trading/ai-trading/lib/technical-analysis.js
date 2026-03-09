@@ -10,6 +10,7 @@ import logger from './logger.js';
 
 const candleCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 200; // Prevent unbounded growth
 
 function cacheKey(symbol, interval) {
   return `${symbol}:${interval}`;
@@ -21,6 +22,21 @@ async function getCachedCandles(symbol, interval, limit) {
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
     return cached.data;
   }
+
+  // Evict stale entries when cache grows too large
+  if (candleCache.size >= MAX_CACHE_ENTRIES) {
+    const now = Date.now();
+    for (const [k, v] of candleCache) {
+      if (now - v.timestamp > CACHE_TTL) candleCache.delete(k);
+    }
+    // If still too large after evicting stale, remove oldest entries
+    if (candleCache.size >= MAX_CACHE_ENTRIES) {
+      const entries = [...candleCache.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
+      const toRemove = entries.slice(0, Math.floor(MAX_CACHE_ENTRIES / 4));
+      for (const [k] of toRemove) candleCache.delete(k);
+    }
+  }
+
   const data = await getCandles(symbol, interval, limit);
   candleCache.set(key, { data, timestamp: Date.now() });
   return data;
@@ -92,7 +108,7 @@ export async function analyzeSymbol(symbol) {
 
   return {
     symbol,
-    price: Math.round(price * 100) / 100,
+    price: price >= 1 ? Math.round(price * 100) / 100 : parseFloat(price.toPrecision(6)),
     rsi,
     macd,
     sma,
@@ -142,7 +158,7 @@ export function formatForClaude(a) {
   // Line 1: Symbol, price, trend
   const dir = a.trend?.direction || '?';
   const str = a.trend?.strength || '?';
-  lines.push(`${a.symbol} ($${a.price.toLocaleString()}) — ${dir} ${str}`);
+  lines.push(`${a.symbol} ($${a.price.toLocaleString('en-US')}) — ${dir} ${str}`);
 
   // Line 2: Indicators
   const parts = [];
@@ -172,8 +188,8 @@ export function formatForClaude(a) {
 
   // Line 4: S/R
   const srParts = [];
-  if (a.support?.length) srParts.push(`S:$${a.support.map(s => s.toLocaleString()).join('/$')}`);
-  if (a.resistance?.length) srParts.push(`R:$${a.resistance.map(r => r.toLocaleString()).join('/$')}`);
+  if (a.support?.length) srParts.push(`S:$${a.support.map(s => s.toLocaleString('en-US')).join('/$')}`);
+  if (a.resistance?.length) srParts.push(`R:$${a.resistance.map(r => r.toLocaleString('en-US')).join('/$')}`);
   if (srParts.length) lines.push(srParts.join(' | '));
 
   return lines.join('\n');

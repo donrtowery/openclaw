@@ -32,7 +32,6 @@
   },
   "scanner": {
     "interval_minutes": 5,
-    "candle_history": 200,
     "signal_cooldown_minutes": 60,
     "thresholds": {
       "rsi_oversold": 30,

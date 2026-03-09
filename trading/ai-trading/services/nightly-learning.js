@@ -17,7 +17,7 @@ const MISSED_OPP_THRESHOLD = config.learning.missed_opportunity_threshold_pct ||
 const SUSTAINED_CANDLES = config.learning.sustained_candles_required || 6;
 const ESC_CONV_TARGET_MIN = config.learning.escalation_conversion_target_min || 15;
 const ESC_CONV_TARGET_MAX = config.learning.escalation_conversion_target_max || 30;
-const PASS_EVAL_WINDOW_HOURS = config.learning.pass_evaluation_window_hours || 48;
+const PASS_EVAL_WINDOW_HOURS = Math.max(1, parseInt(config.learning.pass_evaluation_window_hours) || 48);
 const DEFENSIVE_WIN_RATE_THRESHOLD = config.learning.defensive_mode_win_rate_threshold || 50;
 const DEFENSIVE_MAX_ESC_TARGET = config.learning.defensive_mode_max_escalation_target || 15;
 const DEFENSIVE_MIN_ESCALATE_RATIO = config.learning.defensive_mode_min_escalate_ratio || 0.2;
@@ -97,7 +97,7 @@ async function run() {
   if (defensiveMode) {
     // In defensive mode, corrective rule is ALWAYS a STOP — never push the bot to trade more when losing
     logger.warn(`[Learning] DEFENSIVE MODE: Prepending capital preservation STOP rule (overrides escalation conversion logic)`);
-    const corrective = `STOP: DEFENSIVE MODE — win rate ${stats.win_rate.toFixed(1)}%, P&L $${stats.total_pnl.toFixed(2)}. Capital preservation is priority #1. Only escalate HIGH-confidence signals with 3+ strong confirmations. Reject all MODERATE and WEAK signals.`;
+    const corrective = `STOP: DEFENSIVE MODE — win rate ${stats.win_rate.toFixed(1)}%, P&L $${stats.total_pnl.toFixed(2)}. Capital preservation is priority #1. Only escalate HIGH-confidence BUY signals with 3+ strong confirmations. Reject all MODERATE and WEAK BUY signals. SELL signals are EXEMPT — always escalate SELL/exit signals regardless of defensive mode.`;
     analysis.haiku_rules = [corrective, ...toArray(analysis.haiku_rules)];
   } else if (totalEscalated >= 20) { // Only enforce with sufficient data
     if (currentEscRate > ESC_CONV_TARGET_MAX) {
@@ -259,6 +259,7 @@ async function calculateStats() {
   `);
 
   // Exit timing analysis — categorize exits for exit-eval learning
+  // Filter out corrupt data: cap realized_pnl_percent to reasonable bounds (-100% to +200%)
   const exitTimingResult = await query(`
     SELECT
       CASE
@@ -269,11 +270,12 @@ async function calculateStats() {
         ELSE 'other'
       END as exit_category,
       COUNT(*) as cnt,
-      AVG(realized_pnl_percent) as avg_pnl_pct,
-      AVG(max_unrealized_gain_percent) as avg_max_gain_pct,
+      AVG(LEAST(GREATEST(realized_pnl_percent, -100), 200)) as avg_pnl_pct,
+      AVG(LEAST(max_unrealized_gain_percent, 200)) as avg_max_gain_pct,
       AVG(hold_hours) as avg_hold_hours
     FROM positions
     WHERE status = 'CLOSED' AND exit_time > NOW() - INTERVAL '30 days'
+      AND ABS(realized_pnl_percent) < 500
     GROUP BY exit_category
   `);
 
@@ -566,7 +568,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     prompt += `PERFORMANCE (${stats.total_trades} trades):\n`;
     prompt += `Win rate: ${stats.win_rate.toFixed(1)}% (${stats.wins}W/${stats.losses}L)\n`;
     prompt += `P&L: $${stats.total_pnl.toFixed(2)} | Avg win: +$${stats.avg_win.toFixed(2)} | Avg loss: $${stats.avg_loss.toFixed(2)}\n`;
-    prompt += `Profit factor: ${stats.profit_factor === Infinity ? '∞' : stats.profit_factor.toFixed(2)} | Sharpe ratio: ${stats.sharpe_ratio.toFixed(2)}\n`;
+    prompt += `Profit factor: ${stats.profit_factor >= 999 ? '∞' : stats.profit_factor.toFixed(2)} | Sharpe ratio: ${stats.sharpe_ratio.toFixed(2)}\n`;
     prompt += `Hold time: Winners ${stats.avg_hold_winners.toFixed(1)}h, Losers ${stats.avg_hold_losers.toFixed(1)}h | Max consec losses: ${stats.max_consecutive_losses}\n`;
     prompt += `Best: +$${stats.best_trade.toFixed(2)} | Worst: $${stats.worst_trade.toFixed(2)}\n\n`;
 
@@ -900,13 +902,31 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     }
   }
 
+  const LEARNING_TIMEOUT_MS = 120000; // 2 min timeout for learning analysis
+  const MAX_RETRIES = 2;
+
   try {
-    const message = await anthropic.messages.create({
-      model: SONNET_MODEL,
-      max_tokens: 8192,
-      system: [{ type: 'text', text: 'You are a conservative trading performance analyst for a utility-focused crypto bot. Quality over quantity — never bias toward more trading. Losing trades matter as much as missed opportunities. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: prompt }],
-    });
+    let message;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        message = await Promise.race([
+          anthropic.messages.create({
+            model: SONNET_MODEL,
+            max_tokens: 8192,
+            system: [{ type: 'text', text: 'You are a conservative trading performance analyst for a utility-focused crypto bot. Quality over quantity — never bias toward more trading. Losing trades matter as much as missed opportunities. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral' } }],
+            messages: [{ role: 'user', content: prompt }],
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`Sonnet learning timed out after ${LEARNING_TIMEOUT_MS}ms`)), LEARNING_TIMEOUT_MS)),
+        ]);
+        break; // Success
+      } catch (retryErr) {
+        const isRetryable = retryErr.message?.includes('timed out') || retryErr.status === 429 || (retryErr.status >= 500 && retryErr.status < 600);
+        if (!isRetryable || attempt === MAX_RETRIES) throw retryErr;
+        const delay = 1000 * Math.pow(2, attempt - 1) + Math.random() * 500;
+        logger.warn(`[Learning] Sonnet attempt ${attempt} failed (${retryErr.message}), retrying in ${(delay/1000).toFixed(1)}s...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
 
     const text = message.content[0].text;
     logger.info(`[Learning] Sonnet analysis: ${message.usage.input_tokens}in/${message.usage.output_tokens}out tokens, stop_reason: ${message.stop_reason}`);
@@ -992,7 +1012,7 @@ function validateAnalysis(analysis, defensiveMode = false) {
       const upper = text.toUpperCase();
       if (!upper.startsWith('STOP') && !upper.startsWith('SKIP') && !upper.startsWith('REJECT')) return true;
       // Try to extract sample count from rule text
-      const sampleMatch = text.match(/(\d+)\s*(trade|sample|evaluated|case)/i);
+      const sampleMatch = text.match(/(\d+)\s*(trade|sample|evaluated|case)/i) || text.match(/(\d+)\/\d+\s*(trade|DCA|signal)/i);
       if (sampleMatch && parseInt(sampleMatch[1]) < 5) {
         issues.push(`Removed low-sample STOP rule: "${text.substring(0, 60)}..." (${sampleMatch[1]} samples)`);
         return false;
@@ -1218,7 +1238,7 @@ async function updatePromptFiles(stats, analysis) {
     exitSection += `HOLD TIME COMPARISON:\n`;
     exitSection += `- Winners: ${stats.avg_hold_winners.toFixed(1)}h avg hold\n`;
     exitSection += `- Losers: ${stats.avg_hold_losers.toFixed(1)}h avg hold\n`;
-    if (stats.avg_hold_losers > stats.avg_hold_winners * 1.3 && stats.avg_hold_losers > 0) {
+    if (stats.avg_hold_winners > 0 && stats.avg_hold_losers > stats.avg_hold_winners * 1.3 && stats.avg_hold_losers > 0) {
       exitSection += `- WARNING: Losers held ${((stats.avg_hold_losers / stats.avg_hold_winners - 1) * 100).toFixed(0)}% longer than winners — cut losses faster\n`;
     }
     exitSection += '\n';
@@ -1421,16 +1441,16 @@ async function updateOutcomes() {
       JOIN signals s ON d2.signal_id = s.id
       LEFT JOIN indicator_snapshots i ON i.symbol = s.symbol
         AND i.created_at > s.created_at
-        AND i.created_at < s.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+        AND i.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       WHERE d2.action = 'PASS' AND d2.outcome = 'PENDING'
         AND s.signal_type = 'BUY'
-        AND d2.created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+        AND d2.created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       GROUP BY d2.id, s.price, s.symbol, s.created_at
       HAVING s.price > 0 AND ((MAX(i.price) - s.price) / s.price * 100) > $1
         AND (SELECT COUNT(*) FROM indicator_snapshots i2
              WHERE i2.symbol = s.symbol
                AND i2.created_at > s.created_at
-               AND i2.created_at < s.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+               AND i2.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
                AND ((i2.price - s.price) / s.price * 100) > $1
             ) >= $2
     ) sub
@@ -1452,16 +1472,16 @@ async function updateOutcomes() {
       JOIN signals s ON d2.signal_id = s.id
       LEFT JOIN indicator_snapshots i ON i.symbol = s.symbol
         AND i.created_at > s.created_at
-        AND i.created_at < s.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+        AND i.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       WHERE d2.action = 'PASS' AND d2.outcome = 'PENDING'
         AND s.signal_type = 'SELL'
-        AND d2.created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+        AND d2.created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       Group BY d2.id, s.price, s.symbol, s.created_at
       HAVING s.price > 0 AND ((s.price - MIN(i.price)) / s.price * 100) > $1
         AND (SELECT COUNT(*) FROM indicator_snapshots i2
              WHERE i2.symbol = s.symbol
                AND i2.created_at > s.created_at
-               AND i2.created_at < s.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+               AND i2.created_at < s.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
                AND ((s.price - i2.price) / s.price * 100) > $1
             ) >= $2
     ) sub
@@ -1475,7 +1495,7 @@ async function updateOutcomes() {
   await client.query(`
     UPDATE decisions SET outcome = 'CORRECT_PASS'
     WHERE action = 'PASS' AND outcome = 'PENDING'
-    AND created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+    AND created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
   `);
 
   // Also tag non-escalated BUY signals that moved >threshold% sustained as MISSED_OPPORTUNITY
@@ -1489,16 +1509,16 @@ async function updateOutcomes() {
       FROM signals s2
       LEFT JOIN indicator_snapshots i ON i.symbol = s2.symbol
         AND i.created_at > s2.created_at
-        AND i.created_at < s2.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+        AND i.created_at < s2.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       WHERE s2.escalated = false AND s2.signal_type = 'BUY'
         AND s2.outcome = 'PENDING'
-        AND s2.created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+        AND s2.created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       GROUP BY s2.id, s2.price, s2.symbol, s2.created_at
       HAVING s2.price > 0 AND ((MAX(i.price) - s2.price) / s2.price * 100) > $1
         AND (SELECT COUNT(*) FROM indicator_snapshots i2
              WHERE i2.symbol = s2.symbol
                AND i2.created_at > s2.created_at
-               AND i2.created_at < s2.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+               AND i2.created_at < s2.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
                AND ((i2.price - s2.price) / s2.price * 100) > $1
             ) >= $2
     ) sub
@@ -1519,16 +1539,16 @@ async function updateOutcomes() {
       FROM signals s2
       LEFT JOIN indicator_snapshots i ON i.symbol = s2.symbol
         AND i.created_at > s2.created_at
-        AND i.created_at < s2.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+        AND i.created_at < s2.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       WHERE s2.escalated = false AND s2.signal_type = 'SELL'
         AND s2.outcome = 'PENDING'
-        AND s2.created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+        AND s2.created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
       GROUP BY s2.id, s2.price, s2.symbol, s2.created_at
       HAVING s2.price > 0 AND ((s2.price - MIN(i.price)) / s2.price * 100) > $1
         AND (SELECT COUNT(*) FROM indicator_snapshots i2
              WHERE i2.symbol = s2.symbol
                AND i2.created_at > s2.created_at
-               AND i2.created_at < s2.created_at + INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+               AND i2.created_at < s2.created_at + make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
                AND ((s2.price - i2.price) / s2.price * 100) > $1
             ) >= $2
     ) sub
@@ -1542,7 +1562,7 @@ async function updateOutcomes() {
   await client.query(`
     UPDATE signals SET outcome = 'NOT_TRADED'
     WHERE escalated = false AND outcome = 'PENDING'
-    AND created_at < NOW() - INTERVAL '${PASS_EVAL_WINDOW_HOURS} hours'
+    AND created_at < NOW() - make_interval(hours => ${parseInt(PASS_EVAL_WINDOW_HOURS)})
   `);
 
   await client.query('COMMIT');
@@ -1560,11 +1580,12 @@ async function updateOutcomes() {
 const toArray = (val) => Array.isArray(val) ? val : [];
 
 async function saveLearningRules(analysis) {
+  const client = await getClient();
   try {
-    await query('BEGIN');
+    await client.query('BEGIN');
 
     // Deactivate old rules (>7 days)
-    await query(`
+    await client.query(`
       UPDATE learning_rules SET is_active = false
       WHERE is_active = true AND created_at < NOW() - INTERVAL '7 days'
     `);
@@ -1574,8 +1595,9 @@ async function saveLearningRules(analysis) {
     if (toArray(analysis.haiku_rules).length > 0) typesToReplace.push('haiku_escalation');
     if (toArray(analysis.sonnet_rules).length > 0) typesToReplace.push('sonnet_decision');
     if (toArray(analysis.haiku_escalation_calibration).length > 0) typesToReplace.push('haiku_calibration');
+    if (toArray(analysis.exit_rules).length > 0) typesToReplace.push('sonnet_exit');
     if (typesToReplace.length > 0) {
-      const deactivated = await query(`
+      const deactivated = await client.query(`
         UPDATE learning_rules SET is_active = false
         WHERE is_active = true AND rule_type = ANY($1)
       `, [typesToReplace]);
@@ -1588,13 +1610,14 @@ async function saveLearningRules(analysis) {
       ...toArray(analysis.haiku_rules).map(r => ({ type: 'haiku_escalation', text: typeof r === 'string' ? r : JSON.stringify(r) })),
       ...toArray(analysis.sonnet_rules).map(r => ({ type: 'sonnet_decision', text: typeof r === 'string' ? r : JSON.stringify(r) })),
       ...toArray(analysis.haiku_escalation_calibration).map(r => ({ type: 'haiku_calibration', text: typeof r === 'string' ? r : JSON.stringify(r) })),
+      ...toArray(analysis.exit_rules).map(r => ({ type: 'sonnet_exit', text: typeof r === 'string' ? r : JSON.stringify(r) })),
     ];
 
     // Reset sequence to avoid PK conflicts (can drift after manual inserts or partial failures)
-    await query(`SELECT setval(pg_get_serial_sequence('learning_rules', 'id'), COALESCE((SELECT MAX(id) FROM learning_rules), 0) + 1, false)`);
+    await client.query(`SELECT setval(pg_get_serial_sequence('learning_rules', 'id'), COALESCE((SELECT MAX(id) FROM learning_rules), 0) + 1, false)`);
 
     for (const rule of allRules) {
-      await query(`
+      await client.query(`
         INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at)
         VALUES ($1, $2, true, NOW())
         ON CONFLICT (id) DO UPDATE SET
@@ -1605,12 +1628,14 @@ async function saveLearningRules(analysis) {
       `, [rule.type, rule.text]);
     }
 
-    await query('COMMIT');
+    await client.query('COMMIT');
     logger.info(`[Learning] Saved ${allRules.length} learning rules`);
   } catch (error) {
-    await query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch(() => {});
     logger.error(`[Learning] saveLearningRules failed, rolled back: ${error.message}`);
     throw error;
+  } finally {
+    client.release();
   }
 }
 

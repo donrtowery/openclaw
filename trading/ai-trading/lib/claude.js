@@ -21,11 +21,12 @@ const API_TIMEOUT_MS = parseInt(process.env.CLAUDE_API_TIMEOUT_MS || '60000');
  * Wrap an API call with a timeout
  */
 function withTimeout(promise, timeoutMs = API_TIMEOUT_MS, label = 'API call') {
+  let timer;
   return Promise.race([
-    promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
-    ),
+    promise.then(result => { clearTimeout(timer); return result; }),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
   ]);
 }
 
@@ -374,13 +375,18 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
       };
     }
 
-    // Map PARTIAL_EXIT to SELL with exit_percent for compatibility with enforceConfidenceThresholds
+    // Enforce confidence safety net — check before remapping PARTIAL_EXIT
+    parsed = enforceConfidenceThresholds(parsed, config);
+
+    // Map PARTIAL_EXIT to SELL after threshold check (so partial exits use exit threshold, not sell threshold)
     if (parsed.action === 'PARTIAL_EXIT') {
       parsed.action = 'SELL';
+      // Ensure exit_percent is preserved (default to 50% for partials, not 100%)
+      if (!parsed.position_details?.exit_percent) {
+        parsed.position_details = parsed.position_details || {};
+        parsed.position_details.exit_percent = 50;
+      }
     }
-
-    // Enforce confidence safety net
-    parsed = enforceConfidenceThresholds(parsed, config);
 
     // Log signal with EXIT_SCANNER trigger
     const signalId = await logExitSignal(position, analysis, urgency);
@@ -617,6 +623,12 @@ function enforceConfidenceThresholds(decision, config) {
 
   if (decision.action === 'SELL' && decision.confidence < thresholds.sonnet_minimum_for_exit) {
     logger.warn(`[Sonnet] SELL confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_exit}, downgrading to HOLD`);
+    decision.action = 'HOLD';
+  }
+
+  // PARTIAL_EXIT uses a lower threshold than full SELL (less risky action)
+  if (decision.action === 'PARTIAL_EXIT' && decision.confidence < (thresholds.sonnet_minimum_for_exit - 0.10)) {
+    logger.warn(`[Sonnet] PARTIAL_EXIT confidence ${decision.confidence} < ${(thresholds.sonnet_minimum_for_exit - 0.10).toFixed(2)}, downgrading to HOLD`);
     decision.action = 'HOLD';
   }
 

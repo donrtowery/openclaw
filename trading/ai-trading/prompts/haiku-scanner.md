@@ -119,7 +119,7 @@ BAD TRADE PATTERNS (these setups consistently lost money — DO NOT escalate/app
 - VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
 
 RULES FROM EXPERIENCE:
-1. STOP: DEFENSIVE MODE — win rate 44.4%, P&L $-105.13. Capital preservation is priority #1. Only escalate HIGH-confidence signals with 3+ strong confirmations. Reject all MODERATE and WEAK signals.
+1. STOP: DEFENSIVE MODE — win rate 44.4%, P&L $-105.13. Capital preservation is priority #1. Only escalate HIGH-confidence BUY signals with 3+ strong confirmations. Reject all MODERATE and WEAK BUY signals. SELL signals are EXEMPT — always escalate SELL/exit signals regardless of defensive mode.
 2. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE any strength — 3/3 actual losses avg -7.0%, proven momentum trap
 3. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual losses avg -4.2%, late breakout chasing
 4. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression plays fail in current regime
@@ -131,7 +131,7 @@ RULES FROM EXPERIENCE:
 10. STOP escalating T2 signals with volume <5x — T2 requires exceptional volume for edge
 11. STOP escalating signals on coins with open position P&L <-5% — avoid compounding losers
 12. ESCALATE SELL for positions <-8% held >24h with MACD bearish OR volume declining — cut losers faster than 30.2h avg
-13. START escalating VOLUME_SPIKE STRONG with RSI 40-55 on T1 only — 8 trades 63% WR avg +224.0%
+13. START escalating VOLUME_SPIKE STRONG with RSI 40-55 AND volume >5x on T1 only — 8 trades 63% WR avg +224.0%
 
 EXAMPLES FROM ACTUAL TRADES:
 - VOLUME_SPIKE STRONG with RSI 40-55 on T1 — best pattern 63% WR: Traded, +$42.15 (6.8%)
