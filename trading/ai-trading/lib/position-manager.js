@@ -1,9 +1,11 @@
+import { readFileSync } from 'fs';
 import { query, getClient } from '../db/connection.js';
 import logger from './logger.js';
 import { getCurrentPrice, getAllPrices } from './binance.js';
 
-// Trading fee rate (Binance standard: 0.1% per side)
-const FEE_RATE = parseFloat(process.env.TRADING_FEE_RATE || '0.001');
+// Trading fee rate (Binance standard: 0.1% per side) — config > env > default
+const _tradingConfig = (() => { try { return JSON.parse(readFileSync('config/trading.json', 'utf8')); } catch { return {}; } })();
+const FEE_RATE = parseFloat(process.env.TRADING_FEE_RATE || _tradingConfig?.fees?.rate || '0.001');
 
 /**
  * Open a new position

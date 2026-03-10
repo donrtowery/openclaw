@@ -83,14 +83,18 @@
   },
   "learning": {
     "snapshot_retention_days": 30,
-    "missed_opportunity_threshold_pct": 5.0,
+    "missed_opportunity_threshold_pct": 3.0,
     "sustained_candles_required": 12,
     "escalation_conversion_target_min": 15,
     "escalation_conversion_target_max": 30,
-    "pass_evaluation_window_hours": 48,
+    "pass_evaluation_window_hours": 24,
     "defensive_mode_win_rate_threshold": 50,
     "defensive_mode_max_escalation_target": 15,
     "defensive_mode_min_escalate_ratio": 0.2,
     "note": "Nightly Sonnet analysis of closed trades to update prompts"
+  },
+  "fees": {
+    "rate": 0.001,
+    "note": "Per-side trading fee rate. Match to your Binance fee tier."
   }
 }

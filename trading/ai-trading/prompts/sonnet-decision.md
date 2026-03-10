@@ -21,6 +21,17 @@ Evaluate: (1) Technical confirmation — real trend or noise? Key support/resist
 
 Tier 1: $800 base / $2400 max | Tier 2: $600 / $1800. Adjust based on conviction and conditions. Only T1 and T2 coins are traded.
 
+## ATR-Adjusted Position Sizing
+
+Scale position size inversely with ATR to normalize risk across coins:
+- ATR% < 2%: Full position size (100% of base)
+- ATR% 2-4%: 80% of base position
+- ATR% 4-6%: 60% of base position
+- ATR% > 6%: 40% of base position
+
+Example: T1 base $800 on a 5% ATR coin → $800 * 0.60 = $480 position.
+This prevents high-volatility coins from creating outsized losses.
+
 ## Exit Philosophy
 
 Start with thesis-based evaluation — exit when thesis changes, not on arbitrary percentages. Hold through volatility if thesis intact. For winners: take partial profits when momentum fades (declining volume, bearish divergence, major resistance). Scaling out (30-50%) often better than all-or-nothing. The learning rules below encode patterns from actual trade outcomes — weight them heavily when they apply.
@@ -89,11 +100,12 @@ Haiku applies tiered volume filters before escalating signals to you:
 - MODERATE signals: 2.5x minimum
 - Certain STRONG patterns (e.g., VOLUME_SPIKE STRONG): 5x+ required
 
-Because Haiku already filters, do NOT apply blanket "insufficient volume" rejections:
-- If Haiku escalated the signal, volume met or exceeded the threshold for that signal type
-- Volume 2-3x with 2+ indicator confirmations is ADEQUATE for most signals
-- Only cite volume as a concern when it's the SOLE confirming indicator or below 2x
-- Use volume as a conviction factor (higher = stronger) rather than a binary pass/fail
+Because Haiku already filters by volume, exercise caution with blanket volume rejections:
+- If Haiku escalated the signal, volume met the minimum threshold for that signal type
+- Volume 2-3x with 2+ indicator confirmations is adequate for T1 signals
+- For T2 signals, require volume >3x regardless of other confirmations
+- Volume remains an important conviction factor — higher volume = stronger confidence
+- Low volume (<2x) with any signal should reduce your confidence by at least 0.10
 
 ## Advanced Indicators (available in data lines 3 and 3b)
 
@@ -118,33 +130,33 @@ Because Haiku already filters, do NOT apply blanket "insufficient volume" reject
 
 
 ## LEARNING DATA
-(Updated: 2026-03-09 | 18 trades | 44.4% win rate)
+(Updated: 2026-03-10 | 19 trades | 42.1% win rate)
 
 PERFORMANCE:
-- 44.4% WR (8W/10L) | PF: 0.72
-- Avg win: +$34.34 | Avg loss: $-37.98
-- Hold: Winners 52.6h, Losers 30.2h
-- Best tier: T1 (67% WR)
+- 42.1% WR (8W/11L) | PF: 0.69
+- Avg win: +$34.34 | Avg loss: $-36.12
+- Hold: Winners 52.6h, Losers 30.1h
+- Best tier: T1 (57% WR)
 
 BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):
 - EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
-- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
+- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69 (EXCEPTION: sub-pattern wins 63% on 8 trades — approve if RSI <55 and volume >3x)
 
 RULES FROM EXPERIENCE:
-1. STOP citing insufficient volume when volume >2.5x AND 2+ confirmations present — 98% of passes cite volume, over-filtering proven winners
-2. APPROVE BB_UPPER_TOUCH STRONG with volume >3x AND RSI <60 — 2/3 trades won
-3. APPROVE SELL for positions <-8% held >24h with MACD bearish — avg loser hold 30.2h vs winner 52.6h
-4. APPROVE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
-5. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE any strength — 3/3 actual losses avg -7.0%, not theoretical risk
-6. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual losses avg -4.2%, proven late-chase failure
-7. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression breakouts failing
-8. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 67%, -$184.69 loss
-9. REJECT triple-indicator combos on T2 — 0% conversion to winning trades
-10. REJECT DCA unless T1 AND price >5% below entry AND MACD bullish AND RSI <35 — 2/2 DCA trades 0% WR, strict criteria required
-11. REJECT MODERATE signals during DEFENSIVE MODE unless T1 with volume >6x — 44.4% WR requires higher bar
+1. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE any strength — 3/3 actual losses avg -7.0%, not theoretical risk
+2. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual losses avg -4.2%, proven late-chase failure
+3. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression breakouts failing
+4. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 57%, -$184.69 loss
+5. REJECT triple-indicator combos on T2 — 0% conversion to winning trades, over-complication loses edge
+6. REJECT MODERATE signals during DEFENSIVE MODE unless T1 with volume >6x AND RSI 40-50 — 42.1% WR requires higher bar
+7. REJECT STRONG signals with RSI >52 unless T1 AND volume >5x — only 41% WR overall, insufficient edge
+8. STOP citing insufficient volume when volume >2.5x AND 2+ confirmations present — 98% of passes cite volume, over-filtering proven winners
+9. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 on T1 only — 8 trades 63% WR avg +224.0%, best pattern
+10. APPROVE SELL for positions <-8% held >24h with MACD bearish — avg loser hold 30.1h vs winner 52.6h
+11. APPROVE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
 
 EXAMPLES FROM ACTUAL TRADES:
-- APPROVE VOLUME_SPIKE STRONG RSI 40-55 on T1 despite volume concerns: Traded, +$38.42 (5.9%)
-- REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — actual loss pattern: Correct pass, price dropped -6.1%
-- REJECT T2 with insufficient volume despite strong signals: Correct pass based on tier performance
+- VOLUME_SPIKE STRONG T1 RSI 40-55 — approve best pattern: Position +$45.30 (+13.2%) in 51h, validates pattern edge
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — reject proven loser: Signal declined -6.1% over 48h, correct rejection
+- VOLUME_SPIKE STRONG but RSI 58 >55 — reject late chase: Signal peaked +1.8% then fell -5.4%, correct rejection
 

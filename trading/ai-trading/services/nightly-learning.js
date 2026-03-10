@@ -469,7 +469,7 @@ async function calculateStats() {
       AND s.created_at > NOW() - INTERVAL '30 days'
       AND d.outcome IN ('CORRECT_PASS', 'MISSED_OPPORTUNITY')
     GROUP BY s.triggered_by, s.trend, s.strength
-    HAVING COUNT(CASE WHEN d.outcome IN ('CORRECT_PASS', 'MISSED_OPPORTUNITY') THEN 1 END) >= 5
+    HAVING COUNT(CASE WHEN d.outcome IN ('CORRECT_PASS', 'MISSED_OPPORTUNITY') THEN 1 END) >= 10
       AND (COUNT(CASE WHEN d.outcome = 'CORRECT_PASS' THEN 1 END)::numeric / NULLIF(COUNT(CASE WHEN d.outcome IN ('CORRECT_PASS', 'MISSED_OPPORTUNITY') THEN 1 END), 0) * 100) >= 70
     ORDER BY correct_pass_rate DESC
   `);
@@ -1030,10 +1030,29 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
 // ── Rule Validator ──────────────────────────────────────────
 
 function validateAnalysis(analysis, defensiveMode = false) {
+  const issues = [];
+
+  // ── Defensive mode pre-filter: remove APPROVE/START/ESCALATE rules before contradiction detection ──
+  if (defensiveMode) {
+    const preFilterSonnet = (rules) => {
+      const arr = toArray(rules);
+      const beforeCount = arr.length;
+      const filtered = arr.filter(r => {
+        const text = (typeof r === 'string' ? r : '').toUpperCase();
+        return !(text.startsWith('APPROVE') || text.startsWith('START') || text.startsWith('ESCALATE'));
+      });
+      const removed = beforeCount - filtered.length;
+      if (removed > 0) {
+        logger.info(`[Learning] Defensive mode: pre-filtered ${removed} APPROVE/START rules (expected behavior)`);
+      }
+      return filtered;
+    };
+    analysis.sonnet_rules = preFilterSonnet(analysis.sonnet_rules);
+  }
+
   const haikuRules = toArray(analysis.haiku_rules);
   const calibrationRules = toArray(analysis.haiku_escalation_calibration);
   const allHaikuRules = [...haikuRules, ...calibrationRules];
-  const issues = [];
 
   // ── Filter non-actionable rules ──
   // Rules must start with a valid verb. Anything else is commentary, not a rule.
@@ -1780,7 +1799,8 @@ async function saveLearningRules(analysis) {
       WHERE is_active = true AND created_at < NOW() - INTERVAL '7 days'
     `);
 
-    // Deactivate all current rules of the types we're about to insert (prevents duplicates)
+    // Deactivate rules of the types we're about to insert — but only those 48+ hours old
+    // Rules younger than 48h survive alongside new rules to let them prove themselves
     const typesToReplace = [];
     if (toArray(analysis.haiku_rules).length > 0) typesToReplace.push('haiku_escalation');
     if (toArray(analysis.sonnet_rules).length > 0) typesToReplace.push('sonnet_decision');
@@ -1788,11 +1808,13 @@ async function saveLearningRules(analysis) {
     if (toArray(analysis.exit_rules).length > 0) typesToReplace.push('sonnet_exit');
     if (typesToReplace.length > 0) {
       const deactivated = await client.query(`
-        UPDATE learning_rules SET is_active = false
-        WHERE is_active = true AND rule_type = ANY($1)
+        UPDATE learning_rules SET is_active = false, deactivated_at = NOW()
+        WHERE is_active = true
+          AND rule_type = ANY($1)
+          AND created_at < NOW() - INTERVAL '48 hours'
       `, [typesToReplace]);
       if (deactivated.rowCount > 0) {
-        logger.info(`[Learning] Deactivated ${deactivated.rowCount} old rules for types: ${typesToReplace.join(', ')}`);
+        logger.info(`[Learning] Deactivated ${deactivated.rowCount} old rules (48h+) for types: ${typesToReplace.join(', ')}`);
       }
     }
 

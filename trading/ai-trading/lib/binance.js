@@ -141,8 +141,8 @@ export async function placeOrder(symbol, side, quantity, price = null) {
     if (roundedQty <= 0) {
       throw new Error(`Paper order quantity ${quantity} rounds to 0 for ${symbol} (step: ${stepSize})`);
     }
-    // Simulate realistic slippage: 0.02% adverse for market orders
-    const slippagePct = 0.0002;
+    // Simulate realistic slippage: 0.1% adverse for market orders (configurable via env)
+    const slippagePct = parseFloat(process.env.PAPER_SLIPPAGE_PCT || '0.001');
     const fillPrice = side === 'BUY'
       ? basePrice * (1 + slippagePct)
       : basePrice * (1 - slippagePct);
@@ -198,8 +198,14 @@ export async function placeOrder(symbol, side, quantity, price = null) {
     throw new Error(`Order filled 0 quantity: ${result.orderId} for ${symbol}`);
   }
 
-  // Normalize Binance API string responses to numbers for consistent downstream handling
+  // Partial fill warning
   const executedQty = parseFloat(result.executedQty);
+  const requestedQty = parseFloat(result.origQty || quantity);
+  if (requestedQty > 0 && executedQty < requestedQty * 0.90) {
+    logger.warn(`[Binance] Partial fill warning: ${executedQty}/${requestedQty} (${(executedQty/requestedQty*100).toFixed(1)}%) for ${symbol}`);
+  }
+
+  // Normalize Binance API string responses to numbers for consistent downstream handling
   const cummulativeQuoteQty = parseFloat(result.cummulativeQuoteQty) || 0;
   // Compute fill price from actual fills (more accurate than reported price for market orders)
   const fillPrice = cummulativeQuoteQty > 0 ? cummulativeQuoteQty / executedQty : parseFloat(result.price) || 0;

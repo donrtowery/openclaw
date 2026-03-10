@@ -186,7 +186,15 @@ export async function callHaikuBatch(triggeredSignals, config) {
       { maxAttempts: 3, label: `Haiku batch (${triggeredSignals.length} signals)` }
     );
 
-    const responseText = message.content[0].text;
+    const responseText = message.content?.[0]?.text;
+    if (!responseText) {
+      logger.error('[Haiku] Empty response — no text content returned');
+      return triggeredSignals.map(ts => ({
+        symbol: ts.symbol, signal: 'NONE', strength: 'WEAK',
+        escalate: false, confidence: 0, reasons: ['Empty AI response'],
+        concerns: ['API returned no content'], _fallback: true,
+      }));
+    }
     const inputTokens = message.usage.input_tokens;
     const outputTokens = message.usage.output_tokens;
     const cacheRead = message.usage.cache_read_input_tokens || 0;
@@ -294,7 +302,12 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
       { maxAttempts: 3, label: `Sonnet decision (${triggeredSignal.symbol})` }
     );
 
-    const responseText = message.content[0].text;
+    const responseText = message.content?.[0]?.text;
+    if (!responseText) {
+      logger.error(`[Sonnet] Empty response for ${triggeredSignal.symbol}`);
+      return { action: 'PASS', symbol: triggeredSignal.symbol, confidence: 0,
+        reasoning: 'Empty AI response — auto-PASS', _fallback: true };
+    }
     const inputTokens = message.usage.input_tokens;
     const outputTokens = message.usage.output_tokens;
     const cacheRead = message.usage.cache_read_input_tokens || 0;
@@ -643,9 +656,15 @@ function formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioS
 /**
  * Enforce confidence safety net — downgrades low-confidence actions
  */
+let _confThresholdWarned = false;
 function enforceConfidenceThresholds(decision, config) {
   const thresholds = config.confidence_thresholds;
   if (!thresholds) return decision;
+
+  if (!_confThresholdWarned && thresholds.sonnet_minimum_for_dca > thresholds.sonnet_minimum_for_new_entry) {
+    logger.warn('[Config] WARNING: DCA confidence threshold exceeds entry threshold — DCA requires MORE confidence than new entries');
+    _confThresholdWarned = true;
+  }
 
   if (decision.action === 'BUY' && decision.confidence < thresholds.sonnet_minimum_for_new_entry) {
     logger.warn(`[Sonnet] BUY confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_new_entry}, downgrading to PASS`);

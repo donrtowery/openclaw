@@ -45,6 +45,24 @@ const lastSonnetEvaluation = new Map();
 let dailyTradeCount = 0;
 let dailyTradeDate = new Date().toISOString().split('T')[0];
 
+// Per-symbol position locking — prevents concurrent buy/sell/DCA on same symbol
+const positionLocks = new Map();
+
+async function withPositionLock(symbol, fn) {
+  while (positionLocks.has(symbol)) {
+    await positionLocks.get(symbol).catch(() => {});
+  }
+  let resolve;
+  const lockPromise = new Promise(r => { resolve = r; });
+  positionLocks.set(symbol, lockPromise);
+  try {
+    return await fn();
+  } finally {
+    positionLocks.delete(symbol);
+    resolve();
+  }
+}
+
 // ── Startup ─────────────────────────────────────────────────
 
 async function start() {
@@ -301,6 +319,29 @@ async function runCycle() {
       toEscalate.push({ triggered, haikuResult });
     }
 
+    // Hard escalation throttle — if rolling 24h rate exceeds 35%, raise minimum confidence
+    try {
+      const escRateResult = await query(`
+        SELECT COUNT(*) as total,
+          COUNT(*) FILTER (WHERE escalated = true) as escalated
+        FROM signals WHERE created_at > NOW() - INTERVAL '24 hours'
+      `);
+      const rollingTotal = parseInt(escRateResult.rows[0]?.total) || 0;
+      const rollingEscalated = parseInt(escRateResult.rows[0]?.escalated) || 0;
+      const rollingEscRate = rollingTotal > 20 ? (rollingEscalated / rollingTotal * 100) : 0;
+
+      if (rollingEscRate > 35) {
+        const minConf = 0.75;
+        const beforeCount = toEscalate.length;
+        toEscalate = toEscalate.filter(s => s.haikuResult.confidence >= minConf);
+        if (toEscalate.length < beforeCount) {
+          logger.warn(`[Engine] Escalation throttle: filtered ${beforeCount - toEscalate.length} signals (24h rate ${rollingEscRate.toFixed(1)}% > 35%, min conf raised to ${minConf})`);
+        }
+      }
+    } catch (throttleErr) {
+      logger.warn(`[Engine] Escalation throttle check failed: ${throttleErr.message}`);
+    }
+
     signalsEscalated = toEscalate.length;
 
     // Process all escalated signals through Sonnet in parallel
@@ -395,9 +436,9 @@ async function processEscalatedSignal(triggered, haikuResult, news, portfolio, l
   // Call Sonnet (context pre-fetched by caller)
   const decision = await callSonnet(haikuResult, triggered, news, portfolio, learningRules, tradingConfig);
 
-  // Execute if actionable
+  // Execute if actionable (with per-symbol lock to prevent concurrent operations)
   if (['BUY', 'SELL', 'DCA', 'PARTIAL_EXIT'].includes(decision.action)) {
-    return await executeDecision(decision, triggered);
+    return await withPositionLock(symbol, () => executeDecision(decision, triggered));
   }
 
   // Non-actionable (PASS/HOLD) — mark decision so it's not orphaned
@@ -461,6 +502,15 @@ async function executeDecision(decision, triggered) {
 async function executeBuy(decision, triggered) {
   const { symbol, tier } = triggered;
 
+  // Fresh drawdown check (cycle-start check may be stale after earlier trades)
+  const freshPortfolio = await getCachedPortfolio();
+  const maxDrawdownPct = tradingConfig.circuit_breaker.max_drawdown_percent || 10;
+  if (freshPortfolio.unrealized_pnl_percent < -maxDrawdownPct) {
+    const reason = `BUY rejected — drawdown protection (${freshPortfolio.unrealized_pnl_percent.toFixed(1)}% < -${maxDrawdownPct}%)`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
   // Check max positions
   const openPositions = await getOpenPositions();
   if (openPositions.length >= tradingConfig.account.max_concurrent_positions) {
@@ -501,7 +551,7 @@ async function executeBuy(decision, triggered) {
   // Confidence-scaled sizing: scale down for lower confidence
   const confScaling = tradingConfig.position_sizing.confidence_scaling !== false;
   if (confScaling && decision.confidence < 0.85) {
-    const scaleFactor = Math.min(decision.confidence / 0.75, 1.0); // 0.65 conf → 0.87x, 0.75 conf → 1.0x
+    const scaleFactor = Math.min(Math.pow(decision.confidence / 0.85, 2), 1.0); // Quadratic: 0.65→0.58x, 0.70→0.68x, 0.75→0.78x, 0.80→0.89x, 0.85+→1.0x
     const scaledSize = Math.round(positionSizeUsd * scaleFactor);
     if (scaledSize < positionSizeUsd) {
       logger.info(`[Engine] ${symbol}: Confidence-scaled sizing: $${positionSizeUsd} → $${scaledSize} (conf:${decision.confidence})`);
@@ -597,6 +647,12 @@ async function executeSell(decision, triggered) {
     tradingConfig.account.paper_trading
   );
 
+  // Clear Sonnet dedup on full exit so symbol can be re-entered immediately
+  const exitPercent = parseFloat(decision.position_details?.exit_percent) || 100;
+  if (closeResult.isFull || exitPercent >= 99) {
+    lastSonnetEvaluation.delete(symbol);
+  }
+
   // Circuit breaker tracking — any loss increments, any profit resets
   if (closeResult.pnl < 0) {
     await recordLoss(symbol, closeResult.pnl);
@@ -627,6 +683,14 @@ async function executeDCA(decision, triggered) {
   const position = await getPositionBySymbol(symbol);
   if (!position) {
     const reason = 'DCA rejected — no open position';
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
+  // Block DCA when overall performance is poor
+  const dcaPortfolioCheck = await getCachedPortfolio();
+  if (dcaPortfolioCheck.win_rate < 50) {
+    const reason = `DCA blocked — overall win rate ${dcaPortfolioCheck.win_rate.toFixed(1)}% < 50%. Fix base strategy before averaging down.`;
     logger.warn(`[Engine] ${symbol}: ${reason}`);
     return { escalated: true, executed: false, reason };
   }
@@ -823,7 +887,7 @@ async function runExitScanCycle() {
       const isPartial = exitPercent < 99;
 
       const triggered = { symbol: position.symbol, tier: position.tier };
-      const result = await executeSell(decision, triggered);
+      const result = await withPositionLock(position.symbol, () => executeSell(decision, triggered));
 
       if (result.executed) {
         exitsExecuted++;
@@ -1087,7 +1151,7 @@ async function getEscalationConfidenceFloor() {
     let elevated = false;
     if (convRate > targetMax) {
       const overshootRatio = (convRate - targetMax) / targetMax;
-      const boost = Math.min(overshootRatio * 0.15, 0.20);
+      const boost = Math.min(overshootRatio * 0.30, 0.25);
       floor = baseFloor + boost;
       elevated = true;
       logger.info(`[Engine] Escalation confidence floor ELEVATED: ${floor.toFixed(2)} (conversion ${convRate.toFixed(1)}% > ${targetMax}% target, boost +${boost.toFixed(2)})`);

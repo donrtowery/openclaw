@@ -103,6 +103,7 @@ async function fetchBraveNews(coinName) {
 export async function getNewsContext(symbol, coinName, maxItems = 3) {
   const cached = newsCache.get(symbol);
   if (cached && (Date.now() - cached.timestamp) < CACHE_TTL_MS) {
+    cached.lastAccess = Date.now();
     return formatNewsResults(coinName, cached.results, maxItems);
   }
 
@@ -110,11 +111,17 @@ export async function getNewsContext(symbol, coinName, maxItems = 3) {
     // Try CryptoCompare first (free)
     const results = await fetchCryptoCompareNews(symbol, coinName);
     if (newsCache.size >= MAX_CACHE_SIZE) {
-      // Evict oldest entry
-      const oldestKey = newsCache.keys().next().value;
-      newsCache.delete(oldestKey);
+      // LRU eviction — remove least recently accessed entry
+      let oldestKey = null, oldestAccess = Infinity;
+      for (const [key, val] of newsCache) {
+        if ((val.lastAccess || val.timestamp) < oldestAccess) {
+          oldestAccess = val.lastAccess || val.timestamp;
+          oldestKey = key;
+        }
+      }
+      if (oldestKey) newsCache.delete(oldestKey);
     }
-    newsCache.set(symbol, { results, timestamp: Date.now() });
+    newsCache.set(symbol, { results, timestamp: Date.now(), lastAccess: Date.now() });
     logger.info(`[News] CryptoCompare: ${symbol} (${results.length} results)`);
     return formatNewsResults(coinName, results, maxItems);
   } catch (ccError) {
@@ -126,10 +133,16 @@ export async function getNewsContext(symbol, coinName, maxItems = 3) {
     const results = await fetchBraveNews(coinName);
     if (results.length > 0) {
       if (newsCache.size >= MAX_CACHE_SIZE) {
-        const oldestKey = newsCache.keys().next().value;
-        newsCache.delete(oldestKey);
+        let oldestKey = null, oldestAccess = Infinity;
+        for (const [key, val] of newsCache) {
+          if ((val.lastAccess || val.timestamp) < oldestAccess) {
+            oldestAccess = val.lastAccess || val.timestamp;
+            oldestKey = key;
+          }
+        }
+        if (oldestKey) newsCache.delete(oldestKey);
       }
-      newsCache.set(symbol, { results, timestamp: Date.now() });
+      newsCache.set(symbol, { results, timestamp: Date.now(), lastAccess: Date.now() });
       logger.info(`[News] Brave fallback: ${symbol} (${results.length} results)`);
       return formatNewsResults(coinName, results, maxItems);
     }

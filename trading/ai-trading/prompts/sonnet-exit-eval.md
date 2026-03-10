@@ -92,21 +92,31 @@ Valid JSON only:
 - Low ATR (<2%): Tighter drawdowns matter more — act on smaller reversals.
 
 ## LEARNING DATA
-(Updated: 2026-03-09 | 18 trades | 44.4% win rate)
+(Updated: 2026-03-10 | 19 trades | 42.1% win rate)
 
 EXIT TIMING ANALYSIS:
-- slow_loss_cut: 10 trades, avg P&L -5.6%, avg max gain 0.6%, avg hold 30.2h
+- slow_loss_cut: 11 trades, avg P&L -5.3%, avg max gain 0.5%, avg hold 30.1h
 - late_exit_winner: 2 trades, avg P&L 0.7%, avg max gain 7.6%, avg hold 51.4h
-- good_exit: 6 trades, avg P&L 5.2%, avg max gain 7.5%, avg hold 53.0h
+- good_exit: 4 trades, avg P&L 15.3%, avg max gain 7.2%, avg hold 52.8h
 
 HOLD TIME COMPARISON:
 - Winners: 52.6h avg hold
-- Losers: 30.2h avg hold
+- Losers: 30.1h avg hold
+
+BAD TRADE PATTERNS (these setups consistently lost money — exit faster if held):
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
+- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
 
 EXIT RULES FROM EXPERIENCE:
-1. EXIT positions <-8% held >24h with MACD bearish OR declining volume — avg loser held 30.2h vs winner 52.6h
-2. EXIT winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
-3. HOLD T1 winners with RSI 50-70 AND MACD bullish AND hold time <48h — avg winner gains at 52.6h hold
-4. TRAIL winners >6% with 5% trailing stop if RSI <75 AND MACD bullish — protect gains with room to run
-5. EXIT T2 positions at -10% if volume <1.5x AND MACD bearish — T2 tolerance lower than T1
-6. PARTIAL_EXIT 50% of winners >8% held >48h if RSI >68 — de-risk while preserving upside
+1. EXIT positions <-8% held >24h when MACD bearish OR volume declining — slow_loss_cut pattern avg -5.3%, cut faster than 30.1h avg
+2. EXIT winners held >60h when RSI >70 OR price >8% above EMA(8) — late_exit_winner pattern avg max gain 7.6%, lock before reversal
+3. EXIT T2 positions <-6% held >18h when volume drops below 2x — T2 33% WR requires stricter discipline
+4. HOLD winners with RSI 45-65 AND MACD bullish AND volume >1.5x — good_exit pattern avg +15.3%, let thesis run
+5. TRAIL T1 winners >10% with 5% trailing stop when RSI >60 — balance volatility tolerance with profit protection
+
+## Signal-to-Exit Pattern Mapping
+- slow_loss_cut → Entry patterns: EMA_BULLISH_CROSSOVER, VOLUME_SPIKE STRONG with RSI >55
+- late_exit_winner → Entry patterns: VOLUME_SPIKE MODERATE/STRONG with favorable RSI
+- good_exit → Entry patterns: VOLUME_SPIKE STRONG T1 RSI 40-55 (best pattern)
+
+Use this mapping to identify which current positions match losing entry patterns and should be cut faster.

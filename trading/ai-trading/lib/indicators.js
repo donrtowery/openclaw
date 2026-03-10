@@ -10,7 +10,7 @@ export function calcRSI(closes) {
   try {
     const values = RSI.calculate({ values: closes, period: 14 });
     if (values.length === 0) return null;
-    const value = Math.round(values[values.length - 1] * 100) / 100;
+    const value = values[values.length - 1];
     let signal = 'NEUTRAL';
     if (value < 30) signal = 'OVERSOLD';
     else if (value < 40) signal = 'APPROACHING_OVERSOLD';
@@ -43,9 +43,9 @@ export function calcMACD(closes) {
     const prev = values[values.length - 2];
     if (current.MACD == null || current.signal == null) return null;
 
-    const macd = Math.round(current.MACD * 1000) / 1000;
-    const signal = Math.round(current.signal * 1000) / 1000;
-    const histogram = Math.round(current.histogram * 1000) / 1000;
+    const macd = current.MACD;
+    const signal = current.signal;
+    const histogram = current.histogram;
 
     let crossover = 'NEUTRAL';
     if (prev.MACD != null && prev.signal != null) {
@@ -82,7 +82,7 @@ export function calcSMAs(closes, periods) {
       }
       const values = SMA.calculate({ values: closes, period });
       result[`sma${period}`] = values.length > 0
-        ? Math.round(values[values.length - 1] * 100) / 100
+        ? values[values.length - 1]
         : null;
     } catch {
       result[`sma${period}`] = null;
@@ -103,7 +103,7 @@ export function calcEMAs(closes, periods) {
     try {
       const values = EMA.calculate({ values: closes, period });
       result[`ema${period}`] = values.length > 0
-        ? Math.round(values[values.length - 1] * 100) / 100
+        ? values[values.length - 1]
         : null;
     } catch {
       result[`ema${period}`] = null;
@@ -129,9 +129,9 @@ export function calcBollingerBands(closes, currentPrice) {
     const values = BollingerBands.calculate({ values: closes, period: 20, stdDev: 2 });
     if (values.length === 0) return null;
     const bb = values[values.length - 1];
-    const upper = Math.round(bb.upper * 100) / 100;
-    const middle = Math.round(bb.middle * 100) / 100;
-    const lower = Math.round(bb.lower * 100) / 100;
+    const upper = bb.upper;
+    const middle = bb.middle;
+    const lower = bb.lower;
 
     const bandWidth = upper - lower;
     const avgWidth = middle * 0.04; // ~4% is "normal" width
@@ -141,7 +141,9 @@ export function calcBollingerBands(closes, currentPrice) {
 
     let position = 'MIDDLE';
     const range = upper - lower;
-    if (range > 0) {
+    if (!range || range <= 0 || !isFinite(range)) {
+      position = 'MIDDLE';
+    } else {
       const pctInBand = (currentPrice - lower) / range;
       if (pctInBand < 0.2) position = 'LOWER';
       else if (pctInBand > 0.8) position = 'UPPER';
@@ -159,7 +161,7 @@ export function calcBollingerBands(closes, currentPrice) {
  * @param {{ volume: number }[]} candles - 1h candles
  * @returns {{ current, avg24h, ratio, trend } | null}
  */
-export function calcVolume(candles) {
+export function calcVolume(candles, config) {
   try {
     if (candles.length < 25) return null;
     // Use second-to-last candle — last candle is still forming and has incomplete volume
@@ -177,8 +179,9 @@ export function calcVolume(candles) {
     let trend = 'STABLE';
     if (avgPrior6 > 0) {
       const change = (avg6 - avgPrior6) / avgPrior6;
-      if (change > 0.2) trend = 'INCREASING';
-      else if (change < -0.2) trend = 'DECREASING';
+      const trendThreshold = config?.volume_trend_threshold || 0.2;
+      if (change > trendThreshold) trend = 'INCREASING';
+      else if (change < -trendThreshold) trend = 'DECREASING';
     }
 
     return {
@@ -319,7 +322,7 @@ export function calcATR(candles) {
     const closes = candles.map(c => c.close);
     const values = ATR.calculate({ high: highs, low: lows, close: closes, period: 14 });
     if (values.length === 0) return null;
-    const value = Math.round(values[values.length - 1] * 10000) / 10000;
+    const value = values[values.length - 1];
     const currentPrice = closes[closes.length - 1];
     const percent = currentPrice > 0 ? Math.round((value / currentPrice) * 10000) / 100 : 0;
     return { value, percent };
@@ -346,8 +349,8 @@ export function calcStochasticRSI(closes) {
     });
     if (values.length === 0) return null;
     const current = values[values.length - 1];
-    const k = Math.round(current.k * 100) / 100;
-    const d = Math.round(current.d * 100) / 100;
+    const k = current.k;
+    const d = current.d;
     let signal = 'NEUTRAL';
     if (k < 20 && d < 20) signal = 'OVERSOLD';
     else if (k > 80 && d > 80) signal = 'OVERBOUGHT';
@@ -376,9 +379,9 @@ export function calcADX(candles) {
     const values = ADX.calculate({ high: highs, low: lows, close: closes, period: 14 });
     if (values.length === 0) return null;
     const current = values[values.length - 1];
-    const value = Math.round(current.adx * 100) / 100;
-    const pdi = Math.round(current.pdi * 100) / 100;
-    const mdi = Math.round(current.mdi * 100) / 100;
+    const value = current.adx;
+    const pdi = current.pdi;
+    const mdi = current.mdi;
     let signal = 'WEAK_TREND';
     if (value >= 25) {
       signal = pdi > mdi ? 'STRONG_BULLISH' : 'STRONG_BEARISH';
