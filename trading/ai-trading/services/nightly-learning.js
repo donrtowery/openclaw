@@ -74,7 +74,7 @@ async function run() {
   const escConvRate = totalEscalated > 0 ? (totalTraded / totalEscalated * 100).toFixed(1) : '0.0';
   logger.info(`[Learning] Escalation accuracy: ${totalEscalated} escalated → ${totalTraded} traded (${escConvRate}%), ${totalPassed} PASSed`);
   logger.info(`[Learning] PASS outcomes: ${parseInt(stats.pass_outcome_summary.correct_pass) || 0} CORRECT_PASS, ${parseInt(stats.pass_outcome_summary.missed_opportunity) || 0} MISSED_OPPORTUNITY`);
-  logger.info(`[Learning] PASS patterns (Sonnet rejects, min 5 samples): ${stats.pass_patterns.length} | Missed escalation patterns: ${stats.missed_escalation_patterns.length}`);
+  logger.info(`[Learning] PASS patterns (Sonnet rejects, min 10 samples): ${stats.pass_patterns.length} | Missed escalation patterns: ${stats.missed_escalation_patterns.length}`);
   if (stats.pass_reasoning_themes.length > 0) {
     const themes = stats.pass_reasoning_themes.map(t => `${t.rejection_theme}(${t.cnt})`).join(', ');
     logger.info(`[Learning] PASS rejection themes: ${themes}`);
@@ -146,7 +146,7 @@ async function run() {
     let corrective;
     if (defensiveStagnant) {
       // Stagnant defensive mode — relax to allow T1 MODERATE signals to break the deadlock
-      logger.warn(`[Learning] DEFENSIVE MODE STAGNANT: Only ${parseInt(trajectoryRows[0]?.total_trades || 0) - parseInt(trajectoryRows[trajectoryRows.length - 1]?.total_trades || 0)} new trades across ${trajectoryRows.length} sessions. Relaxing to cautious mode.`);
+      logger.warn(`[Learning] DEFENSIVE MODE STAGNANT: Only ${tradesSinceOldest} new trades across ${trajectoryRows.length} sessions. Relaxing to cautious mode.`);
       const stagnationSessions = config.escalation?.stagnation_sessions_to_override || 3;
       const stagnationFloor = config.escalation?.stagnation_confidence_floor || 0.50;
       if (trajectoryRows.length >= stagnationSessions && tradesSinceOldest === 0) {
@@ -820,7 +820,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     allMissed.push(`[SELL_PASS] ${m.symbol} Haiku:${m.haiku_strength} -${capGain(m.potential_drop_pct)}%`);
   }
   if (allMissed.length > 0) {
-    prompt += `MISSED OPPORTUNITIES (price moved >${MISSED_OPP_THRESHOLD}% sustained for ${SUSTAINED_CANDLES}+ candles in 24h):\n`;
+    prompt += `MISSED OPPORTUNITIES (price moved >${MISSED_OPP_THRESHOLD}% within 24h):\n`;
     for (const line of allMissed) {
       prompt += `${line}\n`;
     }
@@ -877,7 +877,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
 
   // Patterns Sonnet consistently passes on
   if (stats.pass_patterns.length > 0) {
-    prompt += `PATTERNS SONNET CONSISTENTLY PASSES (>=70% PASS rate, min 5 samples):\n`;
+    prompt += `PATTERNS SONNET CONSISTENTLY PASSES (>=70% PASS rate, min 10 samples):\n`;
     for (const p of stats.pass_patterns) {
       const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
       prompt += `${triggers} (${p.trend}) ${p.strength}: ${p.total} escalated, ${p.correct_pass_rate}% PASSed\n`;
@@ -1049,6 +1049,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
         haiku_rules: [],
         sonnet_rules: [],
         haiku_escalation_calibration: [],
+        exit_rules: [],
         haiku_few_shots: [],
         sonnet_few_shots: [],
         rule_changes: 'Truncated at max_tokens — no changes this cycle',
@@ -1066,6 +1067,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
         haiku_rules: [],
         sonnet_rules: [],
         haiku_escalation_calibration: [],
+        exit_rules: [],
         haiku_few_shots: [],
         sonnet_few_shots: [],
         rule_changes: 'Parse failure — no changes this cycle',
@@ -1392,7 +1394,7 @@ async function updatePromptFiles(stats, analysis, defensiveMode = false) {
     ...toArray(analysis.haiku_rules),
     ...toArray(analysis.haiku_escalation_calibration),
   ]).slice(0, 15);
-  const sonnetRules = analysis.sonnet_rules || [];
+  const sonnetRules = toArray(analysis.sonnet_rules);
 
   // ── Sonnet section with losing trade patterns ──
   let sonnetSection = perfHeader;

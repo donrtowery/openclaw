@@ -362,7 +362,7 @@ async function runCycle() {
         checkCircuitBreaker(),
         getMarketRegime(),
       ]);
-      const sharedPortfolio = {
+      let sharedPortfolio = {
         ...cachedPortfolio,
         circuit_breaker_active: cb.is_active,
         consecutive_losses: cb.consecutive_losses,
@@ -386,6 +386,10 @@ async function runCycle() {
           if (result.executed) {
             tradesExecuted++;
             dailyTradeCount++;
+            // Refresh portfolio so the next signal in this cycle sees updated capital/positions
+            invalidatePortfolioCache();
+            const refreshedPortfolio = await getCachedPortfolio();
+            sharedPortfolio = { ...refreshedPortfolio, circuit_breaker_active: cb.is_active, consecutive_losses: cb.consecutive_losses };
           }
         } catch (error) {
           logger.error(`[Engine] Error processing ${triggered.symbol}: ${error.message}`);

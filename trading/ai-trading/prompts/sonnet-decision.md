@@ -86,7 +86,7 @@ Valid JSON only:
 
 **Smart Pass:** OP — RSI 34 but MACD still bearish, 13% below SMA200 (downtrend not dip), 30M token unlock next week, Base surpassing OP in txns. Falling knife with inverted risk/reward. PASS, conf 0.40. Need MACD crossover + price above EMA21 to reconsider.
 
-**Partial Exit:** ETH — Up 5.6%, RSI 74, MACD histogram shrinking, volume declining 2.1x→1.2x. Classic topping signals but trend technically intact. SELL 50%, conf 0.78. Lock profit, let rest run.
+**Partial Exit:** ETH — Up 5.6%, RSI 74, MACD histogram shrinking, volume declining 2.1x→1.2x. Classic topping signals but trend technically intact. PARTIAL_EXIT 50%, conf 0.78. Lock profit, let rest run.
 
 **Hold Through Volatility:** AVAX — Down 3% but RSI 46, MACD positive, above SMA200. All key levels intact, thesis unchanged. This is noise. HOLD, conf 0.85.
 

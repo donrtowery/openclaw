@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { readFileSync } from 'fs';
 import dotenv from 'dotenv';
 import logger from './logger.js';
 
@@ -12,6 +13,9 @@ const API_SECRET = process.env.BINANCE_SECRET_KEY;
  * Generate HMAC-SHA256 signature for authenticated requests
  */
 function sign(queryString) {
+  if (!API_SECRET) {
+    throw new Error('BINANCE_SECRET_KEY environment variable is not set');
+  }
   return crypto
     .createHmac('sha256', API_SECRET)
     .update(queryString)
@@ -145,7 +149,7 @@ export async function placeOrder(symbol, side, quantity, price = null) {
     const defaultSlippage = parseFloat(process.env.PAPER_SLIPPAGE_PCT || '0.001');
     const slippagePct = (() => {
       try {
-        const config = JSON.parse(require('fs').readFileSync('config/trading.json', 'utf8'));
+        const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
         // Check tier 1 symbols first (lower slippage)
         const t1Label = config.position_sizing?.tier_1?.label || '';
         const symbolBase = symbol.replace('USDT', '');
