@@ -17,6 +17,40 @@ export { anthropic };
 
 const API_TIMEOUT_MS = parseInt(process.env.CLAUDE_API_TIMEOUT_MS || '60000');
 
+// ── API Cost Tracker ──
+const apiCostTracker = {
+  haiku_input_tokens: 0,
+  haiku_output_tokens: 0,
+  sonnet_input_tokens: 0,
+  sonnet_output_tokens: 0,
+  haiku_cache_read_tokens: 0,
+  sonnet_cache_read_tokens: 0,
+  calls: { haiku: 0, sonnet: 0 },
+  reset_time: Date.now(),
+};
+
+export function getApiCosts() {
+  // Pricing per million tokens (as of 2026)
+  const HAIKU_INPUT = 0.80, HAIKU_OUTPUT = 4.00, HAIKU_CACHE = 0.08;
+  const SONNET_INPUT = 3.00, SONNET_OUTPUT = 15.00, SONNET_CACHE = 0.30;
+  const haikuCost = (apiCostTracker.haiku_input_tokens * HAIKU_INPUT + apiCostTracker.haiku_output_tokens * HAIKU_OUTPUT + apiCostTracker.haiku_cache_read_tokens * HAIKU_CACHE) / 1_000_000;
+  const sonnetCost = (apiCostTracker.sonnet_input_tokens * SONNET_INPUT + apiCostTracker.sonnet_output_tokens * SONNET_OUTPUT + apiCostTracker.sonnet_cache_read_tokens * SONNET_CACHE) / 1_000_000;
+  return {
+    haiku: { cost: parseFloat(haikuCost.toFixed(4)), calls: apiCostTracker.calls.haiku },
+    sonnet: { cost: parseFloat(sonnetCost.toFixed(4)), calls: apiCostTracker.calls.sonnet },
+    total_cost: parseFloat((haikuCost + sonnetCost).toFixed(4)),
+    since: new Date(apiCostTracker.reset_time).toISOString(),
+  };
+}
+
+export function resetApiCosts() {
+  Object.keys(apiCostTracker).forEach(k => {
+    if (typeof apiCostTracker[k] === 'number') apiCostTracker[k] = 0;
+    else if (typeof apiCostTracker[k] === 'object') Object.keys(apiCostTracker[k]).forEach(j => apiCostTracker[k][j] = 0);
+  });
+  apiCostTracker.reset_time = Date.now();
+}
+
 /**
  * Wrap an API call with a timeout
  */
@@ -219,6 +253,11 @@ export async function callHaikuBatch(triggeredSignals, config) {
     const cacheCreation = message.usage.cache_creation_input_tokens || 0;
     const duration = Date.now() - startTime;
 
+    apiCostTracker.haiku_input_tokens += inputTokens;
+    apiCostTracker.haiku_output_tokens += outputTokens;
+    apiCostTracker.haiku_cache_read_tokens += (message.usage.cache_read_input_tokens || 0);
+    apiCostTracker.calls.haiku++;
+
     logger.info(`[Haiku] ${triggeredSignals.length} signal(s) evaluated in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read, ${cacheCreation} created`);
 
     // Parse response — could be single object or array
@@ -349,6 +388,11 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
     const cacheRead = message.usage.cache_read_input_tokens || 0;
     const duration = Date.now() - startTime;
 
+    apiCostTracker.sonnet_input_tokens += inputTokens;
+    apiCostTracker.sonnet_output_tokens += outputTokens;
+    apiCostTracker.sonnet_cache_read_tokens += cacheRead;
+    apiCostTracker.calls.sonnet++;
+
     logger.info(`[Sonnet] ${triggeredSignal.symbol} decided in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
 
     let parsed;
@@ -446,6 +490,11 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
     const outputTokens = message.usage.output_tokens;
     const cacheRead = message.usage.cache_read_input_tokens || 0;
     const duration = Date.now() - startTime;
+
+    apiCostTracker.sonnet_input_tokens += inputTokens;
+    apiCostTracker.sonnet_output_tokens += outputTokens;
+    apiCostTracker.sonnet_cache_read_tokens += cacheRead;
+    apiCostTracker.calls.sonnet++;
 
     logger.info(`[Sonnet-Exit] ${position.symbol} evaluated in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
 
@@ -659,6 +708,13 @@ function formatHaikuInput(triggeredSignal) {
     msg += `\nNO OPEN POSITION — do not escalate SELL signals.\n`;
   }
 
+  if (triggeredSignal.market_regime) {
+    const mr = triggeredSignal.market_regime;
+    msg += `\nMarket: ${mr.regime} (BTC ${mr.btc_trend}, RSI ${mr.btc_rsi})\n`;
+    if (mr.regime === 'BEAR') msg += `*** BEAR MARKET — reduce escalation, prioritize SELL ***\n`;
+    else if (mr.regime === 'CAUTIOUS') msg += `Caution: BTC showing weakness\n`;
+  }
+
   return msg;
 }
 
@@ -840,6 +896,11 @@ async function logDecision(signalId, sonnetResponse, promptSnapshot, tokensUsed)
     } catch { /* best effort */ }
   }
 
+  // Cap prompt snapshot at 4KB to prevent DB bloat (~50+ decisions/day)
+  const cappedSnapshot = promptSnapshot && promptSnapshot.length > 4096
+    ? promptSnapshot.substring(0, 4000) + '\n\n[...truncated...]'
+    : promptSnapshot;
+
   const result = await query(`
     INSERT INTO decisions (
       signal_id, symbol, action, confidence, reasoning, risk_assessment,
@@ -856,7 +917,7 @@ async function logDecision(signalId, sonnetResponse, promptSnapshot, tokensUsed)
     sonnetResponse.reasoning || '',
     sonnetResponse.risk_assessment || '',
     sonnetResponse.alternative_considered || '',
-    promptSnapshot,
+    cappedSnapshot,
     'PENDING',
     sonnetResponse.position_details?.entry_price ?? null,
     sonnetResponse.position_details?.position_size_coin ?? null,

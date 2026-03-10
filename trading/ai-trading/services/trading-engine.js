@@ -15,6 +15,7 @@ import {
 } from '../lib/position-manager.js';
 import { queueEvent } from '../lib/events.js';
 import { sendAlert } from '../lib/sms.js';
+import { analyzeSymbol } from '../lib/technical-analysis.js';
 import logger from '../lib/logger.js';
 
 // ── Config ──────────────────────────────────────────────────
@@ -238,6 +239,12 @@ async function runCycle() {
   // 3. Process triggered signals through Haiku (batched)
 
   if (scanResult.triggered.length > 0) {
+    // Inject market regime into triggered signals for Haiku context
+    const regime = await getMarketRegime();
+    for (const sig of scanResult.triggered) {
+      sig.market_regime = regime;
+    }
+
     const haikuResults = await callHaikuBatch(scanResult.triggered, tradingConfig);
 
     // Filter to escalatable signals first, then process in parallel
@@ -394,7 +401,8 @@ async function runCycle() {
 
   // 4. Exit scanner — ALWAYS runs, even during circuit breaker / drawdown protection
   const exitConfig = tradingConfig.exit_scanner || {};
-  const exitInterval = exitConfig.interval_cycles || 3;
+  const regime = await getMarketRegime();
+  const exitInterval = (regime.regime === 'BEAR' || regime.regime === 'CAUTIOUS') ? 1 : (exitConfig.interval_cycles || 3);
   if (exitConfig.enabled !== false && (cycleCount === 1 || cycleCount % exitInterval === 0)) {
     try {
       await runExitScanCycle();
@@ -1257,7 +1265,7 @@ async function getMarketRegime() {
   }
   try {
     const btcPrice = await getCurrentPrice('BTCUSDT');
-    const btcAnalysis = await import('../lib/technical-analysis.js').then(m => m.analyzeSymbol('BTCUSDT'));
+    const btcAnalysis = await analyzeSymbol('BTCUSDT');
 
     const btcTrend = btcAnalysis.trend?.direction || 'NEUTRAL';
     const btcAdx = btcAnalysis.adx?.value || 0;

@@ -68,6 +68,10 @@ CREATE TABLE positions (
     close_signal_id INTEGER,
     close_decision_id INTEGER,
 
+    -- Fees and DCA tracking
+    total_fees DECIMAL(20,8) DEFAULT 0,
+    dca_count INTEGER DEFAULT 0,
+
     -- Metadata
     hold_hours DECIMAL(10,2),
     max_unrealized_gain_percent DECIMAL(10,4),
@@ -139,6 +143,14 @@ CREATE TABLE signals (
     support_nearest DECIMAL(20,8),
     resistance_nearest DECIMAL(20,8),
     trend VARCHAR(20),
+
+    -- Advanced indicators
+    adx DECIMAL(6,2),
+    adx_pdi DECIMAL(6,2),
+    adx_mdi DECIMAL(6,2),
+    stochrsi_k DECIMAL(6,2),
+    stochrsi_d DECIMAL(6,2),
+    atr_percent DECIMAL(6,2),
 
     -- Haiku's evaluation
     signal_type VARCHAR(10) CHECK (signal_type IN ('BUY', 'SELL', 'NONE')),

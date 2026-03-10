@@ -945,6 +945,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
   prompt += `  Line 2: RSI value + signal, MACD crossover, volume ratio + trend\n`;
   prompt += `  Line 3: price vs SMA200, golden-cross/death-cross, EMA signal, BB position + width, ADX value + signal\n`;
   prompt += `  Line 3b: StochRSI K/D + signal, ATR percent\n`;
+  prompt += `  Line 3c: OBV (On-Balance Volume): trend direction (RISING/FALLING/FLAT) — confirms whether volume flow supports price direction\n`;
   prompt += `  Line 4: nearest support levels, nearest resistance levels\n`;
   prompt += `  Plus: tier, thresholds crossed, and existing position (entry price, P&L%, hold time, size)\n`;
   prompt += `- Haiku does NOT have: candlestick patterns (engulfing/hammer/doji), multi-timeframe data (4h/1d), candle counts, historical price changes (e.g. "up 8% in 4h"), divergence detection, consolidation duration, or higher-lows analysis\n`;

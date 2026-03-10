@@ -67,6 +67,13 @@ Valid JSON only:
 - ATR% > 5%: High volatility — wider stops needed, signals less reliable.
 - Rising ATR = increasing volatility (breakout likely). Falling ATR = compression (squeeze building).
 
+**4h Timeframe (available in data line 3c)**
+- 4h trend provides MACRO context — the bigger picture direction.
+- 4h BULLISH + 1h buy signal = high conviction entry (trend alignment).
+- 4h BEARISH + 1h buy signal = counter-trend trade — reduce confidence by 0.10, require extra confirmations.
+- 4h SIDEWAYS = no macro edge — rely on 1h indicators alone.
+- Weight the 4h trend more heavily for T1 (blue chips follow macro trends closely).
+
 
 ## SELL Signal Evaluation
 

@@ -171,6 +171,12 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push(`Volume declining with +${pnlPercent.toFixed(1)}% profit — fading interest`);
   }
 
+  // ── OBV divergence: price up but volume flow down = smart money exiting ──
+  if (analysis.obv && pnlPercent > 3 && analysis.obv.trend === 'FALLING') {
+    score += 15;
+    factors.push(`OBV divergence: price +${pnlPercent.toFixed(1)}% but OBV falling — smart money exiting`);
+  }
+
   // ── Low volume on losing position — no recovery interest ──
   if (analysis.volume && pnlPercent < -5 && analysis.volume.ratio < 0.8) {
     score += 15;

@@ -18,13 +18,21 @@ if (ACCOUNT_SID && API_KEY && API_SECRET) {
 // Rate limiter: hourKey -> count
 const sendCounts = new Map();
 
-// Load SMS config
-let smsConfig;
-try {
-  const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
-  smsConfig = config.sms || {};
-} catch {
-  smsConfig = {};
+let smsConfigCache = null;
+let smsConfigCacheTime = 0;
+
+function getSmsConfig() {
+  const now = Date.now();
+  if (!smsConfigCache || (now - smsConfigCacheTime) > 5 * 60 * 1000) {
+    try {
+      const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
+      smsConfigCache = config.sms || {};
+      smsConfigCacheTime = now;
+    } catch {
+      if (!smsConfigCache) smsConfigCache = {};
+    }
+  }
+  return smsConfigCache;
 }
 
 /**
@@ -32,6 +40,8 @@ try {
  * Returns { sent, message } indicating success or reason for skipping.
  */
 export async function sendAlert(alertType, symbol, data) {
+  const smsConfig = getSmsConfig();
+
   if (!smsConfig.enabled) {
     return { sent: false, message: 'SMS disabled in config' };
   }

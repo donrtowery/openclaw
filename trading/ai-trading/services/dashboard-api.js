@@ -16,11 +16,15 @@ import logger from '../lib/logger.js';
 
 const execAsync = promisify(exec);
 
-// Cache the exit-eval prompt for analyze_position (same prompt the exit scanner uses)
 let analyzePromptCache = null;
+let analyzePromptCacheTime = 0;
+const PROMPT_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
 function getAnalyzeSystemPrompt() {
-  if (!analyzePromptCache) {
+  const now = Date.now();
+  if (!analyzePromptCache || (now - analyzePromptCacheTime) > PROMPT_CACHE_TTL) {
     analyzePromptCache = readFileSync('prompts/sonnet-exit-eval.md', 'utf8');
+    analyzePromptCacheTime = now;
   }
   return analyzePromptCache;
 }
@@ -451,9 +455,6 @@ async function handleAction(action, params) {
       analysisPrompt += `Peak gain: ${maxGain.toFixed(2)}% | Drawdown from peak: ${(maxGain - pnlPercent).toFixed(2)}%\n\n`;
       analysisPrompt += `## Technical Indicators\n`;
       analysisPrompt += formatForClaude(liveAnalysis);
-      if (liveAnalysis.rsi) analysisPrompt += `\nRSI: ${liveAnalysis.rsi.value}`;
-      if (liveAnalysis.macd) analysisPrompt += `\nMACD histogram: ${liveAnalysis.macd.histogram}, crossover: ${liveAnalysis.macd.crossover}`;
-      if (liveAnalysis.volume) analysisPrompt += `\nVolume ratio: ${liveAnalysis.volume.ratio}x`;
       analysisPrompt += `\n\n## News\n${newsContext}\n\n`;
       analysisPrompt += `Respond in JSON: { "recommendation": "HOLD"|"SELL"|"DCA", "confidence": 0.0-1.0, "reasoning": "...", "key_levels": { "support": number, "resistance": number }, "risk_factors": ["..."] }`;
 
