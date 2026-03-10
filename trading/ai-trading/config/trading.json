@@ -1,9 +1,9 @@
 {
   "account": {
     "total_capital": 6000,
-    "max_concurrent_positions": 10,
+    "max_concurrent_positions": 7,
     "paper_trading": true,
-    "max_trades_per_day": 20,
+    "max_trades_per_day": 10,
     "max_positions_per_tier": {
       "tier_1": 4,
       "tier_2": 3,
@@ -54,7 +54,7 @@
     }
   },
   "confidence_thresholds": {
-    "sonnet_minimum_for_new_entry": 0.65,
+    "sonnet_minimum_for_new_entry": 0.72,
     "sonnet_minimum_for_exit": 0.55,
     "sonnet_minimum_for_partial_exit": 0.55,
     "sonnet_minimum_for_dca": 0.6,
@@ -69,8 +69,8 @@
     "note": "volume_threshold_ceiling prevents learning from raising volume filters above this max. stagnation override activates after N sessions with 0 new trades."
   },
   "circuit_breaker": {
-    "consecutive_losses_to_activate": 3,
-    "cooldown_hours": 4,
+    "consecutive_losses_to_activate": 4,
+    "cooldown_hours": 6,
     "max_drawdown_percent": 10,
     "note": "Safety net — pauses trading after 3 consecutive losses OR total drawdown exceeds max_drawdown_percent"
   },

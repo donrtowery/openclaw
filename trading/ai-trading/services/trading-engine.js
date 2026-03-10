@@ -6,7 +6,7 @@ import { query, endPool } from '../db/connection.js';
 import { testConnection } from '../db/connection.js';
 import { testConnectivity, placeOrder, getCurrentPrice, getAllPrices } from '../lib/binance.js';
 import { initScanner, runScanCycle } from '../lib/scanner.js';
-import { callHaikuBatch, callSonnet, callSonnetExitEval } from '../lib/claude.js';
+import { callHaikuBatch, callSonnet, callSonnetExitEval, resetApiCosts } from '../lib/claude.js';
 import { runExitScan, recordExitCooldown } from '../lib/exit-scanner.js';
 import { getNewsContext } from '../lib/brave-search.js';
 import {
@@ -198,6 +198,8 @@ async function runCycle() {
     logger.info(`[Engine] New trading day ${today} — resetting daily trade count (was ${dailyTradeCount})`);
     dailyTradeCount = 0;
     dailyTradeDate = today;
+    resetApiCosts();
+    logger.info(`[Engine] API cost tracker reset for new day`);
   }
 
   // 0b. Check max trades per day — block new entries but ALWAYS allow exit scans
@@ -354,10 +356,11 @@ async function runCycle() {
     // Process all escalated signals through Sonnet in parallel
     if (toEscalate.length > 0) {
       // Pre-fetch shared context once (not per-signal)
-      const [cachedPortfolio, learningRules, cb] = await Promise.all([
+      const [cachedPortfolio, learningRules, cb, prefetchedRegime] = await Promise.all([
         getCachedPortfolio(),
         getLearningRules(),
         checkCircuitBreaker(),
+        getMarketRegime(),
       ]);
       const sharedPortfolio = {
         ...cachedPortfolio,
@@ -379,7 +382,7 @@ async function runCycle() {
         const { triggered, haikuResult } = toEscalate[i];
         const news = newsResults[i].status === 'fulfilled' ? newsResults[i].value : 'No recent news available.';
         try {
-          const result = await processEscalatedSignal(triggered, haikuResult, news, sharedPortfolio, learningRules);
+          const result = await processEscalatedSignal(triggered, haikuResult, news, sharedPortfolio, learningRules, prefetchedRegime);
           if (result.executed) {
             tradesExecuted++;
             dailyTradeCount++;
@@ -435,14 +438,14 @@ async function runCycle() {
 
 // ── Process Escalated Signal (Haiku → Sonnet → Execute) ─────
 
-async function processEscalatedSignal(triggered, haikuResult, news, portfolio, learningRules) {
+async function processEscalatedSignal(triggered, haikuResult, news, portfolio, learningRules, prefetchedRegime) {
   const { symbol, tier } = triggered;
 
   logger.info(`[Engine] ${symbol}: Escalated to Sonnet (${haikuResult.strength} ${haikuResult.signal} conf:${haikuResult.confidence})`);
   lastSonnetEvaluation.set(symbol, Date.now());
 
-  // Fetch market regime and session context
-  const marketRegime = await getMarketRegime();
+  // Use pre-fetched market regime (avoids redundant API call per signal)
+  const marketRegime = prefetchedRegime;
   const tradingSession = getTradingSession();
   const enrichedPortfolio = { ...portfolio, market_regime: marketRegime, trading_session: tradingSession };
 

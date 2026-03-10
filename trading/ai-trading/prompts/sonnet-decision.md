@@ -125,6 +125,12 @@ Because volume is not pre-filtered by rigid thresholds, treat it as one input am
 - Low ATR (<2%): Smaller moves — profits will be modest, but losses should also be small. Tighter mental stops.
 - ATR trailing stop: Exit if drawdown from peak exceeds 2.5x ATR%. This is already computed by the exit scanner.
 
+**OBV (On-Balance Volume)** — Cumulative volume flow, confirms institutional participation.
+- RISING OBV + rising price = healthy trend with volume confirmation. Increases conviction.
+- FALLING OBV + rising price = bearish divergence — price move not supported by volume. PASS or reduce position size.
+- RISING OBV + falling price = bullish divergence — accumulation phase. Potential buy opportunity if other indicators confirm.
+- Use OBV to resolve ambiguous signals: two otherwise equal setups, prefer the one with OBV confirmation.
+
 
 ## LEARNING DATA
 (Updated: 2026-03-10 | 19 trades | 42.1% win rate)
@@ -147,7 +153,7 @@ RULES FROM EXPERIENCE:
 5. REJECT triple-indicator combos on T2 — 0% conversion to winning trades, over-complication loses edge
 6. REJECT MODERATE signals during DEFENSIVE MODE unless T1 with volume >6x AND RSI 40-50 — 42.1% WR requires higher bar
 7. REJECT STRONG signals with RSI >52 unless T1 AND volume >5x — only 41% WR overall, insufficient edge
-8. STOP citing insufficient volume when volume >2.5x AND 2+ confirmations present — 98% of passes cite volume, over-filtering proven winners
+8. STOP citing insufficient volume for T1 signals when volume >2.5x AND 2+ confirmations present — 98% of passes cite volume, over-filtering proven winners
 9. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 on T1 only — 8 trades 63% WR avg +224.0%, best pattern
 10. APPROVE SELL for positions <-8% held >24h with MACD bearish — avg loser hold 30.1h vs winner 52.6h
 11. APPROVE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal

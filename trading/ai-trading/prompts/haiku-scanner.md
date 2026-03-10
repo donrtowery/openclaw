@@ -67,6 +67,12 @@ Valid JSON only:
 - ATR% > 5%: High volatility — wider stops needed, signals less reliable.
 - Rising ATR = increasing volatility (breakout likely). Falling ATR = compression (squeeze building).
 
+**OBV (On-Balance Volume)** — Volume flow direction, confirms price movement.
+- RISING: Volume supports upward price — bullish confirmation. Strengthens buy signals.
+- FALLING: Volume flow negative despite price action — bearish divergence. Smart money may be exiting.
+- FLAT: No clear volume direction — neutral, rely on other indicators.
+- Key divergence: Price rising + OBV falling = bearish divergence (reduce confidence). Price falling + OBV rising = accumulation (potential reversal).
+
 **4h Timeframe (available in data line 3c)**
 - 4h trend provides MACRO context — the bigger picture direction.
 - 4h BULLISH + 1h buy signal = high conviction entry (trend alignment).
@@ -87,7 +93,7 @@ Key SELL principles:
 - Always escalate SELL if position is losing >5% with bearish MACD — cut losses
 - Always escalate SELL if position peaked at >8% gain and drawdown from peak >5% — protect profits
 - Don't escalate SELL for positions <2h old — too early to evaluate
-- In DEFENSIVE MODE: always escalate SELL signals regardless of strength
+- Always escalate SELL signals regardless of strength — in any mode, exit signals must reach Sonnet.
 
 
 ## LEARNING DATA

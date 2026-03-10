@@ -33,7 +33,7 @@ Note: PARTIAL_EXIT is executed as a sell of the specified exit_percent. If you o
 
 - Default to 50% when uncertain — lock half, let rest run
 - 30% if thesis mostly intact but overbought signals warrant caution
-- 60-100% if multiple bearish signals or large drawdown from peak or deep loss
+- 60-70% if multiple bearish signals or large drawdown from peak. If warranted above 70%, use SELL for full exit instead.
 
 ## Position Sizing Context
 
@@ -90,6 +90,11 @@ Valid JSON only:
 - Use ATR% to judge whether a drawdown is "normal" for this coin. A 5% drawdown on a 4% ATR coin is barely 1.25x ATR — noise. The same drawdown on a 1.5% ATR coin is 3.3x ATR — significant.
 - High ATR (>5%): Expect wider swings — hold through larger drawdowns if thesis intact.
 - Low ATR (<2%): Tighter drawdowns matter more — act on smaller reversals.
+
+**OBV (On-Balance Volume)** — Volume flow confirms or contradicts price trend.
+- Price rising + OBV falling = bearish divergence — smart money is exiting. Increase exit urgency. The exit scanner already adds +15 urgency for this pattern.
+- Price falling + OBV rising = accumulation — potential bottom forming. Reduces exit urgency for losers if other indicators show reversal.
+- Use OBV trend to confirm exit timing: declining OBV during a profitable position = take profits before volume-confirmed reversal.
 
 ## Market Regime Context
 

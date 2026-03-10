@@ -485,7 +485,12 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
       { maxAttempts: 3, label: `Sonnet exit eval (${position.symbol})` }
     );
 
-    const responseText = message.content[0].text;
+    const responseText = message.content?.[0]?.text;
+    if (!responseText) {
+      logger.error(`[Sonnet-Exit] Empty response for ${position.symbol}`);
+      return { action: 'HOLD', symbol: position.symbol, confidence: 0,
+        reasoning: 'Empty AI response — auto-HOLD', _fallback: true };
+    }
     const inputTokens = message.usage.input_tokens;
     const outputTokens = message.usage.output_tokens;
     const cacheRead = message.usage.cache_read_input_tokens || 0;
@@ -603,7 +608,7 @@ function formatExitEvalInput(position, analysis, urgency, newsContext, portfolio
   // Market regime context for exit decisions
   if (portfolioState.market_regime) {
     const mr = portfolioState.market_regime;
-    msg += `Market: ${mr.regime} (BTC ${mr.btc_trend}, RSI ${mr.btc_rsi})\n`;
+    msg += `Market: ${mr.regime} (BTC ${mr.btc_trend}, ADX ${mr.btc_adx}, RSI ${mr.btc_rsi}, MACD ${mr.btc_macd})\n`;
     if (mr.regime === 'BEAR' || mr.regime === 'CAUTIOUS') {
       msg += `Bearish market — lower exit thresholds, cut losses faster\n`;
     }

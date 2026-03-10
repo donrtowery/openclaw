@@ -193,9 +193,10 @@ export function computeExitUrgency(position, analysis, currentPrice) {
   }
 
   // ── Peak giveback fast-exit: was winning, now losing — thesis failed ──
-  if (maxGain > 5 && pnlPercent < 0) {
-    if (score < 80) {
-      score = 80;
+  if (maxGain > 5 && pnlPercent < -2) {
+    const floor = Math.min(80, 50 + Math.round(maxGain * 2));
+    if (score < floor) {
+      score = floor;
     }
     factors.push(`Peak giveback: was +${maxGain.toFixed(1)}% now ${pnlPercent.toFixed(1)}% — thesis failed`);
   }

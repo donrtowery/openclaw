@@ -123,6 +123,7 @@ async function run() {
     // Check for defensive mode stagnation — if barely any new trades since oldest session, relax
     // Uses actual trade count between history entries to avoid 30-day rolling window shrinkage
     let defensiveStagnant = false;
+    let tradesSinceOldest = -1;
     if (trajectoryRows.length >= 2) {
       const oldestSessionTime = trajectoryRows[trajectoryRows.length - 1]?.created_at;
       if (oldestSessionTime) {
@@ -131,7 +132,7 @@ async function run() {
             "SELECT COUNT(*) as cnt FROM positions WHERE status = 'CLOSED' AND exit_time > $1",
             [oldestSessionTime]
           );
-          const tradesSinceOldest = parseInt(tradesSinceResult.rows[0]?.cnt) || 0;
+          tradesSinceOldest = parseInt(tradesSinceResult.rows[0]?.cnt) || 0;
           const stagnationThreshold = trajectoryRows.length; // 1 trade per session minimum
           if (tradesSinceOldest <= stagnationThreshold) {
             defensiveStagnant = true;
@@ -1126,15 +1127,15 @@ function validateAnalysis(analysis, defensiveMode = false) {
   const enforceVolumeCeiling = (rules, label) => {
     return rules.map(r => {
       const text = typeof r === 'string' ? r : JSON.stringify(r);
-      // Find volume thresholds like ">6x", ">7x", "volume >8x" etc.
-      const volMatch = text.match(/volume\s*[>≥]\s*(\d+(?:\.\d+)?)\s*x/i);
-      if (volMatch && parseFloat(volMatch[1]) > volumeCeiling) {
-        const oldThreshold = volMatch[1];
-        const capped = text.replace(volMatch[0], volMatch[0].replace(oldThreshold, String(volumeCeiling)));
-        issues.push(`Capped ${label} volume threshold from ${oldThreshold}x to ${volumeCeiling}x (ceiling)`);
-        return capped;
-      }
-      return r;
+      // Cap ALL volume thresholds like ">6x", ">7x", "volume >8x" etc.
+      const capped = text.replace(/volume\s*[>≥]\s*(\d+(?:\.\d+)?)\s*x/gi, (match, threshold) => {
+        if (parseFloat(threshold) > volumeCeiling) {
+          issues.push(`Capped ${label} volume threshold from ${threshold}x to ${volumeCeiling}x (ceiling)`);
+          return match.replace(threshold, String(volumeCeiling));
+        }
+        return match;
+      });
+      return capped !== text ? capped : r;
     });
   };
   analysis.haiku_rules = enforceVolumeCeiling(toArray(analysis.haiku_rules), 'haiku');
@@ -1220,7 +1221,7 @@ function validateAnalysis(analysis, defensiveMode = false) {
 
       if (approveKeywords.length >= 2 && rejectKeywords.length >= 2) {
         const overlap = approveKeywords.filter(k => rejectKeywords.includes(k));
-        // Require 3+ specific indicator overlaps AND matching tier/strength for a true contradiction.
+        // Require 4+ specific indicator overlaps AND matching tier/strength for a true contradiction.
         // Without tier/strength matching, rules targeting different contexts are falsely flagged.
         const approveUpper = approve.text.toUpperCase();
         const rejectUpper = reject.text.toUpperCase();
@@ -1498,10 +1499,10 @@ function deduplicateRules(rules) {
   for (let i = 0; i < flattened.length; i++) {
     const normalized = flattened[i].toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\s+/g, ' ').trim();
     // Check for near-duplicates: if >60% of words overlap with an existing rule, skip
-    const words = new Set(normalized.split(' ').filter(w => w.length > 2));
+    const words = new Set(normalized.split(' ').filter(w => w.length > 1));
     let isDuplicate = false;
     for (const existing of seen) {
-      const existingWords = new Set(existing.split(' ').filter(w => w.length > 2));
+      const existingWords = new Set(existing.split(' ').filter(w => w.length > 1));
       const intersection = [...words].filter(w => existingWords.has(w));
       // Jaccard-style: overlap relative to the candidate rule's word count
       const overlap = words.size > 0
@@ -1544,7 +1545,9 @@ function updatePromptFile(path, learningSection, rules, fewShots) {
       // the current mode policy, so remove mode qualifiers from other rules
       // that were generated under a previous mode (e.g., "during DEFENSIVE MODE").
       let ruleText = flattenRule(cappedRules[i]);
-      ruleText = ruleText.replace(/\s+during DEFENSIVE MODE/gi, '');
+      // Strip stale mode qualifiers — rule #1 (master mode rule) already declares current mode
+      ruleText = ruleText.replace(/\s*(?:during|in|under)\s+(?:DEFENSIVE|CAUTIOUS|STAGNATION(?:\s+OVERRIDE)?)\s+MODE/gi, '');
+      ruleText = ruleText.replace(/\s*\((?:DEFENSIVE|CAUTIOUS)\s+MODE(?:\s+active)?\)/gi, '');
       section += `${i + 1}. ${ruleText}\n`;
     }
     section += '\n';
@@ -1881,6 +1884,14 @@ function extractRuleMetrics(ruleText) {
       else if (/loss(?:es)?|lost/i.test(tradeRatioMatch[0])) {
         metrics.win_rate = parseFloat(((denominator - numerator) / denominator * 100).toFixed(1));
       }
+    }
+  }
+
+  // Fallback: "N trades" without a ratio (e.g., "8 trades 63% WR")
+  if (!metrics.sample_size) {
+    const simpleTradeMatch = ruleText.match(/(\d+)\s+trades?\b/i);
+    if (simpleTradeMatch) {
+      metrics.sample_size = parseInt(simpleTradeMatch[1]);
     }
   }
 
