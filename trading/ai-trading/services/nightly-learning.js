@@ -326,7 +326,8 @@ async function calculateStats() {
   `);
 
   // Exit timing analysis — categorize exits for exit-eval learning
-  // Filter out corrupt data: cap realized_pnl_percent to reasonable bounds (-100% to +200%)
+  // Filter out corrupt data: only include trades with |pnl_pct| < 50%
+  // LEAST/GREATEST in the AVG is a secondary safety net (caps to -100..+100)
   const exitTimingResult = await query(`
     SELECT
       CASE
@@ -820,7 +821,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     allMissed.push(`[SELL_PASS] ${m.symbol} Haiku:${m.haiku_strength} -${capGain(m.potential_drop_pct)}%`);
   }
   if (allMissed.length > 0) {
-    prompt += `MISSED OPPORTUNITIES (price moved >${MISSED_OPP_THRESHOLD}% within 24h):\n`;
+    prompt += `MISSED OPPORTUNITIES (price moved >${MISSED_OPP_THRESHOLD}% within ${PASS_EVAL_WINDOW_HOURS}h):\n`;
     for (const line of allMissed) {
       prompt += `${line}\n`;
     }

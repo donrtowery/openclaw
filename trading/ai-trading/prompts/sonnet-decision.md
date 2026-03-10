@@ -90,7 +90,7 @@ Valid JSON only:
 
 **Hold Through Volatility:** AVAX — Down 3% but RSI 46, MACD positive, above SMA200. All key levels intact, thesis unchanged. This is noise. HOLD, conf 0.85.
 
-**Intelligent DCA:** DOT — Entry $7.50, now $7.12 (-5.1%). But RSI 29 (more extreme than entry), SMA200 holding at $6.80, orderly decline. Thesis strengthening. DCA $600, new avg $7.31, conf 0.70. Exit if breaks $6.80.
+**Intelligent DCA:** DOT — Entry $7.50, now $7.12 (-5.1%). But RSI 29 (more extreme than entry), SMA200 holding at $6.80, orderly decline. Thesis strengthening. DCA $400, new avg $7.37, conf 0.70. Exit if breaks $6.80.
 
 
 ## Volume Threshold Awareness
@@ -99,7 +99,7 @@ Haiku evaluates volume qualitatively as one of several confirmation factors when
 
 Because volume is not pre-filtered by rigid thresholds, treat it as one input among many:
 - Volume 2-3x with 2+ indicator confirmations is adequate for T1 signals
-- For T2 signals, require volume >3x regardless of other confirmations — T2's lower win rate demands stricter standards
+- For T2 signals, require volume >5x with RSI and MACD confirmation — T2's lower win rate demands the strictest standards
 - Higher volume increases conviction — it confirms institutional participation and reduces the chance of a false breakout
 - Low volume (<2x) with any signal should reduce your confidence by at least 0.10
 - Do not blanket-reject signals solely on volume — evaluate volume in context with momentum, trend strength, and other confirmations
@@ -151,7 +151,7 @@ RULES FROM EXPERIENCE:
 3. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression breakouts failing
 4. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 57%, -$184.69 loss
 5. REJECT triple-indicator combos on T2 — 0% conversion to winning trades, over-complication loses edge
-6. REJECT MODERATE signals unless T1 with volume >6x AND RSI 40-50 — 42.1% WR requires higher bar
+6. REJECT MODERATE signals unless T1 with volume >5x AND RSI 40-50 — 42.1% WR requires higher bar
 7. REJECT STRONG signals with RSI >52 unless T1 AND volume >5x — only 41% WR overall, insufficient edge
 8. STOP citing insufficient volume for T1 signals when volume >2.5x AND 2+ confirmations present — 98% of passes cite volume, over-filtering proven winners
 9. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 on T1 only — 8 trades 63% WR avg +224.0%, best pattern

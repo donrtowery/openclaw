@@ -1079,7 +1079,10 @@ async function recordLoss(symbol, pnl) {
 }
 
 async function resetCircuitBreaker() {
-  await query('UPDATE circuit_breaker SET consecutive_losses = 0, updated_at = NOW() WHERE id = 1');
+  const result = await query('UPDATE circuit_breaker SET consecutive_losses = 0, updated_at = NOW() WHERE id = 1');
+  if (result.rowCount === 0) {
+    logger.warn('[Engine] resetCircuitBreaker: no circuit_breaker row with id=1 found');
+  }
 }
 
 // ── Startup State Reconciliation ─────────────────────────────

@@ -65,7 +65,7 @@ Valid JSON only:
 
 **Full Exit (loss cut):** OP — Down 8%, RSI 42, MACD bearish crossover, below SMA200, held 36h. Original thesis (support bounce) has broken — below key support, no recovery momentum. SELL 100%, conf 0.75. Don't wait for further deterioration.
 
-**Full Exit (profit take):** RENDER — Up 22%, RSI 82, MACD histogram declining for 3 cycles, volume 0.4x average. Momentum exhaustion with declining participation. SELL 100%, conf 0.82. Exceptional gain, don't be greedy.
+**Full Exit (profit take):** LINK — Up 22%, RSI 82, MACD histogram declining for 3 cycles, volume 0.4x average. Momentum exhaustion with declining participation. SELL 100%, conf 0.82. Exceptional gain, don't be greedy.
 
 **Hold Through Strength:** ETH — Up 7%, RSI 72, MACD strongly bullish with expanding histogram, volume 1.5x and increasing, price above all key MAs. RSI can stay overbought in strong trends when volume confirms. HOLD, conf 0.82. Exit signal is MACD crossover or volume dry-up, neither present.
 
