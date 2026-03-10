@@ -87,7 +87,7 @@ When evaluating SELL signals for existing positions:
 
 **Strong SELL (escalate):** RSI >75 + MACD bearish cross + StochRSI bearish cross + declining volume = multiple exit confirmations
 **Moderate SELL (escalate):** Position profitable + 2 bearish indicators aligned + hold time >24h = worth Sonnet's review
-**Weak SELL (don't escalate):** Single overbought reading OR minor profit with strong trend = noise, not exit signal
+**Weak SELL (lower priority):** Single overbought reading OR minor profit with strong trend = noise, but still escalate for Sonnet's judgment.
 
 Key SELL principles:
 - Always escalate SELL if position is losing >5% with bearish MACD — cut losses
@@ -141,14 +141,13 @@ RULES FROM EXPERIENCE:
 5. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 57%, -$184.69 actual loss
 6. REJECT EMA_BULLISH_CROSSOVER STRONG — 1/1 loss -0.7%, no proven edge in current regime
 7. REJECT triple-indicator combos on T2 — 0% conversion to profitable trades, over-complication
-8. REJECT MODERATE signals with volume <3.5x during DEFENSIVE MODE — 64% conversion wastes API calls vs 15% target
+8. REJECT MODERATE signals with volume <3.5x — 64% conversion wastes escalation bandwidth
 9. STOP escalating STRONG signals with RSI >52 unless T1 AND volume >5x — only 41% WR overall, insufficient edge
 10. STOP escalating T2 signals with volume <5x — T2 requires exceptional volume confirmation for any edge
 11. STOP escalating signals on coins with open position P&L <-5% — avoid compounding losers
 12. ESCALATE VOLUME_SPIKE STRONG with RSI 40-55 AND T1 only — 8 trades 63% WR avg +224.0%, best pattern
 13. ESCALATE SELL for positions <-8% held >24h with MACD bearish OR volume declining — cut losers faster than 30.1h avg
 14. ESCALATE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
-15. STOP escalating BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression plays failing
 
 EXAMPLES FROM ACTUAL TRADES:
 - VOLUME_SPIKE STRONG T1 RSI sweet spot — best pattern 63% WR: Sonnet approved, position +$42.15 (+12.3%) in 48h

@@ -72,7 +72,7 @@
     "consecutive_losses_to_activate": 4,
     "cooldown_hours": 6,
     "max_drawdown_percent": 10,
-    "note": "Safety net — pauses trading after 3 consecutive losses OR total drawdown exceeds max_drawdown_percent"
+    "note": "Safety net — pauses trading after 4 consecutive losses OR total drawdown exceeds max_drawdown_percent"
   },
   "sms": {
     "enabled": true,

@@ -235,7 +235,7 @@ export function recordExitCooldown(symbol) {
 export async function runExitScan(config) {
   const startTime = Date.now();
   const exitConfig = config.exit_scanner || {};
-  const urgencyThreshold = exitConfig.urgency_threshold || 40;
+  const urgencyThreshold = exitConfig.urgency_threshold ?? 30;
   const criticalThreshold = exitConfig.critical_threshold || 70;
   const cooldownMinutes = exitConfig.cooldown_minutes || 30;
 

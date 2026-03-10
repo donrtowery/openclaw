@@ -131,7 +131,7 @@ HOLD TIME COMPARISON:
 
 BAD TRADE PATTERNS (these setups consistently lost money — exit faster if held):
 - EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
-- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
+- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69 (EXCEPTION: sub-pattern wins 63% on T1 with RSI <55 — don't exit prematurely if position matches this sub-pattern)
 
 EXIT RULES FROM EXPERIENCE:
 1. EXIT positions <-8% held >24h when MACD bearish OR volume declining — slow_loss_cut pattern avg -5.3%, cut faster than 30.1h avg

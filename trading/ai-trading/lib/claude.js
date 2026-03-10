@@ -715,7 +715,7 @@ function formatHaikuInput(triggeredSignal) {
 
   if (triggeredSignal.market_regime) {
     const mr = triggeredSignal.market_regime;
-    msg += `\nMarket: ${mr.regime} (BTC ${mr.btc_trend}, RSI ${mr.btc_rsi})\n`;
+    msg += `\nMarket: ${mr.regime} (BTC ${mr.btc_trend}, ADX ${mr.btc_adx}, RSI ${mr.btc_rsi}, MACD ${mr.btc_macd})\n`;
     if (mr.regime === 'BEAR') msg += `*** BEAR MARKET — reduce escalation, prioritize SELL ***\n`;
     else if (mr.regime === 'CAUTIOUS') msg += `Caution: BTC showing weakness\n`;
   }

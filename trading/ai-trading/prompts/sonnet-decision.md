@@ -34,7 +34,7 @@ This prevents high-volatility coins from creating outsized losses.
 
 ## Exit Philosophy
 
-Start with thesis-based evaluation — exit when thesis changes, not on arbitrary percentages. Hold through volatility if thesis intact. For winners: take partial profits when momentum fades (declining volume, bearish divergence, major resistance). Scaling out (30-50%) often better than all-or-nothing. The learning rules below encode patterns from actual trade outcomes — weight them heavily when they apply.
+Start with thesis-based evaluation — exit when thesis changes, not on arbitrary percentages. Hold through volatility if thesis intact. For winners: take partial profits when momentum fades (declining volume, bearish divergence, major resistance). Scaling out (30-70%) often better than all-or-nothing. The learning rules below encode patterns from actual trade outcomes — weight them heavily when they apply.
 
 Tier risk tolerance: T1 can tolerate 15-20% drawdowns if thesis intact. T2 usually 10-15%.
 
@@ -151,7 +151,7 @@ RULES FROM EXPERIENCE:
 3. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression breakouts failing
 4. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 57%, -$184.69 loss
 5. REJECT triple-indicator combos on T2 — 0% conversion to winning trades, over-complication loses edge
-6. REJECT MODERATE signals during DEFENSIVE MODE unless T1 with volume >6x AND RSI 40-50 — 42.1% WR requires higher bar
+6. REJECT MODERATE signals unless T1 with volume >6x AND RSI 40-50 — 42.1% WR requires higher bar
 7. REJECT STRONG signals with RSI >52 unless T1 AND volume >5x — only 41% WR overall, insufficient edge
 8. STOP citing insufficient volume for T1 signals when volume >2.5x AND 2+ confirmations present — 98% of passes cite volume, over-filtering proven winners
 9. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 on T1 only — 8 trades 63% WR avg +224.0%, best pattern

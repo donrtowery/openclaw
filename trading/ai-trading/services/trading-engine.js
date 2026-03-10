@@ -564,7 +564,7 @@ async function executeBuy(decision, triggered) {
   if (!tierConfig) {
     logger.warn(`[Engine] ${symbol}: No tier config for tier_${tier} — using fallback sizing`);
   }
-  let positionSizeUsd = decision.position_details?.position_size_usd || tierConfig?.base_position_usd || 600;
+  let positionSizeUsd = decision.position_details?.position_size_usd ?? tierConfig?.base_position_usd ?? 600;
 
   // Cap position size at 1.5x tier base to prevent Sonnet over-sizing
   if (decision.position_details?.position_size_usd && tierConfig?.base_position_usd &&
@@ -762,7 +762,7 @@ async function executeDCA(decision, triggered) {
   // DCA amount — use Sonnet's recommendation or tier-based default
   const tierKey = `tier_${tier}`;
   const tierConfig = tradingConfig.position_sizing[tierKey];
-  let dcaAmountUsd = decision.position_details?.position_size_usd || tierConfig?.base_position_usd || 600;
+  let dcaAmountUsd = decision.position_details?.position_size_usd ?? tierConfig?.base_position_usd ?? 600;
 
   // Confidence-scaled DCA sizing
   const confScaling = tradingConfig.position_sizing.confidence_scaling !== false;
@@ -1269,7 +1269,6 @@ async function getMarketRegime() {
     return marketRegimeCache.regime;
   }
   try {
-    const btcPrice = await getCurrentPrice('BTCUSDT');
     const btcAnalysis = await analyzeSymbol('BTCUSDT');
 
     const btcTrend = btcAnalysis.trend?.direction || 'NEUTRAL';

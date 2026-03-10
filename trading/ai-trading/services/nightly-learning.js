@@ -176,6 +176,7 @@ async function run() {
 
   // ── Step 4: Update prompt files ───────────────────────────
 
+  let promptsUpdated = false;
   if (analysis._parseFailure) {
     logger.warn(`[Learning] Skipping prompt/rule updates — Sonnet parse failure this cycle`);
   } else if (skipPromptUpdates) {
@@ -183,11 +184,12 @@ async function run() {
   } else {
     await updatePromptFiles(stats, analysis, defensiveMode);
     await saveLearningRules(analysis);
+    promptsUpdated = true;
   }
 
   // ── Step 5: Save history (always, even on parse failure for diagnostics) ──
 
-  await saveLearningHistory(stats, analysis);
+  await saveLearningHistory(stats, analysis, promptsUpdated);
 
   // ── Step 6: Cleanup ───────────────────────────────────────
 
@@ -878,7 +880,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     prompt += `PATTERNS SONNET CONSISTENTLY PASSES (>=70% PASS rate, min 5 samples):\n`;
     for (const p of stats.pass_patterns) {
       const triggers = Array.isArray(p.triggered_by) ? p.triggered_by.join('+') : p.triggered_by;
-      prompt += `${triggers} (${p.trend}) ${p.strength}: ${p.total} escalated, ${p.pass_rate}% PASSed\n`;
+      prompt += `${triggers} (${p.trend}) ${p.strength}: ${p.total} escalated, ${p.correct_pass_rate}% PASSed\n`;
     }
     prompt += '\n';
   }
@@ -1034,7 +1036,11 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
       }
     }
 
-    const text = message.content[0].text;
+    const text = message.content?.[0]?.text;
+    if (!text) {
+      logger.error('[Learning] Empty Sonnet response for analysis');
+      return { _parseFailure: true, haiku_rules: [], sonnet_rules: [], haiku_escalation_calibration: [], exit_rules: [] };
+    }
     logger.info(`[Learning] Sonnet analysis: ${message.usage.input_tokens}in/${message.usage.output_tokens}out tokens, stop_reason: ${message.stop_reason}`);
 
     if (message.stop_reason === 'max_tokens') {
@@ -1096,10 +1102,6 @@ function validateAnalysis(analysis, defensiveMode = false) {
     analysis.sonnet_rules = preFilterSonnet(analysis.sonnet_rules);
   }
 
-  const haikuRules = toArray(analysis.haiku_rules);
-  const calibrationRules = toArray(analysis.haiku_escalation_calibration);
-  const allHaikuRules = [...haikuRules, ...calibrationRules];
-
   // ── Filter non-actionable rules ──
   // Rules must start with a valid verb. Anything else is commentary, not a rule.
   const VALID_HAIKU_VERBS = /^(ESCALATE|REJECT|REDUCE|START|STOP|TENTATIVE)/i;
@@ -1159,23 +1161,6 @@ function validateAnalysis(analysis, defensiveMode = false) {
   analysis.haiku_rules = convertBlanketDca(toArray(analysis.haiku_rules));
   analysis.haiku_escalation_calibration = convertBlanketDca(toArray(analysis.haiku_escalation_calibration));
 
-  // Check ESCALATE/START ratio — threshold depends on defensive mode
-  const minEscalateRatio = defensiveMode ? DEFENSIVE_MIN_ESCALATE_RATIO : 0.4;
-  if (allHaikuRules.length > 0) {
-    const escalateCount = allHaikuRules.filter(r => {
-      const text = (typeof r === 'string' ? r : JSON.stringify(r)).toUpperCase();
-      return text.startsWith('ESCALATE') || text.startsWith('START') || text.includes('START ESCALATING');
-    }).length;
-    const escalateRatio = escalateCount / allHaikuRules.length;
-    if (escalateRatio < minEscalateRatio) {
-      issues.push(`Only ${(escalateRatio * 100).toFixed(0)}% of haiku rules are ESCALATE/START (need >=${(minEscalateRatio * 100).toFixed(0)}%).${defensiveMode ? ' (Defensive mode — lower threshold OK)' : ' Adding balance.'}`);
-      // Don't remove rules, just log the imbalance — the escalation guardrail handles correction
-    }
-    if (defensiveMode && escalateRatio > 0.4) {
-      issues.push(`WARNING: Defensive mode active but ${(escalateRatio * 100).toFixed(0)}% of rules are ESCALATE/START (>40%) — too aggressive for a losing streak. Consider reducing START rules.`);
-    }
-  }
-
   // Remove STOP rules that reference <5 samples
   const filterLowSampleRules = (rules) => {
     return rules.filter(r => {
@@ -1196,6 +1181,25 @@ function validateAnalysis(analysis, defensiveMode = false) {
   analysis.haiku_escalation_calibration = filterLowSampleRules(toArray(analysis.haiku_escalation_calibration));
   analysis.sonnet_rules = filterLowSampleRules(toArray(analysis.sonnet_rules));
   analysis.exit_rules = filterLowSampleRules(toArray(analysis.exit_rules || []));
+
+  // Check ESCALATE/START ratio — threshold depends on defensive mode
+  // Compute allHaikuRules AFTER all mutations (filterInvalidVerbs, enforceVolumeCeiling, convertBlanketDca, filterLowSampleRules)
+  const allHaikuRules = [...toArray(analysis.haiku_rules), ...toArray(analysis.haiku_escalation_calibration)];
+  const minEscalateRatio = defensiveMode ? DEFENSIVE_MIN_ESCALATE_RATIO : 0.4;
+  if (allHaikuRules.length > 0) {
+    const escalateCount = allHaikuRules.filter(r => {
+      const text = (typeof r === 'string' ? r : JSON.stringify(r)).toUpperCase();
+      return text.startsWith('ESCALATE') || text.startsWith('START') || text.includes('START ESCALATING');
+    }).length;
+    const escalateRatio = escalateCount / allHaikuRules.length;
+    if (escalateRatio < minEscalateRatio) {
+      issues.push(`Only ${(escalateRatio * 100).toFixed(0)}% of haiku rules are ESCALATE/START (need >=${(minEscalateRatio * 100).toFixed(0)}%).${defensiveMode ? ' (Defensive mode — lower threshold OK)' : ' Adding balance.'}`);
+      // Don't remove rules, just log the imbalance — the escalation guardrail handles correction
+    }
+    if (defensiveMode && escalateRatio > 0.4) {
+      issues.push(`WARNING: Defensive mode active but ${(escalateRatio * 100).toFixed(0)}% of rules are ESCALATE/START (>40%) — too aggressive for a losing streak. Consider reducing START rules.`);
+    }
+  }
 
   // Detect contradictory rule pairs
   const allRulesFlat = [
@@ -1976,7 +1980,7 @@ async function saveLearningRules(analysis) {
   }
 }
 
-async function saveLearningHistory(stats, analysis) {
+async function saveLearningHistory(stats, analysis, promptsUpdated = true) {
   const today = new Date().toISOString().split('T')[0];
   await query(`
     INSERT INTO learning_history (
@@ -1999,7 +2003,7 @@ async function saveLearningHistory(stats, analysis) {
       const wr = parseInt(p.total) > 0 ? parseInt(p.wins) / parseInt(p.total) * 100 : 0;
       return wr < 40;
     })),
-    true, true,
+    promptsUpdated, promptsUpdated,
     JSON.stringify([...(toArray(analysis.haiku_few_shots)), ...(toArray(analysis.sonnet_few_shots))]),
     JSON.stringify(analysis),
   ]);
