@@ -244,7 +244,7 @@ async function runCycle() {
     const openPositions = await getOpenPositions();
     const atMaxPositions = openPositions.length >= tradingConfig.account.max_concurrent_positions;
 
-    const toEscalate = [];
+    let toEscalate = [];
     // Mark filtered signals so they don't show as "pending" in the DB
     const markFiltered = (signalId, reason) => {
       if (signalId) {
