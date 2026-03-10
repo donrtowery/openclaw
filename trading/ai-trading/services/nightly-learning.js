@@ -45,14 +45,21 @@ async function run() {
 
   const stats = await calculateStats();
 
-  // ── Novelty check: skip prompt updates if no new closed trades ──
+  // ── Novelty check: skip prompt updates if no new closed trades since last run ──
   const MIN_NEW_TRADES = config.learning?.min_new_trades_for_update || 2;
   const lastHistoryResult = await query(
-    'SELECT total_trades FROM learning_history ORDER BY created_at DESC LIMIT 1'
+    'SELECT created_at FROM learning_history ORDER BY created_at DESC LIMIT 1'
   );
-  const lastTotalTrades = parseInt(lastHistoryResult.rows[0]?.total_trades) || 0;
-  const newTradesSinceLastRun = stats.total_trades - lastTotalTrades;
-  const skipPromptUpdates = newTradesSinceLastRun < MIN_NEW_TRADES && lastTotalTrades > 0;
+  const lastLearningRunTime = lastHistoryResult.rows[0]?.created_at || null;
+  let newTradesSinceLastRun = stats.total_trades; // default: all trades count if no prior run
+  if (lastLearningRunTime) {
+    const newTradesResult = await query(
+      "SELECT COUNT(*) as cnt FROM positions WHERE status = 'CLOSED' AND exit_time > $1",
+      [lastLearningRunTime]
+    );
+    newTradesSinceLastRun = parseInt(newTradesResult.rows[0]?.cnt) || 0;
+  }
+  const skipPromptUpdates = newTradesSinceLastRun < MIN_NEW_TRADES && lastLearningRunTime !== null;
   if (skipPromptUpdates) {
     logger.info(`[Learning] Novelty check: only ${newTradesSinceLastRun} new trade(s) since last run (need ${MIN_NEW_TRADES}). Skipping prompt/rule updates to prevent churn.`);
   }
@@ -1533,7 +1540,12 @@ function updatePromptFile(path, learningSection, rules, fewShots) {
   if (cappedRules.length > 0) {
     section += `RULES FROM EXPERIENCE:\n`;
     for (let i = 0; i < cappedRules.length; i++) {
-      section += `${i + 1}. ${flattenRule(cappedRules[i])}\n`;
+      // Fix stale mode references: rule #1 (master mode rule) already sets
+      // the current mode policy, so remove mode qualifiers from other rules
+      // that were generated under a previous mode (e.g., "during DEFENSIVE MODE").
+      let ruleText = flattenRule(cappedRules[i]);
+      ruleText = ruleText.replace(/\s+during DEFENSIVE MODE/gi, '');
+      section += `${i + 1}. ${ruleText}\n`;
     }
     section += '\n';
   }
@@ -1846,6 +1858,57 @@ async function updateOutcomes() {
 
 const toArray = (val) => Array.isArray(val) ? val : [];
 
+/**
+ * Parse rule text to extract statistical metadata for the learning_rules table.
+ * Returns { sample_size, win_rate, avg_pnl, confidence_score } with nulls for unmatched fields.
+ */
+function extractRuleMetrics(ruleText) {
+  const metrics = { sample_size: null, win_rate: null, avg_pnl: null, confidence_score: null };
+  if (typeof ruleText !== 'string') return metrics;
+
+  // "X/Y trades" or "X/Y losses" or "X/Y lost" or "X/Y won"
+  const tradeRatioMatch = ruleText.match(/(\d+)\s*\/\s*(\d+)\s*(?:trades?|loss(?:es)?|lost|won|wins?)/i);
+  if (tradeRatioMatch) {
+    const numerator = parseInt(tradeRatioMatch[1]);
+    const denominator = parseInt(tradeRatioMatch[2]);
+    if (denominator > 0) {
+      metrics.sample_size = denominator;
+      // If "X/Y won" or "X/Y wins" → numerator is wins
+      if (/won|wins?/i.test(tradeRatioMatch[0])) {
+        metrics.win_rate = parseFloat((numerator / denominator * 100).toFixed(1));
+      }
+      // If "X/Y losses" or "X/Y lost" → numerator is losses, so win_rate = (denom - num) / denom
+      else if (/loss(?:es)?|lost/i.test(tradeRatioMatch[0])) {
+        metrics.win_rate = parseFloat(((denominator - numerator) / denominator * 100).toFixed(1));
+      }
+    }
+  }
+
+  // "X% WR" or "X% win rate"
+  const wrMatch = ruleText.match(/(\d+(?:\.\d+)?)\s*%\s*WR\b/i) || ruleText.match(/(\d+(?:\.\d+)?)\s*%\s*win\s*rate/i);
+  if (wrMatch) {
+    metrics.win_rate = parseFloat(wrMatch[1]);
+  }
+
+  // "avg $X" or "avg -$X" or "avg +$X" or "avg -X%" or "avg +X%"
+  const avgPnlMatch = ruleText.match(/avg\s+([+-]?\$?\s*\d+(?:\.\d+)?)\s*%?/i);
+  if (avgPnlMatch) {
+    const raw = avgPnlMatch[1].replace(/[\s$]/g, '');
+    const parsed = parseFloat(raw);
+    if (!isNaN(parsed)) {
+      metrics.avg_pnl = parsed;
+    }
+  }
+
+  // Derive a simple confidence_score from sample_size if available
+  if (metrics.sample_size !== null) {
+    // Confidence increases with sample size: min(sample_size / 20, 1.0)
+    metrics.confidence_score = parseFloat(Math.min(metrics.sample_size / 20, 1.0).toFixed(2));
+  }
+
+  return metrics;
+}
+
 async function saveLearningRules(analysis) {
   const client = await getClient();
   try {
@@ -1884,10 +1947,11 @@ async function saveLearningRules(analysis) {
     ];
 
     for (const rule of allRules) {
+      const metrics = extractRuleMetrics(rule.text);
       await client.query(`
-        INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at)
-        VALUES ($1, $2, true, NOW())
-      `, [rule.type, rule.text]);
+        INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at, sample_size, win_rate, avg_pnl, confidence_score)
+        VALUES ($1, $2, true, NOW(), $3, $4, $5, $6)
+      `, [rule.type, rule.text, metrics.sample_size, metrics.win_rate, metrics.avg_pnl, metrics.confidence_score]);
     }
 
     await client.query('COMMIT');
@@ -1918,7 +1982,7 @@ async function saveLearningHistory(stats, analysis) {
     stats.total_pnl, stats.avg_win, stats.avg_loss, stats.best_trade, stats.worst_trade,
     JSON.stringify(stats.pattern_stats.filter(p => {
       const wr = parseInt(p.total) > 0 ? parseInt(p.wins) / parseInt(p.total) * 100 : 0;
-      return wr >= 70;
+      return wr >= 55;
     })),
     JSON.stringify(stats.pattern_stats.filter(p => {
       const wr = parseInt(p.total) > 0 ? parseInt(p.wins) / parseInt(p.total) * 100 : 0;
@@ -1960,6 +2024,14 @@ async function cleanup() {
   `);
   if (ruleResult.rowCount > 0) {
     logger.info(`[Learning] Deactivated ${ruleResult.rowCount} expired learning rules`);
+  }
+
+  // Delete old deactivated rules (>90 days) to prevent table bloat
+  const deleteResult = await query(`
+    DELETE FROM learning_rules WHERE is_active = false AND created_at < NOW() - INTERVAL '90 days'
+  `);
+  if (deleteResult.rowCount > 0) {
+    logger.info(`[Learning] Deleted ${deleteResult.rowCount} old deactivated learning rules (>90 days)`);
   }
 }
 

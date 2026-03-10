@@ -850,16 +850,18 @@ async function runExitScanCycle() {
   }
 
   // Pre-fetch shared context once (not per-candidate)
-  const [cachedPortfolio, exitLearningRules, cb] = await Promise.all([
+  const [cachedPortfolio, exitLearningRules, cb, regime] = await Promise.all([
     getCachedPortfolio(),
     getExitLearningRules(),
     checkCircuitBreaker(),
+    getMarketRegime(),
   ]);
 
   const portfolio = {
     ...cachedPortfolio,
     circuit_breaker_active: cb.is_active,
     consecutive_losses: cb.consecutive_losses,
+    market_regime: regime,
   };
 
   // Deduplicate candidates by symbol (keep highest urgency)

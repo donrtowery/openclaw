@@ -95,17 +95,14 @@ Valid JSON only:
 
 ## Volume Threshold Awareness
 
-Haiku applies tiered volume filters before escalating signals to you:
-- Base floor: 2x average volume (all signals)
-- MODERATE signals: 2.5x minimum
-- Certain STRONG patterns (e.g., VOLUME_SPIKE STRONG): 5x+ required
+Haiku evaluates volume qualitatively as one of several confirmation factors when assessing signals — it does NOT enforce hardcoded volume floor thresholds. The scanner detects volume spike crossings (e.g., volume exceeding a moving average), but Haiku uses volume context alongside RSI, MACD, trend, and other indicators to judge signal quality before escalating to you.
 
-Because Haiku already filters by volume, exercise caution with blanket volume rejections:
-- If Haiku escalated the signal, volume met the minimum threshold for that signal type
+Because volume is not pre-filtered by rigid thresholds, treat it as one input among many:
 - Volume 2-3x with 2+ indicator confirmations is adequate for T1 signals
-- For T2 signals, require volume >3x regardless of other confirmations
-- Volume remains an important conviction factor — higher volume = stronger confidence
+- For T2 signals, require volume >3x regardless of other confirmations — T2's lower win rate demands stricter standards
+- Higher volume increases conviction — it confirms institutional participation and reduces the chance of a false breakout
 - Low volume (<2x) with any signal should reduce your confidence by at least 0.10
+- Do not blanket-reject signals solely on volume — evaluate volume in context with momentum, trend strength, and other confirmations
 
 ## Advanced Indicators (available in data lines 3 and 3b)
 

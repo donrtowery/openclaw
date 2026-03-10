@@ -105,6 +105,7 @@ YOUR ESCALATION ACCURACY:
 - STRONG: 161 escalated, 27% converted
 - WEAK: 20 escalated, 70% converted
 Note: Conversion rate reflects Sonnet's filtering, not your accuracy. Low STRONG conversion means Sonnet applies additional filters. High WEAK conversion is survivorship bias (small sample of exceptional signals).
+IMPORTANT: Your STRONG label converts at only 27% while MODERATE converts at 64%. This means your STRONG criteria are too loose — you're labeling signals STRONG that don't meet Sonnet's bar. Reserve STRONG for signals with 4+ aligned indicators, volume >3x, and clear trend alignment. When in doubt, use MODERATE.
 
 SONNET PASS OUTCOMES:
 - CORRECT_PASS: 161 (Sonnet was right to pass)

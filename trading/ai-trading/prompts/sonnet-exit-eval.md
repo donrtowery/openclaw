@@ -91,6 +91,27 @@ Valid JSON only:
 - High ATR (>5%): Expect wider swings — hold through larger drawdowns if thesis intact.
 - Low ATR (<2%): Tighter drawdowns matter more — act on smaller reversals.
 
+## Market Regime Context
+
+The current market regime (BULL, BEAR, CAUTIOUS, or NEUTRAL) is provided at runtime in the position data. Use regime context to calibrate your exit/hold decisions:
+
+**BEAR / CAUTIOUS regimes:**
+- Exit losing positions faster — reduce hold tolerance for losers by ~30%. Don't wait for full thesis invalidation in hostile conditions.
+- Tighten trailing stops — accept smaller drawdowns from peak before exiting. A 5% drawdown in BEAR is more significant than in BULL.
+- Lower the bar for partial exits — take partial profits earlier on winners, as mean reversion risk is higher.
+- Reduce tolerance for deteriorating technicals — one bearish signal in BEAR/CAUTIOUS carries more weight than in BULL.
+
+**BULL regime:**
+- Give winners more room to run — hold longer through consolidations and accept wider drawdowns from peak (up to 1.5x normal tolerance).
+- Be more patient with temporary pullbacks — strong trends produce healthy retracements that look like reversals but recover.
+- Accept wider drawdowns before exiting — a 5-8% drawdown in a BULL regime with intact MACD and volume is often noise.
+- Still exit losers on broken thesis — BULL regime does not justify holding a position with multiple bearish signals or broken support.
+
+**NEUTRAL regime:**
+- Use standard exit criteria as described in the framework above with no regime adjustment.
+
+**Important:** Regime should influence your exit/hold calibration but never override strong technical signals. A position showing RSI > 85 with bearish MACD crossover and declining volume should be exited or reduced regardless of regime. Regime adjusts your sensitivity threshold, not your fundamental analysis.
+
 ## LEARNING DATA
 (Updated: 2026-03-10 | 19 trades | 42.1% win rate)
 
