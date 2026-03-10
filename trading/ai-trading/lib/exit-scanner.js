@@ -153,6 +153,12 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push(`P&L ${pnlPercent.toFixed(1)}% (moderate loss)`);
   }
 
+  // ── Time-accelerated urgency for losses ──
+  if (pnlPercent < -3 && holdHours > 24) {
+    score += 15;
+    factors.push(`Loss ${pnlPercent.toFixed(1)}% held >24h — accelerated exit pressure`);
+  }
+
   // ── Cut losers faster: loss + hold time + bearish signals ──
   if (pnlPercent < -5 && holdHours > 12 && analysis.macd?.crossover === 'BEARISH') {
     score += 15;
@@ -178,6 +184,14 @@ export function computeExitUrgency(position, analysis, currentPrice) {
   } else if (dcaCount >= 1 && pnlPercent < -10) {
     score += 15;
     factors.push(`DCA'd position at ${pnlPercent.toFixed(1)}% — consider exit`);
+  }
+
+  // ── Peak giveback fast-exit: was winning, now losing — thesis failed ──
+  if (maxGain > 5 && pnlPercent < 0) {
+    if (score < 80) {
+      score = 80;
+    }
+    factors.push(`Peak giveback: was +${maxGain.toFixed(1)}% now ${pnlPercent.toFixed(1)}% — thesis failed`);
   }
 
   return {

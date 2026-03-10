@@ -26,7 +26,7 @@ export async function initScanner() {
     return cachedSymbols;
   }
 
-  const result = await query('SELECT * FROM symbols WHERE is_active = true ORDER BY tier, symbol');
+  const result = await query('SELECT * FROM symbols WHERE is_active = true AND tier <= 2 ORDER BY tier, symbol');
   cachedSymbols = result.rows;
   symbolsCacheTime = now;
   logger.info(`[Scanner] Loaded ${cachedSymbols.length} active symbols`);
@@ -292,7 +292,7 @@ export async function runScanCycle(config) {
 async function saveIndicatorSnapshots(analyses) {
   if (analyses.length === 0) return;
 
-  const COLS = 26;
+  const COLS = 27;
   const values = [];
   const placeholders = [];
 
@@ -327,6 +327,7 @@ async function saveIndicatorSnapshots(analyses) {
       a.stochRsi?.d ?? null,
       a.adx?.value ?? null,
       a.adx?.signal ?? null,
+      a.obv?.value ?? null,
     );
   }
 
@@ -336,7 +337,7 @@ async function saveIndicatorSnapshots(analyses) {
       sma10, sma30, sma50, sma200, ema9, ema21,
       bb_upper, bb_middle, bb_lower, volume_24h, volume_ratio,
       support_nearest, resistance_nearest, trend,
-      atr, atr_percent, stoch_rsi_k, stoch_rsi_d, adx, adx_signal
+      atr, atr_percent, stoch_rsi_k, stoch_rsi_d, adx, adx_signal, obv
     ) VALUES ${placeholders.join(',')}
   `, values);
 }

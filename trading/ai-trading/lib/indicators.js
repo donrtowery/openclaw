@@ -370,6 +370,41 @@ export function calcStochasticRSI(closes) {
  * @param {{ high: number, low: number, close: number }[]} candles
  * @returns {{ value: number, pdi: number, mdi: number, signal: string } | null}
  */
+/**
+ * Calculate On-Balance Volume (OBV) from candle data.
+ * OBV adds volume on up-closes and subtracts on down-closes.
+ * @param {{ close: number, volume: number }[]} candles
+ * @returns {{ value: number, trend: string } | null}
+ */
+export function calcOBV(candles) {
+  try {
+    if (candles.length < 20) return null;
+    let obv = 0;
+    const obvValues = [0];
+    for (let i = 1; i < candles.length; i++) {
+      if (candles[i].close > candles[i - 1].close) {
+        obv += candles[i].volume;
+      } else if (candles[i].close < candles[i - 1].close) {
+        obv -= candles[i].volume;
+      }
+      obvValues.push(obv);
+    }
+    const current = obvValues[obvValues.length - 1];
+    // OBV trend: compare recent 10-period SMA vs prior 10-period SMA
+    const recent10 = obvValues.slice(-10);
+    const prior10 = obvValues.slice(-20, -10);
+    const avgRecent = recent10.reduce((s, v) => s + v, 0) / recent10.length;
+    const avgPrior = prior10.length > 0 ? prior10.reduce((s, v) => s + v, 0) / prior10.length : avgRecent;
+    let trend = 'FLAT';
+    if (avgRecent > avgPrior * 1.05) trend = 'RISING';
+    else if (avgRecent < avgPrior * 0.95) trend = 'FALLING';
+    return { value: Math.round(current), trend };
+  } catch (err) {
+    logger.warn(`OBV calc failed: ${err.message}`);
+    return null;
+  }
+}
+
 export function calcADX(candles) {
   try {
     if (candles.length < 28) return null;

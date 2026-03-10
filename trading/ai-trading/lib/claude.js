@@ -173,11 +173,29 @@ export async function callHaikuBatch(triggeredSignals, config) {
         anthropic.messages.create({
           model: HAIKU_MODEL,
           max_tokens: Math.min(512 * triggeredSignals.length, 4096),
-          system: [{
-            type: 'text',
-            text: systemPrompt,
-            cache_control: { type: 'ephemeral' },
-          }],
+          system: (() => {
+            // Split prompt at LEARNING DATA marker for better cache hits
+            const marker = '## LEARNING DATA';
+            const markerIdx = systemPrompt.indexOf(marker);
+            if (markerIdx > 0) {
+              return [
+                {
+                  type: 'text',
+                  text: systemPrompt.substring(0, markerIdx).trimEnd(),
+                  cache_control: { type: 'ephemeral' },
+                },
+                {
+                  type: 'text',
+                  text: systemPrompt.substring(markerIdx),
+                },
+              ];
+            }
+            return [{
+              type: 'text',
+              text: systemPrompt,
+              cache_control: { type: 'ephemeral' },
+            }];
+          })(),
           messages: [{ role: 'user', content: userMessage }],
         }),
         API_TIMEOUT_MS,
@@ -289,11 +307,29 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
         anthropic.messages.create({
           model: SONNET_MODEL,
           max_tokens: 1024,
-          system: [{
-            type: 'text',
-            text: systemPrompt,
-            cache_control: { type: 'ephemeral' },
-          }],
+          system: (() => {
+            // Split prompt at LEARNING DATA marker for better cache hits
+            const marker = '## LEARNING DATA';
+            const markerIdx = systemPrompt.indexOf(marker);
+            if (markerIdx > 0) {
+              return [
+                {
+                  type: 'text',
+                  text: systemPrompt.substring(0, markerIdx).trimEnd(),
+                  cache_control: { type: 'ephemeral' },
+                },
+                {
+                  type: 'text',
+                  text: systemPrompt.substring(markerIdx),
+                },
+              ];
+            }
+            return [{
+              type: 'text',
+              text: systemPrompt,
+              cache_control: { type: 'ephemeral' },
+            }];
+          })(),
           messages: [{ role: 'user', content: userMessage }],
         }),
         API_TIMEOUT_MS,
@@ -374,11 +410,29 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
         anthropic.messages.create({
           model: SONNET_MODEL,
           max_tokens: 768,
-          system: [{
-            type: 'text',
-            text: systemPrompt,
-            cache_control: { type: 'ephemeral' },
-          }],
+          system: (() => {
+            // Split prompt at LEARNING DATA marker for better cache hits
+            const marker = '## LEARNING DATA';
+            const markerIdx = systemPrompt.indexOf(marker);
+            if (markerIdx > 0) {
+              return [
+                {
+                  type: 'text',
+                  text: systemPrompt.substring(0, markerIdx).trimEnd(),
+                  cache_control: { type: 'ephemeral' },
+                },
+                {
+                  type: 'text',
+                  text: systemPrompt.substring(markerIdx),
+                },
+              ];
+            }
+            return [{
+              type: 'text',
+              text: systemPrompt,
+              cache_control: { type: 'ephemeral' },
+            }];
+          })(),
           messages: [{ role: 'user', content: userMessage }],
         }),
         API_TIMEOUT_MS,
@@ -495,6 +549,15 @@ function formatExitEvalInput(position, analysis, urgency, newsContext, portfolio
   msg += `Available capital: $${portfolioState.available_capital?.toFixed(2) || '0.00'}\n`;
   if (portfolioState.total_trades > 0) {
     msg += `Win rate: ${portfolioState.win_rate?.toFixed(1)}% (${portfolioState.total_trades} trades)\n`;
+  }
+
+  // Market regime context for exit decisions
+  if (portfolioState.market_regime) {
+    const mr = portfolioState.market_regime;
+    msg += `Market: ${mr.regime} (BTC ${mr.btc_trend}, RSI ${mr.btc_rsi})\n`;
+    if (mr.regime === 'BEAR' || mr.regime === 'CAUTIOUS') {
+      msg += `Bearish market — lower exit thresholds, cut losses faster\n`;
+    }
   }
   msg += '\n';
 
@@ -636,6 +699,22 @@ function formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioS
 
   if (portfolioState.circuit_breaker_active) {
     msg += `\nCIRCUIT BREAKER ACTIVE — ${portfolioState.consecutive_losses} consecutive losses\n`;
+  }
+
+  // Market regime context
+  if (portfolioState.market_regime) {
+    const mr = portfolioState.market_regime;
+    msg += `\nMarket Regime: ${mr.regime} (BTC ${mr.btc_trend}, ADX ${mr.btc_adx}, RSI ${mr.btc_rsi}, MACD ${mr.btc_macd})\n`;
+    if (mr.regime === 'BEAR') {
+      msg += `*** BEARISH MARKET — require extra confirmation for BUY signals, prioritize SELL ***\n`;
+    } else if (mr.regime === 'CAUTIOUS') {
+      msg += `Caution: BTC showing weakness — reduce position sizes, tighten entry criteria\n`;
+    }
+  }
+
+  // Trading session context
+  if (portfolioState.trading_session) {
+    msg += `Session: ${portfolioState.trading_session.session} — ${portfolioState.trading_session.note}\n`;
   }
   msg += '\n';
 

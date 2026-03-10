@@ -2,7 +2,7 @@ import { getCandles } from './binance.js';
 import {
   calcRSI, calcMACD, calcSMAs, calcEMAs,
   calcBollingerBands, calcVolume, calcSupportResistance, calcTrend,
-  calcATR, calcStochasticRSI, calcADX,
+  calcATR, calcStochasticRSI, calcADX, calcOBV,
 } from './indicators.js';
 import logger from './logger.js';
 
@@ -72,12 +72,13 @@ async function runWithConcurrency(tasks, maxConcurrent = 3) {
  * @returns {Promise<object>} Analysis object
  */
 export async function analyzeSymbol(symbol) {
-  let candles1h, candles5m, price;
+  let candles1h, candles5m, candles4h, price;
 
   try {
-    [candles1h, candles5m] = await Promise.all([
+    [candles1h, candles5m, candles4h] = await Promise.all([
       getCachedCandles(symbol, '1h', 200),
       getCachedCandles(symbol, '5m', 200),
+      getCachedCandles(symbol, '4h', 100),
     ]);
   } catch (err) {
     logger.warn(`Failed to fetch candles for ${symbol}: ${err.message}`);
@@ -105,6 +106,17 @@ export async function analyzeSymbol(symbol) {
   const atr = calcATR(candles1h);
   const stochRsi = calcStochasticRSI(closes1h);
   const adx = calcADX(candles1h);
+  const obv = calcOBV(candles1h);
+
+  // 4h timeframe trend for macro context
+  const closes4h = candles4h.map(c => c.close);
+  const trend4h = closes4h.length >= 50 ? calcTrend({
+    rsi: calcRSI(closes4h),
+    macd: calcMACD(closes4h),
+    ema: calcEMAs(closes4h, [9, 21]),
+    sma: calcSMAs(closes4h, [50]),
+    price,
+  }) : null;
 
   return {
     symbol,
@@ -121,6 +133,8 @@ export async function analyzeSymbol(symbol) {
     atr,
     stochRsi,
     adx,
+    obv,
+    trend4h,
     timestamp: new Date().toISOString(),
   };
 }
@@ -184,7 +198,13 @@ export function formatForClaude(a) {
   const momentumParts = [];
   if (a.stochRsi) momentumParts.push(`StochRSI:K${a.stochRsi.k}/D${a.stochRsi.d}(${a.stochRsi.signal.toLowerCase()})`);
   if (a.atr) momentumParts.push(`ATR:${a.atr.percent}%`);
+  if (a.obv) momentumParts.push(`OBV:${a.obv.trend.toLowerCase()}`);
   if (momentumParts.length) lines.push(momentumParts.join(' | '));
+
+  // Line 3c: 4h timeframe context
+  if (a.trend4h) {
+    lines.push(`4h: ${a.trend4h.direction} ${a.trend4h.strength}`);
+  }
 
   // Line 4: S/R
   const srParts = [];

@@ -433,8 +433,13 @@ async function processEscalatedSignal(triggered, haikuResult, news, portfolio, l
   logger.info(`[Engine] ${symbol}: Escalated to Sonnet (${haikuResult.strength} ${haikuResult.signal} conf:${haikuResult.confidence})`);
   lastSonnetEvaluation.set(symbol, Date.now());
 
+  // Fetch market regime and session context
+  const marketRegime = await getMarketRegime();
+  const tradingSession = getTradingSession();
+  const enrichedPortfolio = { ...portfolio, market_regime: marketRegime, trading_session: tradingSession };
+
   // Call Sonnet (context pre-fetched by caller)
-  const decision = await callSonnet(haikuResult, triggered, news, portfolio, learningRules, tradingConfig);
+  const decision = await callSonnet(haikuResult, triggered, news, enrichedPortfolio, learningRules, tradingConfig);
 
   // Execute if actionable (with per-symbol lock to prevent concurrent operations)
   if (['BUY', 'SELL', 'DCA', 'PARTIAL_EXIT'].includes(decision.action)) {
@@ -517,6 +522,21 @@ async function executeBuy(decision, triggered) {
     const reason = `BUY rejected — max positions (${openPositions.length}/${tradingConfig.account.max_concurrent_positions})`;
     logger.warn(`[Engine] ${symbol}: ${reason}`);
     return { escalated: true, executed: false, reason };
+  }
+
+  // Check tier concentration limit
+  const maxPerTier = tradingConfig.account.max_positions_per_tier;
+  if (maxPerTier) {
+    const tierKey2 = `tier_${tier}`;
+    const tierLimit = maxPerTier[tierKey2];
+    if (tierLimit) {
+      const tierPositions = openPositions.filter(p => p.tier === tier);
+      if (tierPositions.length >= tierLimit) {
+        const reason = `BUY rejected — tier ${tier} concentration limit (${tierPositions.length}/${tierLimit})`;
+        logger.warn(`[Engine] ${symbol}: ${reason}`);
+        return { escalated: true, executed: false, reason };
+      }
+    }
   }
 
   // Check no existing position on symbol
@@ -679,6 +699,13 @@ async function executeSell(decision, triggered) {
 
 async function executeDCA(decision, triggered) {
   const { symbol, tier } = triggered;
+
+  // Check if DCA is enabled in config
+  if (tradingConfig.dca?.enabled === false) {
+    const reason = 'DCA rejected — DCA disabled in config (0% historical win rate)';
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
 
   const position = await getPositionBySymbol(symbol);
   if (!position) {
@@ -1218,6 +1245,56 @@ async function getExitLearningRules() {
   }
   exitRulesCache = { data: result.rows, expiry: Date.now() + 60 * 60 * 1000 };
   return result.rows;
+}
+
+// ── Market Regime Detection ─────────────────────────────────
+
+let marketRegimeCache = { regime: null, expiry: 0 };
+
+async function getMarketRegime() {
+  if (marketRegimeCache.regime && Date.now() < marketRegimeCache.expiry) {
+    return marketRegimeCache.regime;
+  }
+  try {
+    const btcPrice = await getCurrentPrice('BTCUSDT');
+    const btcAnalysis = await import('../lib/technical-analysis.js').then(m => m.analyzeSymbol('BTCUSDT'));
+
+    const btcTrend = btcAnalysis.trend?.direction || 'NEUTRAL';
+    const btcAdx = btcAnalysis.adx?.value || 0;
+    const btcRsi = btcAnalysis.rsi?.value || 50;
+    const btcMacd = btcAnalysis.macd?.crossover || 'NEUTRAL';
+
+    let regime = 'NEUTRAL';
+    if (btcTrend === 'BULLISH' && btcAdx >= 25) regime = 'BULL';
+    else if (btcTrend === 'BEARISH' && btcAdx >= 25) regime = 'BEAR';
+    else if (btcTrend === 'BEARISH' || btcRsi < 40) regime = 'CAUTIOUS';
+    else if (btcTrend === 'BULLISH' || btcRsi > 60) regime = 'FAVORABLE';
+
+    const result = {
+      regime,
+      btc_trend: btcTrend,
+      btc_adx: btcAdx,
+      btc_rsi: btcRsi,
+      btc_macd: btcMacd,
+    };
+
+    marketRegimeCache = { regime: result, expiry: Date.now() + 10 * 60 * 1000 }; // 10 min cache
+    logger.info(`[Engine] Market regime: ${regime} (BTC ${btcTrend}, ADX ${btcAdx}, RSI ${btcRsi})`);
+    return result;
+  } catch (error) {
+    logger.warn(`[Engine] Market regime detection failed: ${error.message}`);
+    return { regime: 'NEUTRAL', btc_trend: 'UNKNOWN', btc_adx: 0, btc_rsi: 50, btc_macd: 'UNKNOWN' };
+  }
+}
+
+// ── Trading Session Detection ───────────────────────────────
+
+function getTradingSession() {
+  const hour = new Date().getUTCHours();
+  if (hour >= 0 && hour < 8) return { session: 'ASIA', note: 'Asian session — typically lower volume' };
+  if (hour >= 8 && hour < 14) return { session: 'EUROPE', note: 'European session — moderate volume' };
+  if (hour >= 14 && hour < 21) return { session: 'US', note: 'US session — highest volume' };
+  return { session: 'LATE_US', note: 'Late US/early Asia — declining volume' };
 }
 
 // ── Graceful Shutdown ───────────────────────────────────────

@@ -231,12 +231,20 @@ CREATE TABLE indicator_snapshots (
     support_nearest DECIMAL(20,8),
     resistance_nearest DECIMAL(20,8),
     trend VARCHAR(20),
+    atr DECIMAL(20,8),
+    atr_percent DECIMAL(6,2),
+    stoch_rsi_k DECIMAL(6,2),
+    stoch_rsi_d DECIMAL(6,2),
+    adx DECIMAL(6,2),
+    adx_signal VARCHAR(20),
+    obv DECIMAL(20,2),
 
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX idx_snapshots_symbol_time ON indicator_snapshots(symbol, created_at);
 CREATE INDEX idx_snapshots_cleanup ON indicator_snapshots(created_at);  -- For nightly cleanup
+CREATE INDEX idx_snapshots_symbol_time_price ON indicator_snapshots(symbol, created_at, price);  -- For MIN/MAX price queries in learning
 
 -- 7. LEARNING_RULES - Active rules from nightly analysis
 CREATE TABLE learning_rules (
@@ -251,6 +259,7 @@ CREATE TABLE learning_rules (
     confidence_score DECIMAL(4,3),
 
     is_active BOOLEAN DEFAULT true,
+    deactivated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     expires_at TIMESTAMPTZ
 );

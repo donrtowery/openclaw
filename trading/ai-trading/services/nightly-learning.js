@@ -45,6 +45,18 @@ async function run() {
 
   const stats = await calculateStats();
 
+  // ── Novelty check: skip prompt updates if no new closed trades ──
+  const MIN_NEW_TRADES = config.learning?.min_new_trades_for_update || 2;
+  const lastHistoryResult = await query(
+    'SELECT total_trades FROM learning_history ORDER BY created_at DESC LIMIT 1'
+  );
+  const lastTotalTrades = parseInt(lastHistoryResult.rows[0]?.total_trades) || 0;
+  const newTradesSinceLastRun = stats.total_trades - lastTotalTrades;
+  const skipPromptUpdates = newTradesSinceLastRun < MIN_NEW_TRADES && lastTotalTrades > 0;
+  if (skipPromptUpdates) {
+    logger.info(`[Learning] Novelty check: only ${newTradesSinceLastRun} new trade(s) since last run (need ${MIN_NEW_TRADES}). Skipping prompt/rule updates to prevent churn.`);
+  }
+
   logger.info(`[Learning] Stats: ${stats.total_trades} trades, ${stats.win_rate.toFixed(1)}% win rate, $${stats.total_pnl.toFixed(2)} total P&L, Sharpe: ${stats.sharpe_ratio.toFixed(2)}, max streak: ${stats.max_consecutive_losses}`);
   logger.info(`[Learning] Missed BUY opportunities: ${stats.missed_opportunities.length} non-escalated, ${stats.missed_pass_decisions.length} Sonnet PASS`);
   logger.info(`[Learning] Missed SELL opportunities: ${stats.missed_sell_opportunities.length} non-escalated, ${stats.missed_sell_pass_decisions.length} Sonnet PASS`);
@@ -127,7 +139,15 @@ async function run() {
     if (defensiveStagnant) {
       // Stagnant defensive mode — relax to allow T1 MODERATE signals to break the deadlock
       logger.warn(`[Learning] DEFENSIVE MODE STAGNANT: Only ${parseInt(trajectoryRows[0]?.total_trades || 0) - parseInt(trajectoryRows[trajectoryRows.length - 1]?.total_trades || 0)} new trades across ${trajectoryRows.length} sessions. Relaxing to cautious mode.`);
-      corrective = `STOP: CAUTIOUS MODE (relaxed from defensive) — win rate ${stats.win_rate.toFixed(1)}%, P&L $${stats.total_pnl.toFixed(2)}. Allow T1 MODERATE signals with confidence >=0.65 and 2+ confirmations. Reject T2 MODERATE and all WEAK BUY signals. SELL signals are EXEMPT — always escalate SELL/exit signals.`;
+      const stagnationSessions = config.escalation?.stagnation_sessions_to_override || 3;
+      const stagnationFloor = config.escalation?.stagnation_confidence_floor || 0.50;
+      if (trajectoryRows.length >= stagnationSessions && tradesSinceOldest === 0) {
+        // Full stagnation override — trading has completely stopped
+        logger.warn(`[Learning] STAGNATION OVERRIDE: Zero trades across ${trajectoryRows.length} sessions (>= ${stagnationSessions}). Aggressively relaxing filters.`);
+        corrective = `START: STAGNATION OVERRIDE — zero trades for ${trajectoryRows.length} sessions. RESUME TRADING with relaxed filters. Allow T1 signals with confidence >=${stagnationFloor} and 1+ confirmation. Allow T2 STRONG signals with confidence >=0.60 and 2+ confirmations. Volume >2x is sufficient for T1. SELL signals always escalated. This override expires when at least 3 new trades complete.`;
+      } else {
+        corrective = `STOP: CAUTIOUS MODE (relaxed from defensive) — win rate ${stats.win_rate.toFixed(1)}%, P&L $${stats.total_pnl.toFixed(2)}. Allow T1 MODERATE signals with confidence >=0.55 and 1+ confirmations. Allow T2 STRONG signals with confidence >=0.65. SELL signals are EXEMPT — always escalate SELL/exit signals.`;
+      }
     } else {
       // Standard defensive mode
       logger.warn(`[Learning] DEFENSIVE MODE: Prepending capital preservation STOP rule (overrides escalation conversion logic)`);
@@ -150,6 +170,8 @@ async function run() {
 
   if (analysis._parseFailure) {
     logger.warn(`[Learning] Skipping prompt/rule updates — Sonnet parse failure this cycle`);
+  } else if (skipPromptUpdates) {
+    logger.info(`[Learning] Skipping prompt/rule updates — insufficient new trade data`);
   } else {
     await updatePromptFiles(stats, analysis, defensiveMode);
     await saveLearningRules(analysis);
@@ -822,6 +844,21 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     prompt += '\n';
   }
 
+  // Flag inverted strength conversion if present
+  const strongData = stats.escalation_accuracy.find(r => r.strength === 'STRONG');
+  const moderateData = stats.escalation_accuracy.find(r => r.strength === 'MODERATE');
+  if (strongData && moderateData) {
+    const strongConv = parseInt(strongData.total_escalated) > 0 ? parseInt(strongData.led_to_trade) / parseInt(strongData.total_escalated) * 100 : 0;
+    const modConv = parseInt(moderateData.total_escalated) > 0 ? parseInt(moderateData.led_to_trade) / parseInt(moderateData.total_escalated) * 100 : 0;
+    if (strongConv < modConv) {
+      prompt += `\n*** STRENGTH INVERSION DETECTED ***\n`;
+      prompt += `STRONG signals convert at ${strongConv.toFixed(0)}% but MODERATE converts at ${modConv.toFixed(0)}%.\n`;
+      prompt += `This means STRONG is MISCALIBRATED — too many weak signals labeled STRONG.\n`;
+      prompt += `PRIORITY: Tighten STRONG criteria in haiku_rules. Require 4+ aligned indicators for STRONG (not 3+).\n`;
+      prompt += `STRONG should mean: high volume (>3x) + RSI confirmation + MACD alignment + trend support + ADX >25.\n\n`;
+    }
+  }
+
   prompt += `HOW TO INTERPRET:\n`;
   prompt += `- Haiku over-escalates → Sonnet correctly passes → reduce Haiku escalation for that pattern\n`;
   prompt += `- Haiku escalates → Sonnet wrongly passes (MISSED_OPPORTUNITY) → Sonnet was wrong, NOT Haiku\n`;
@@ -1076,6 +1113,26 @@ function validateAnalysis(analysis, defensiveMode = false) {
   analysis.sonnet_rules = filterInvalidVerbs(toArray(analysis.sonnet_rules), VALID_SONNET_VERBS, 'sonnet');
   analysis.exit_rules = filterInvalidVerbs(toArray(analysis.exit_rules || []), VALID_EXIT_VERBS, 'exit');
 
+  // ── Enforce volume threshold ceiling from config ──
+  const volumeCeiling = config.escalation?.volume_threshold_ceiling || 5.0;
+  const enforceVolumeCeiling = (rules, label) => {
+    return rules.map(r => {
+      const text = typeof r === 'string' ? r : JSON.stringify(r);
+      // Find volume thresholds like ">6x", ">7x", "volume >8x" etc.
+      const volMatch = text.match(/volume\s*[>≥]\s*(\d+(?:\.\d+)?)\s*x/i);
+      if (volMatch && parseFloat(volMatch[1]) > volumeCeiling) {
+        const oldThreshold = volMatch[1];
+        const capped = text.replace(volMatch[0], volMatch[0].replace(oldThreshold, String(volumeCeiling)));
+        issues.push(`Capped ${label} volume threshold from ${oldThreshold}x to ${volumeCeiling}x (ceiling)`);
+        return capped;
+      }
+      return r;
+    });
+  };
+  analysis.haiku_rules = enforceVolumeCeiling(toArray(analysis.haiku_rules), 'haiku');
+  analysis.haiku_escalation_calibration = enforceVolumeCeiling(toArray(analysis.haiku_escalation_calibration), 'haiku_calibration');
+  analysis.sonnet_rules = enforceVolumeCeiling(toArray(analysis.sonnet_rules), 'sonnet');
+
   // ── Convert blanket DCA rejection rules to conditional (S10) ──
   // Blanket "REJECT DCA" conflicts with Sonnet's conditional DCA rule. Convert to conditional.
   const convertBlanketDca = (rules) => {
@@ -1164,7 +1221,7 @@ function validateAnalysis(analysis, defensiveMode = false) {
                          (!approveUpper.match(/\bT[12]\b/) && !rejectUpper.match(/\bT[12]\b/));
         const sameStrength = ['STRONG', 'MODERATE', 'WEAK'].some(s =>
           approveUpper.includes(s) && rejectUpper.includes(s));
-        if (overlap.length >= 3 && (sameTier || sameStrength)) {
+        if (overlap.length >= 4 && sameTier && sameStrength) {
           if (defensiveMode) {
             // Defensive mode: preserve REJECT, remove APPROVE — bias toward capital preservation
             issues.push(`Contradictory rules detected (DEFENSIVE): "${approve.text.substring(0, 50)}" vs "${reject.text.substring(0, 50)}" — removing APPROVE rule`);

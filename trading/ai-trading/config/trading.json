@@ -3,7 +3,12 @@
     "total_capital": 6000,
     "max_concurrent_positions": 10,
     "paper_trading": true,
-    "max_trades_per_day": 20
+    "max_trades_per_day": 20,
+    "max_positions_per_tier": {
+      "tier_1": 4,
+      "tier_2": 3,
+      "note": "Concentration limit — prevents overexposure to correlated assets within same tier"
+    }
   },
   "position_sizing": {
     "confidence_scaling": true,
@@ -11,12 +16,14 @@
       "label": "Blue Chips (BTC, ETH, BNB, SOL, XRP, ADA, AVAX, DOT, LINK, POL)",
       "base_position_usd": 800,
       "max_position_usd": 2400,
+      "slippage_pct": 0.0005,
       "note": "Guidelines for Sonnet — highest conviction, most patient"
     },
     "tier_2": {
       "label": "Established (ATOM, NEAR, OP, ARB, SUI, AAVE, UNI, etc.)",
       "base_position_usd": 600,
       "max_position_usd": 1800,
+      "slippage_pct": 0.0015,
       "note": "Guidelines for Sonnet — standard risk management"
     },
     "tier_3": {
@@ -27,13 +34,16 @@
     }
   },
   "dca": {
+    "enabled": false,
     "max_dca_count": 2,
     "max_dca_pct_of_original": 50,
-    "note": "Max 2 DCAs per position. Each DCA capped at 50% of original entry cost."
+    "re_enable_win_rate": 55,
+    "note": "DISABLED — 0% DCA win rate (0/2). Re-enable when base win rate exceeds re_enable_win_rate."
   },
   "scanner": {
     "interval_minutes": 5,
     "signal_cooldown_minutes": 60,
+    "tier_filter": [1, 2],
     "thresholds": {
       "rsi_oversold": 30,
       "rsi_overbought": 70,
@@ -53,7 +63,10 @@
   "escalation": {
     "min_confidence_to_escalate": 0.6,
     "sonnet_dedup_minutes": 30,
-    "note": "Haiku decides whether to escalate based on signal quality, not rigid cutoffs. sonnet_dedup_minutes prevents re-escalating same symbol too frequently."
+    "volume_threshold_ceiling": 5.0,
+    "stagnation_sessions_to_override": 3,
+    "stagnation_confidence_floor": 0.50,
+    "note": "volume_threshold_ceiling prevents learning from raising volume filters above this max. stagnation override activates after N sessions with 0 new trades."
   },
   "circuit_breaker": {
     "consecutive_losses_to_activate": 3,
@@ -76,10 +89,10 @@
   "exit_scanner": {
     "enabled": true,
     "interval_cycles": 2,
-    "urgency_threshold": 40,
+    "urgency_threshold": 30,
     "critical_threshold": 70,
     "cooldown_minutes": 30,
-    "note": "Evaluates open positions every Nth cycle. Urgency >= threshold escalates to Sonnet. Critical bypasses cooldown."
+    "note": "Lowered urgency_threshold from 40 to 30 to cut losers faster. Critical bypasses cooldown."
   },
   "learning": {
     "snapshot_retention_days": 30,
@@ -91,7 +104,8 @@
     "defensive_mode_win_rate_threshold": 50,
     "defensive_mode_max_escalation_target": 15,
     "defensive_mode_min_escalate_ratio": 0.2,
-    "note": "Nightly Sonnet analysis of closed trades to update prompts"
+    "min_new_trades_for_update": 2,
+    "note": "min_new_trades_for_update prevents churning rules when no new trade data exists."
   },
   "fees": {
     "rate": 0.001,

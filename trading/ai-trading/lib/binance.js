@@ -141,8 +141,18 @@ export async function placeOrder(symbol, side, quantity, price = null) {
     if (roundedQty <= 0) {
       throw new Error(`Paper order quantity ${quantity} rounds to 0 for ${symbol} (step: ${stepSize})`);
     }
-    // Simulate realistic slippage: 0.1% adverse for market orders (configurable via env)
-    const slippagePct = parseFloat(process.env.PAPER_SLIPPAGE_PCT || '0.001');
+    // Simulate realistic slippage — tier-aware (T1 blue chips have tighter spreads)
+    const defaultSlippage = parseFloat(process.env.PAPER_SLIPPAGE_PCT || '0.001');
+    const slippagePct = (() => {
+      try {
+        const config = JSON.parse(require('fs').readFileSync('config/trading.json', 'utf8'));
+        // Check tier 1 symbols first (lower slippage)
+        const t1Label = config.position_sizing?.tier_1?.label || '';
+        const symbolBase = symbol.replace('USDT', '');
+        if (t1Label.includes(symbolBase)) return config.position_sizing?.tier_1?.slippage_pct || 0.0005;
+        return config.position_sizing?.tier_2?.slippage_pct || 0.0015;
+      } catch { return defaultSlippage; }
+    })();
     const fillPrice = side === 'BUY'
       ? basePrice * (1 + slippagePct)
       : basePrice * (1 - slippagePct);
@@ -187,8 +197,24 @@ export async function placeOrder(symbol, side, quantity, price = null) {
     quantity: String(roundedQty),
   };
 
-  logger.info(`[Binance] REAL TRADE: ${side} ${quantity} ${symbol}`);
-  const result = await request('/api/v3/order', params, 'POST', true);
+  logger.info(`[Binance] REAL TRADE: ${side} ${roundedQty} ${symbol}`);
+  let result;
+  try {
+    result = await request('/api/v3/order', params, 'POST', true);
+  } catch (orderErr) {
+    // Invalidate LOT_SIZE cache and retry once on quantity-related errors
+    if (orderErr.message && (orderErr.message.includes('LOT_SIZE') || orderErr.message.includes('QUANTITY') || orderErr.message.includes('stepSize'))) {
+      logger.warn(`[Binance] Order failed with LOT_SIZE error — invalidating cache and retrying`);
+      exchangeInfoCache = null;
+      exchangeInfoExpiry = 0;
+      const freshStep = await getStepSize(symbol);
+      const freshQty = roundToStepSize(quantity, freshStep);
+      params.quantity = String(freshQty);
+      result = await request('/api/v3/order', params, 'POST', true);
+    } else {
+      throw orderErr;
+    }
+  }
 
   // Validate order was actually filled
   if (result.status !== 'FILLED' && result.status !== 'PARTIALLY_FILLED') {

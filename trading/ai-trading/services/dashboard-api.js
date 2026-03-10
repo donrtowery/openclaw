@@ -45,12 +45,36 @@ const API_KEY = process.env.DASHBOARD_API_KEY;
 
 // ── Health check (no auth) ──────────────────────────────────
 
-app.get('/health', (_req, res) => {
-  res.json({
-    status: 'ok',
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString(),
-  });
+app.get('/health', async (_req, res) => {
+  try {
+    // Fetch engine heartbeat and last trade from DB
+    const [heartbeat, lastTrade, cycleCount] = await Promise.all([
+      query(`SELECT metadata->>'cycle_count' as cycles, created_at as last_heartbeat
+             FROM trade_events WHERE event_type = 'SYSTEM' AND metadata->>'type' = 'heartbeat'
+             ORDER BY created_at DESC LIMIT 1`).catch(() => ({ rows: [] })),
+      query(`SELECT symbol, executed_at FROM trades ORDER BY executed_at DESC LIMIT 1`).catch(() => ({ rows: [] })),
+      query(`SELECT COUNT(*) as count FROM trade_events WHERE event_type = 'SYSTEM' AND metadata->>'type' = 'cycle_complete'`).catch(() => ({ rows: [{ count: 0 }] })),
+    ]);
+
+    res.json({
+      status: 'ok',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      cycle_count: parseInt(cycleCount.rows[0]?.count) || 0,
+      last_heartbeat: heartbeat.rows[0]?.last_heartbeat || null,
+      last_trade: lastTrade.rows[0] ? {
+        symbol: lastTrade.rows[0].symbol,
+        time: lastTrade.rows[0].executed_at,
+      } : null,
+    });
+  } catch (err) {
+    res.json({
+      status: 'ok',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      error: 'Could not fetch extended health data',
+    });
+  }
 });
 
 // ── Auth middleware ──────────────────────────────────────────
