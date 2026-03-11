@@ -5,7 +5,7 @@ import { readFileSync } from 'fs';
 import { query, endPool, testConnection } from '../db/connection.js';
 import { testConnectivity, placeOrder, getCurrentPrice, getAllPrices } from '../lib/binance.js';
 import { initScanner, runScanCycle } from '../lib/scanner.js';
-import { callHaikuBatch, callSonnet, callSonnetExitEval, resetApiCosts } from '../lib/claude.js';
+import { callHaikuBatch, callSonnet, callSonnetBatch, callSonnetExitEval, resetApiCosts } from '../lib/claude.js';
 import { runExitScan, recordExitCooldown } from '../lib/exit-scanner.js';
 import { getNewsContext } from '../lib/brave-search.js';
 import {
@@ -249,13 +249,32 @@ async function runCycle() {
   // 3. Process triggered signals through Haiku (batched)
 
   if (scanResult.triggered.length > 0) {
+    // Pre-filter: skip single-trigger signals before sending to Haiku (saves ~67% of Haiku tokens)
+    const multiTrigger = [];
+    let singleSkipped = 0;
+    for (const sig of scanResult.triggered) {
+      if (sig.thresholds_crossed.length >= 2) {
+        multiTrigger.push(sig);
+      } else {
+        singleSkipped++;
+        logger.info(`[Engine] ${sig.symbol}: Skipped Haiku — single trigger (${sig.thresholds_crossed[0]})`);
+      }
+    }
+    if (singleSkipped > 0) {
+      logger.info(`[Engine] Pre-filtered ${singleSkipped} single-trigger signals, ${multiTrigger.length} sent to Haiku`);
+    }
+
+    if (multiTrigger.length === 0) {
+      logger.info(`[Engine] All triggers were single — skipping Haiku batch`);
+    }
+
     // Inject market regime into triggered signals for Haiku context
     const regime = await getMarketRegime();
-    for (const sig of scanResult.triggered) {
+    for (const sig of multiTrigger) {
       sig.market_regime = regime;
     }
 
-    const haikuResults = await callHaikuBatch(scanResult.triggered, tradingConfig);
+    const haikuResults = multiTrigger.length > 0 ? await callHaikuBatch(multiTrigger, tradingConfig) : [];
 
     // Filter to escalatable signals first, then process in parallel
     const openPositions = await getOpenPositions();
@@ -270,13 +289,13 @@ async function runCycle() {
       }
     };
 
-    if (haikuResults.length !== scanResult.triggered.length) {
-      logger.warn(`[Engine] Haiku batch size mismatch: ${scanResult.triggered.length} triggered vs ${haikuResults.length} results — processing min(${Math.min(scanResult.triggered.length, haikuResults.length)})`);
+    if (haikuResults.length !== multiTrigger.length) {
+      logger.warn(`[Engine] Haiku batch size mismatch: ${multiTrigger.length} triggered vs ${haikuResults.length} results — processing min(${Math.min(multiTrigger.length, haikuResults.length)})`);
     }
 
-    const processCount = Math.min(scanResult.triggered.length, haikuResults.length);
+    const processCount = Math.min(multiTrigger.length, haikuResults.length);
     for (let i = 0; i < processCount; i++) {
-      const triggered = scanResult.triggered[i];
+      const triggered = multiTrigger[i];
       const haikuResult = haikuResults[i];
 
       if (!haikuResult || !haikuResult.escalate) {
@@ -290,17 +309,6 @@ async function runCycle() {
         logger.info(`[Engine] ${triggered.symbol}: Below dynamic confidence floor ${dynamicConfFloor.toFixed(2)} (conf:${haikuResult.confidence}, conversion:${confFloorStats?.convRate?.toFixed(1) || '?'}%)`);
         markFiltered(haikuResult.signal_id, 'CONF_FLOOR');
         continue;
-      }
-
-      // Require at least 2 triggers — unless Haiku is STRONG with high confidence
-      if (triggered.thresholds_crossed.length < 2) {
-        if (haikuResult.strength === 'STRONG' && haikuResult.confidence >= 0.7) {
-          logger.info(`[Engine] ${triggered.symbol}: Single trigger but Haiku STRONG conf:${haikuResult.confidence} — allowing escalation`);
-        } else {
-          logger.info(`[Engine] ${triggered.symbol}: Skipped escalation — single trigger (${triggered.thresholds_crossed[0]})`);
-          markFiltered(haikuResult.signal_id, 'SINGLE_TRIGGER');
-          continue;
-        }
       }
 
       // Skip SELL/PARTIAL_EXIT escalations when we don't hold the coin
@@ -385,19 +393,48 @@ async function runCycle() {
         })
       );
 
-      // Process sequentially to prevent parallel BUYs from over-committing capital
-      for (let i = 0; i < toEscalate.length; i++) {
-        const { triggered, haikuResult } = toEscalate[i];
+      const marketRegime = prefetchedRegime;
+      const tradingSession = getTradingSession();
+      const enrichedPortfolio = { ...sharedPortfolio, market_regime: marketRegime, trading_session: tradingSession };
+
+      // Phase 1: Batch Sonnet evaluation (single API call for all escalated signals)
+      const sonnetInputs = toEscalate.map(({ triggered, haikuResult }, i) => {
         const news = newsResults[i].status === 'fulfilled' ? newsResults[i].value : 'No recent news available.';
+        logger.info(`[Engine] ${triggered.symbol}: Escalated to Sonnet (${haikuResult.strength} ${haikuResult.signal} conf:${haikuResult.confidence})`);
+        lastSonnetEvaluation.set(triggered.symbol, Date.now());
+        return { haikuSignal: haikuResult, triggeredSignal: triggered, newsContext: news };
+      });
+
+      let sonnetDecisions;
+      try {
+        sonnetDecisions = await callSonnetBatch(sonnetInputs, enrichedPortfolio, learningRules, tradingConfig);
+      } catch (error) {
+        logger.error(`[Engine] Sonnet batch failed: ${error.message}`);
+        sonnetDecisions = toEscalate.map(({ triggered }) => ({
+          action: 'PASS', symbol: triggered.symbol, confidence: 0,
+          reasoning: 'Batch API error — auto-PASS',
+        }));
+      }
+
+      // Phase 2: Sequential execution (preserves capital safety)
+      for (let i = 0; i < toEscalate.length; i++) {
+        const { triggered } = toEscalate[i];
+        const decision = sonnetDecisions[i];
+        if (!decision) continue;
+
         try {
-          const result = await processEscalatedSignal(triggered, haikuResult, news, sharedPortfolio, learningRules, prefetchedRegime);
-          if (result.executed) {
-            tradesExecuted++;
-            dailyTradeCount++;
-            // Refresh portfolio so the next signal in this cycle sees updated capital/positions
-            invalidatePortfolioCache();
-            const refreshedPortfolio = await getCachedPortfolio();
-            sharedPortfolio = { ...refreshedPortfolio, circuit_breaker_active: cb.is_active, consecutive_losses: cb.consecutive_losses };
+          if (['BUY', 'SHORT', 'SELL', 'DCA', 'PARTIAL_EXIT'].includes(decision.action)) {
+            const result = await withPositionLock(triggered.symbol, () => executeDecision(decision, triggered));
+            if (result.executed) {
+              tradesExecuted++;
+              dailyTradeCount++;
+              invalidatePortfolioCache();
+              const refreshedPortfolio = await getCachedPortfolio();
+              sharedPortfolio = { ...refreshedPortfolio, circuit_breaker_active: cb.is_active, consecutive_losses: cb.consecutive_losses };
+            }
+          } else {
+            await markDecisionExecuted(decision.decision_id, false, `Sonnet chose ${decision.action}`);
+            logger.info(`[Engine] ${triggered.symbol}: Sonnet chose ${decision.action} — no execution needed`);
           }
         } catch (error) {
           logger.error(`[Engine] Error processing ${triggered.symbol}: ${error.message}`);
@@ -427,8 +464,9 @@ async function runCycle() {
     }
   }
 
-  // 5. Hourly tasks (every 12th cycle at 5-min intervals = 1 hour)
-  if (cycleCount % 12 === 0) {
+  // 5. Hourly tasks (dynamic based on scan interval)
+  const cyclesPerHour = Math.round(60 / (tradingConfig.scanner?.interval_minutes || 10));
+  if (cycleCount % cyclesPerHour === 0) {
     try {
       await runHourlyRiskCheck();
       invalidatePortfolioCache(); // Fresh data after risk check price updates

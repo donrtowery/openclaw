@@ -436,6 +436,164 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
 }
 
 /**
+ * Batch Sonnet entry evaluations into a single API call.
+ * Each item: { haikuSignal, triggeredSignal, newsContext }
+ * Shared context: portfolioState, learningRules, config
+ *
+ * Returns: array of { action, symbol, confidence, ... , decision_id } in same order as inputs.
+ */
+export async function callSonnetBatch(items, portfolioState, learningRules, config) {
+  if (items.length === 0) return [];
+
+  // Single item — use direct call (no batch overhead)
+  if (items.length === 1) {
+    const { haikuSignal, triggeredSignal, newsContext } = items[0];
+    const result = await callSonnet(haikuSignal, triggeredSignal, newsContext, portfolioState, learningRules, config);
+    return [result];
+  }
+
+  const systemPrompt = loadPrompt('prompts/sonnet-decision.md', sonnetPromptCache);
+
+  // Build batched user message
+  let userMessage = `# BATCH SIGNAL EVALUATION — ${items.length} signals\n\n`;
+  userMessage += `Evaluate each signal independently. Return a JSON array with one decision object per signal, in order. Each object must include "symbol".\n\n`;
+
+  // Shared portfolio context (once, not per-signal)
+  userMessage += `## Portfolio State\n`;
+  userMessage += `Open positions: ${portfolioState.open_count}/${portfolioState.max_positions}\n`;
+  userMessage += `Unrealized P&L: ${portfolioState.unrealized_pnl_percent?.toFixed(2) || '0.00'}%\n`;
+  userMessage += `Available capital: $${portfolioState.available_capital?.toFixed(2) || '0.00'}\n`;
+  if (portfolioState.total_trades > 0) {
+    userMessage += `Win rate: ${portfolioState.win_rate?.toFixed(1)}% (${portfolioState.total_trades} trades)\n`;
+  }
+  if (portfolioState.circuit_breaker_active) {
+    userMessage += `\nCIRCUIT BREAKER ACTIVE — ${portfolioState.consecutive_losses} consecutive losses\n`;
+  }
+  if (portfolioState.market_regime) {
+    const mr = portfolioState.market_regime;
+    userMessage += `\nMarket Regime: ${mr.regime} (BTC ${mr.btc_trend}, ADX ${mr.btc_adx}, RSI ${mr.btc_rsi}, MACD ${mr.btc_macd})\n`;
+    if (mr.regime === 'BEAR') userMessage += `*** BEARISH MARKET — require extra confirmation for BUY signals, prioritize SELL ***\n`;
+    else if (mr.regime === 'CAUTIOUS') userMessage += `Caution: BTC showing weakness\n`;
+  }
+  if (portfolioState.trading_session) {
+    userMessage += `Session: ${portfolioState.trading_session.session} — ${portfolioState.trading_session.note}\n`;
+  }
+
+  if (learningRules?.length > 0) {
+    userMessage += `\n## Dynamic Learning Rules\n`;
+    for (const rule of learningRules) {
+      userMessage += `- ${rule.rule_text}`;
+      if (rule.win_rate) userMessage += ` (${rule.win_rate}% WR, ${rule.sample_size} trades)`;
+      userMessage += '\n';
+    }
+  }
+  userMessage += '\n';
+
+  // Per-signal sections
+  for (let i = 0; i < items.length; i++) {
+    const { haikuSignal, triggeredSignal, newsContext } = items[i];
+    userMessage += `--- Signal ${i + 1}: ${triggeredSignal.symbol} ---\n`;
+    userMessage += `Haiku: ${haikuSignal.signal} | ${haikuSignal.strength} | conf:${haikuSignal.confidence}\n`;
+    userMessage += `Reasons: ${(haikuSignal.reasons || []).join('; ')}\n`;
+    if (haikuSignal.concerns?.length) userMessage += `Concerns: ${haikuSignal.concerns.join('; ')}\n`;
+    userMessage += formatHaikuInput(triggeredSignal);
+    userMessage += `News: ${newsContext || 'No recent news.'}\n\n`;
+  }
+
+  try {
+    const startTime = Date.now();
+
+    const message = await withRetry(
+      () => withTimeout(
+        anthropic.messages.create({
+          model: SONNET_MODEL,
+          max_tokens: Math.min(1024 * items.length, 8192),
+          system: (() => {
+            const marker = '## LEARNING DATA';
+            const markerIdx = systemPrompt.indexOf(marker);
+            if (markerIdx > 0) {
+              return [
+                { type: 'text', text: systemPrompt.substring(0, markerIdx).trimEnd(), cache_control: { type: 'ephemeral' } },
+                { type: 'text', text: systemPrompt.substring(markerIdx) },
+              ];
+            }
+            return [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }];
+          })(),
+          messages: [{ role: 'user', content: userMessage }],
+        }),
+        API_TIMEOUT_MS * 2, // longer timeout for batch
+        `Sonnet batch (${items.length} signals)`
+      ),
+      { maxAttempts: 3, label: `Sonnet batch (${items.length} signals)` }
+    );
+
+    const responseText = message.content?.[0]?.text;
+    const inputTokens = message.usage.input_tokens;
+    const outputTokens = message.usage.output_tokens;
+    const cacheRead = message.usage.cache_read_input_tokens || 0;
+    const duration = Date.now() - startTime;
+
+    apiCostTracker.sonnet_input_tokens += inputTokens;
+    apiCostTracker.sonnet_output_tokens += outputTokens;
+    apiCostTracker.sonnet_cache_read_tokens += cacheRead;
+    apiCostTracker.calls.sonnet++;
+
+    logger.info(`[Sonnet] Batch ${items.length} signals in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
+
+    if (!responseText) {
+      logger.error(`[Sonnet] Empty batch response`);
+      return items.map(({ triggeredSignal }) => ({
+        action: 'PASS', symbol: triggeredSignal.symbol, confidence: 0,
+        reasoning: 'Empty batch response — auto-PASS', _fallback: true,
+      }));
+    }
+
+    // Parse response — expect JSON array
+    let parsedArray;
+    try {
+      parsedArray = extractJSON(responseText);
+      if (!Array.isArray(parsedArray)) parsedArray = [parsedArray];
+    } catch (parseErr) {
+      logger.error(`[Sonnet] Batch JSON parse failed: ${parseErr.message}`);
+      return items.map(({ triggeredSignal }) => ({
+        action: 'PASS', symbol: triggeredSignal.symbol, confidence: 0,
+        reasoning: 'Batch parse error — auto-PASS', _fallback: true,
+      }));
+    }
+
+    // Match results to inputs and log each decision
+    const results = [];
+    for (let i = 0; i < items.length; i++) {
+      const { haikuSignal, triggeredSignal } = items[i];
+      let parsed = parsedArray[i] || parsedArray.find(p => p.symbol === triggeredSignal.symbol);
+
+      if (!parsed) {
+        logger.warn(`[Sonnet] No batch result for ${triggeredSignal.symbol} — defaulting to PASS`);
+        parsed = { action: 'PASS', symbol: triggeredSignal.symbol, confidence: 0, reasoning: 'Missing from batch response' };
+      }
+
+      if (parsed.action === 'PARTIAL_EXIT' && !parsed.position_details?.exit_percent) {
+        parsed.position_details = parsed.position_details || {};
+        parsed.position_details.exit_percent = 50;
+      }
+
+      parsed = enforceConfidenceThresholds(parsed, config);
+      const decisionId = await logDecision(haikuSignal.signal_id, parsed, `[batch ${i + 1}/${items.length}]`, inputTokens + outputTokens);
+
+      logger.info(`[Sonnet] ${triggeredSignal.symbol}: ${parsed.action} conf:${parsed.confidence}`);
+      logger.info(`[Sonnet] Reasoning: ${(parsed.reasoning || '').substring(0, 150)}...`);
+
+      results.push({ ...parsed, decision_id: decisionId });
+    }
+
+    return results;
+  } catch (error) {
+    logger.error(`[Sonnet] Batch API error: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
  * Call Sonnet for exit evaluation of an open position.
  * Bypasses Haiku — exit scanner's urgency scoring replaces Haiku triage.
  *

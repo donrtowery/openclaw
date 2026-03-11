@@ -48,8 +48,8 @@
     "note": "DISABLED — 0% DCA win rate (0/2). Re-enable when base win rate exceeds re_enable_win_rate."
   },
   "scanner": {
-    "interval_minutes": 5,
-    "signal_cooldown_minutes": 60,
+    "interval_minutes": 10,
+    "signal_cooldown_minutes": 120,
     "tier_filter": [1, 2],
     "thresholds": {
       "rsi_oversold": 30,
@@ -70,7 +70,7 @@
     "note": "Safety net — Sonnet can still make intelligent decisions below these, but actions are downgraded"
   },
   "escalation": {
-    "min_confidence_to_escalate": 0.6,
+    "min_confidence_to_escalate": 0.65,
     "sonnet_dedup_minutes": 30,
     "volume_threshold_ceiling": 5.0,
     "stagnation_sessions_to_override": 3,
