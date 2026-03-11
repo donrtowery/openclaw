@@ -26,6 +26,13 @@
       "slippage_pct": 0.0015,
       "note": "Guidelines for Sonnet — standard risk management"
     },
+    "kelly": {
+      "enabled": false,
+      "min_trades": 20,
+      "max_fraction": 1.5,
+      "min_fraction": 0.2,
+      "note": "Half-Kelly position sizing. Requires min_trades completed trades. Disabled until sufficient data."
+    },
     "tier_3": {
       "label": "DISABLED — Tier 3 coins deactivated (too volatile for training)",
       "base_position_usd": 0,

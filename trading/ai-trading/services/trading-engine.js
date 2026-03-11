@@ -613,6 +613,17 @@ async function executeBuy(decision, triggered) {
     positionSizeUsd = Math.round(positionSizeUsd * 0.8);
     logger.warn(`[Engine] ${symbol}: Drawdown sizing: 20% reduction (portfolio ${portfolioPnlPct.toFixed(1)}% < -5%)`);
   }
+  // Kelly criterion sizing: adapt to actual win rate and payoff ratio
+  const kellyConfig = tradingConfig.position_sizing.kelly || {};
+  if (kellyConfig.enabled && buyPortfolio.total_trades >= (kellyConfig.min_trades || 20)) {
+    const kellyFraction = calcKellyFraction(buyPortfolio, kellyConfig);
+    if (kellyFraction !== 1.0) {
+      const kellySize = Math.round(positionSizeUsd * kellyFraction);
+      logger.info(`[Engine] ${symbol}: Kelly sizing: $${positionSizeUsd} → $${kellySize} (fraction: ${kellyFraction.toFixed(2)}, WR: ${buyPortfolio.win_rate.toFixed(1)}%, payoff: ${(Math.abs(buyPortfolio.avg_win) / Math.abs(buyPortfolio.avg_loss || 1)).toFixed(2)})`);
+      positionSizeUsd = kellySize;
+    }
+  }
+
   if (positionSizeUsd < 10) {
     const reason = `BUY rejected — position size too small ($${positionSizeUsd.toFixed(2)})`;
     logger.warn(`[Engine] ${symbol}: ${reason}`);
@@ -1293,6 +1304,26 @@ async function getExitLearningRules() {
   }
   exitRulesCache = { data: result.rows, expiry: Date.now() + 60 * 60 * 1000 };
   return result.rows;
+}
+
+// ── Kelly Criterion Position Sizing ──────────────────────────
+
+function calcKellyFraction(portfolio, kellyConfig = {}) {
+  const winRate = (portfolio.win_rate || 0) / 100;
+  const avgWin = Math.abs(portfolio.avg_win) || 1;
+  const avgLoss = Math.abs(portfolio.avg_loss) || 1;
+  const payoffRatio = avgWin / avgLoss;
+
+  // Kelly formula: f* = (bp - q) / b where p=win rate, q=1-p, b=payoff ratio
+  const kelly = (payoffRatio * winRate - (1 - winRate)) / payoffRatio;
+
+  // Half-Kelly for safety (standard practice)
+  const halfKelly = kelly / 2;
+
+  const minFraction = kellyConfig.min_fraction ?? 0.2;
+  const maxFraction = kellyConfig.max_fraction ?? 1.5;
+
+  return Math.max(minFraction, Math.min(halfKelly, maxFraction));
 }
 
 // ── Emergency Stop-Loss Monitor ──────────────────────────────
