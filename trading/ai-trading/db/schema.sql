@@ -20,6 +20,7 @@ CREATE TABLE symbols (
     symbol VARCHAR(20) UNIQUE NOT NULL,
     name VARCHAR(100) NOT NULL,
     tier INTEGER NOT NULL CHECK (tier >= 1 AND tier <= 4),
+    exchange VARCHAR(20) DEFAULT 'binance_us',
     is_active BOOLEAN DEFAULT true,
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
@@ -34,6 +35,7 @@ CREATE TABLE positions (
     status VARCHAR(10) NOT NULL CHECK (status IN ('OPEN', 'CLOSED')),
     tier INTEGER NOT NULL,
     direction VARCHAR(5) DEFAULT 'LONG' CHECK (direction IN ('LONG', 'SHORT')),
+    exchange VARCHAR(20) DEFAULT 'binance_us',
 
     -- Entry
     entry_price DECIMAL(20,8) NOT NULL,
@@ -93,6 +95,7 @@ CREATE TABLE trades (
     symbol VARCHAR(20) NOT NULL,
     trade_type VARCHAR(20) NOT NULL CHECK (trade_type IN ('ENTRY', 'DCA', 'PARTIAL_EXIT', 'FULL_EXIT')),
     direction VARCHAR(5) DEFAULT 'LONG' CHECK (direction IN ('LONG', 'SHORT')),
+    exchange VARCHAR(20) DEFAULT 'binance_us',
 
     price DECIMAL(20,8) NOT NULL,
     size DECIMAL(20,8) NOT NULL,

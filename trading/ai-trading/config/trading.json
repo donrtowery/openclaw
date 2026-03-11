@@ -126,6 +126,16 @@
     "max_short_positions": 2,
     "note": "SHORT disabled by default. Paper-only — Binance.US spot does not support short selling."
   },
+  "exchange": {
+    "primary": "binance_us",
+    "note": "Available: binance_us, binance_com, coinbase, kraken. Only binance_us is fully implemented.",
+    "exchanges": {
+      "binance_us": { "note": "Uses BINANCE_API_KEY and BINANCE_SECRET_KEY from .env" },
+      "binance_com": { "note": "Uses BINANCE_COM_API_KEY and BINANCE_COM_SECRET_KEY from .env" },
+      "coinbase": { "note": "Uses COINBASE_API_KEY and COINBASE_SECRET_KEY from .env. Read-only — placeOrder not implemented." },
+      "kraken": { "note": "Uses KRAKEN_API_KEY and KRAKEN_SECRET_KEY from .env. Read-only — placeOrder not implemented." }
+    }
+  },
   "emergency_stop_loss": {
     "enabled": true,
     "tier_1_percent": -20,
