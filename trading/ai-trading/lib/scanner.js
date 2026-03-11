@@ -58,7 +58,7 @@ function recordCooldown(symbol, signalType) {
  * RSI dropping from 35 to 28 = crossing into oversold (alert).
  * RSI staying at 28 next cycle = still oversold (no alert).
  */
-function detectThresholdCrossings(symbol, current, previous, thresholds) {
+export function detectThresholdCrossings(symbol, current, previous, thresholds) {
   const crossed = [];
 
   if (!previous || previous.error || current.error) {

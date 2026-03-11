@@ -356,3 +356,14 @@ CREATE TABLE circuit_breaker (
 
 -- Initialize
 INSERT INTO circuit_breaker (consecutive_losses, is_active) VALUES (0, false);
+
+-- 11. BACKTEST_RUNS - Historical backtest results
+CREATE TABLE backtest_runs (
+    id SERIAL PRIMARY KEY,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    symbols TEXT[],
+    config_snapshot JSONB NOT NULL,
+    results JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
