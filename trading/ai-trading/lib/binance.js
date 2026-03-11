@@ -183,7 +183,8 @@ export async function placeOrder(symbol, side, quantity, price = null) {
     };
 
     const slippage = ((fillPrice - basePrice) / basePrice * 100).toFixed(3);
-    logger.info(`[Binance] PAPER TRADE: ${side} ${roundedQty} ${symbol} @ $${fillPrice.toFixed(4)} (slip: ${slippage}%, fee: $${commission.toFixed(2)})`);
+    const shortLabel = side === 'SELL' && !price ? ' (SHORT ENTRY)' : '';
+    logger.info(`[Binance] PAPER TRADE: ${side}${shortLabel} ${roundedQty} ${symbol} @ $${fillPrice.toFixed(4)} (slip: ${slippage}%, fee: $${commission.toFixed(2)})`);
     return mockOrder;
   }
 

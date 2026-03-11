@@ -21,7 +21,11 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     logger.warn(`[ExitScanner] ${position.symbol} #${position.id}: corrupt avg_entry_price (${position.avg_entry_price}) — assigning high urgency`);
     return { score: 80, factors: ['corrupt avg_entry_price — manual review needed'], pnl_percent: 0, hold_hours: 0, drawdown_from_peak: 0, max_gain: 0 };
   }
-  const pnlPercent = ((currentPrice - avgEntry) / avgEntry) * 100;
+  const direction = position.direction || 'LONG';
+  // Direction-aware P&L: LONG profits when price rises, SHORT profits when price falls
+  const pnlPercent = direction === 'SHORT'
+    ? ((avgEntry - currentPrice) / avgEntry) * 100
+    : ((currentPrice - avgEntry) / avgEntry) * 100;
   const holdMs = Date.now() - new Date(position.entry_time).getTime();
   const holdHours = holdMs / (1000 * 60 * 60);
   const maxGain = parseFloat(position.max_unrealized_gain_percent || 0);
@@ -37,33 +41,58 @@ export function computeExitUrgency(position, analysis, currentPrice) {
   const holdTimeMedium = isT1 ? 36 : 24;
 
   // RSI (current state, not crossing) — ATR-scaled: high volatility coins get more RSI headroom
+  // For SHORT positions, invert RSI logic: oversold = target reached (exit), overbought = trend continuing (hold)
   if (analysis.rsi) {
     const rsi = analysis.rsi.value;
     const atrPct = analysis.atr?.percent || 3;
-    // High ATR (>5%) reduces RSI urgency by ~40%, low ATR (<2%) increases by ~20%
     const atrScale = atrPct > 5 ? 0.6 : atrPct < 2 ? 1.2 : 1.0;
-    if (rsi > 85) {
-      score += Math.round(30 * atrScale);
-      factors.push(`RSI ${rsi.toFixed(1)} (extreme overbought${atrScale !== 1 ? `, ATR ${atrPct.toFixed(1)}%` : ''})`);
-    } else if (rsi > 75) {
-      score += Math.round(15 * atrScale);
-      factors.push(`RSI ${rsi.toFixed(1)} (overbought${atrScale !== 1 ? `, ATR ${atrPct.toFixed(1)}%` : ''})`);
-    } else if (rsi > 70) {
-      score += Math.round(5 * atrScale);
-      factors.push(`RSI ${rsi.toFixed(1)} (approaching overbought)`);
+    if (direction === 'SHORT') {
+      // SHORT: low RSI = price dropped = profitable, consider covering
+      if (rsi < 15) {
+        score += Math.round(30 * atrScale);
+        factors.push(`RSI ${rsi.toFixed(1)} (extreme oversold — SHORT target zone${atrScale !== 1 ? `, ATR ${atrPct.toFixed(1)}%` : ''})`);
+      } else if (rsi < 25) {
+        score += Math.round(15 * atrScale);
+        factors.push(`RSI ${rsi.toFixed(1)} (oversold — SHORT profit zone${atrScale !== 1 ? `, ATR ${atrPct.toFixed(1)}%` : ''})`);
+      } else if (rsi < 30) {
+        score += Math.round(5 * atrScale);
+        factors.push(`RSI ${rsi.toFixed(1)} (approaching oversold — SHORT nearing target)`);
+      }
+    } else {
+      // LONG: high RSI = overbought, consider selling
+      if (rsi > 85) {
+        score += Math.round(30 * atrScale);
+        factors.push(`RSI ${rsi.toFixed(1)} (extreme overbought${atrScale !== 1 ? `, ATR ${atrPct.toFixed(1)}%` : ''})`);
+      } else if (rsi > 75) {
+        score += Math.round(15 * atrScale);
+        factors.push(`RSI ${rsi.toFixed(1)} (overbought${atrScale !== 1 ? `, ATR ${atrPct.toFixed(1)}%` : ''})`);
+      } else if (rsi > 70) {
+        score += Math.round(5 * atrScale);
+        factors.push(`RSI ${rsi.toFixed(1)} (approaching overbought)`);
+      }
     }
   }
 
-  // StochRSI overbought confirmation
-  if (analysis.stochRsi?.signal === 'OVERBOUGHT') {
-    score += 10;
-    factors.push(`StochRSI overbought K:${analysis.stochRsi.k}`);
-  } else if (analysis.stochRsi?.signal === 'BEARISH_CROSS') {
-    score += 15;
-    factors.push(`StochRSI bearish cross K:${analysis.stochRsi.k}`);
-  } else if (analysis.stochRsi?.signal === 'APPROACHING_OVERBOUGHT') {
-    score += 5;
-    factors.push(`StochRSI approaching overbought K:${analysis.stochRsi.k}`);
+  // StochRSI — for shorts, oversold/bullish signals trigger exit (price dropped, cover)
+  if (direction === 'SHORT') {
+    if (analysis.stochRsi?.signal === 'OVERSOLD') {
+      score += 10;
+      factors.push(`StochRSI oversold K:${analysis.stochRsi.k} — SHORT cover zone`);
+    } else if (analysis.stochRsi?.signal === 'BULLISH_CROSS') {
+      score += 15;
+      factors.push(`StochRSI bullish cross K:${analysis.stochRsi.k} — SHORT reversal risk`);
+    }
+  } else {
+    if (analysis.stochRsi?.signal === 'OVERBOUGHT') {
+      score += 10;
+      factors.push(`StochRSI overbought K:${analysis.stochRsi.k}`);
+    } else if (analysis.stochRsi?.signal === 'BEARISH_CROSS') {
+      score += 15;
+      factors.push(`StochRSI bearish cross K:${analysis.stochRsi.k}`);
+    } else if (analysis.stochRsi?.signal === 'APPROACHING_OVERBOUGHT') {
+      score += 5;
+      factors.push(`StochRSI approaching overbought K:${analysis.stochRsi.k}`);
+    }
   }
 
   // ADX: weak trend + loss = exit faster (choppy market, not trending)
@@ -127,21 +156,38 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push('Price at BB upper band');
   }
 
-  // MACD weakness
+  // MACD — for shorts, bullish MACD signals trigger exit (reversal against short)
   if (analysis.macd) {
-    if (analysis.macd.crossover === 'BEARISH') {
-      score += 15;
-      factors.push('MACD bearish crossover');
-    } else if (analysis.macd.crossover === 'BEARISH_TREND') {
-      score += 5;
-      factors.push('MACD bearish trend');
+    if (direction === 'SHORT') {
+      if (analysis.macd.crossover === 'BULLISH') {
+        score += 15;
+        factors.push('MACD bullish crossover — SHORT reversal risk');
+      } else if (analysis.macd.crossover === 'BULLISH_TREND') {
+        score += 5;
+        factors.push('MACD bullish trend — SHORT pressure easing');
+      }
+    } else {
+      if (analysis.macd.crossover === 'BEARISH') {
+        score += 15;
+        factors.push('MACD bearish crossover');
+      } else if (analysis.macd.crossover === 'BEARISH_TREND') {
+        score += 5;
+        factors.push('MACD bearish trend');
+      }
     }
   }
 
-  // Trend
-  if (analysis.trend?.direction === 'BEARISH') {
-    score += 10;
-    factors.push('Trend: BEARISH');
+  // Trend — for shorts, bullish trend is adverse
+  if (direction === 'SHORT') {
+    if (analysis.trend?.direction === 'BULLISH') {
+      score += 10;
+      factors.push('Trend: BULLISH — adverse for SHORT');
+    }
+  } else {
+    if (analysis.trend?.direction === 'BEARISH') {
+      score += 10;
+      factors.push('Trend: BEARISH');
+    }
   }
 
   // Deep loss — tier-adjusted

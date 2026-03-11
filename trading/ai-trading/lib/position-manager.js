@@ -9,8 +9,9 @@ const FEE_RATE = parseFloat(process.env.TRADING_FEE_RATE || _tradingConfig?.fees
 
 /**
  * Open a new position
+ * @param {string} direction - 'LONG' (default) or 'SHORT'
  */
-export async function openPosition(symbol, tier, entryPrice, entrySize, entryCost, reasoning, confidence, decisionId, paperTrade = true) {
+export async function openPosition(symbol, tier, entryPrice, entrySize, entryCost, reasoning, confidence, decisionId, paperTrade = true, direction = 'LONG') {
   const entryFee = entryCost * FEE_RATE;
   const costWithFees = entryCost + entryFee;
 
@@ -20,15 +21,15 @@ export async function openPosition(symbol, tier, entryPrice, entrySize, entryCos
 
     const result = await client.query(`
       INSERT INTO positions (
-        symbol, status, tier,
+        symbol, status, tier, direction,
         entry_price, entry_time, entry_size, entry_cost,
         current_price, current_size, total_cost, avg_entry_price,
         entry_reasoning, entry_confidence, open_decision_id,
         total_fees
-      ) VALUES ($1, 'OPEN', $2, $3, NOW(), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      ) VALUES ($1, 'OPEN', $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING id
     `, [
-      symbol, tier,
+      symbol, tier, direction,
       entryPrice, entrySize, costWithFees,
       entryPrice, entrySize, costWithFees, entryPrice,
       reasoning, confidence, decisionId,
@@ -39,12 +40,13 @@ export async function openPosition(symbol, tier, entryPrice, entrySize, entryCos
 
     // Log entry trade
     await client.query(`
-      INSERT INTO trades (position_id, symbol, trade_type, price, size, cost, reasoning, confidence, paper_trade)
-      VALUES ($1, $2, 'ENTRY', $3, $4, $5, $6, $7, $8)
-    `, [positionId, symbol, entryPrice, entrySize, costWithFees, reasoning, confidence, paperTrade]);
+      INSERT INTO trades (position_id, symbol, trade_type, direction, price, size, cost, reasoning, confidence, paper_trade)
+      VALUES ($1, $2, 'ENTRY', $3, $4, $5, $6, $7, $8, $9)
+    `, [positionId, symbol, direction, entryPrice, entrySize, costWithFees, reasoning, confidence, paperTrade]);
 
     await client.query('COMMIT');
-    logger.info(`[Position] Opened #${positionId} ${symbol} @ $${entryPrice.toFixed(2)} ($${entryCost.toFixed(2)} + $${entryFee.toFixed(2)} fee)`);
+    const dirLabel = direction === 'SHORT' ? 'SHORT ' : '';
+    logger.info(`[Position] Opened ${dirLabel}#${positionId} ${symbol} @ $${entryPrice.toFixed(2)} ($${entryCost.toFixed(2)} + $${entryFee.toFixed(2)} fee)`);
     return positionId;
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
@@ -129,6 +131,7 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
     }
     exitPercent = Math.min(Math.max(exitPercent, 0), 100);
     const avgEntry = parseFloat(pos.avg_entry_price);
+    const direction = pos.direction || 'LONG';
     const exitSize = currentSize * (exitPercent / 100);
     const exitValue = exitSize * exitPrice;
     const exitFee = exitValue * FEE_RATE;
@@ -136,7 +139,10 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
     // Use total_cost / current_size for all-in cost (includes entry fees) instead of raw avg_entry_price
     const allInCostPerUnit = parseFloat(pos.total_cost) / currentSize;
     const costBasis = exitSize * allInCostPerUnit;
-    const pnl = netExitValue - costBasis;
+    // Direction-aware P&L: LONG profits when price goes up, SHORT profits when price goes down
+    const pnl = direction === 'SHORT'
+      ? costBasis - netExitValue  // SHORT: profit = entry - exit
+      : netExitValue - costBasis; // LONG: profit = exit - entry
     const pnlPercent = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
     const isFull = exitPercent >= 99;
     const tradeType = isFull ? 'FULL_EXIT' : 'PARTIAL_EXIT';
@@ -211,9 +217,17 @@ export async function getOpenPositions() {
 }
 
 /**
- * Get open position by symbol (or null)
+ * Get open position by symbol (or null).
+ * @param {string} direction - optional, filter by direction ('LONG' or 'SHORT')
  */
-export async function getPositionBySymbol(symbol) {
+export async function getPositionBySymbol(symbol, direction = null) {
+  if (direction) {
+    const result = await query(
+      'SELECT * FROM positions WHERE symbol = $1 AND status = $2 AND direction = $3 LIMIT 1',
+      [symbol, 'OPEN', direction]
+    );
+    return result.rows[0] || null;
+  }
   const result = await query(
     'SELECT * FROM positions WHERE symbol = $1 AND status = $2 LIMIT 1',
     [symbol, 'OPEN']

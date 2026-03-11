@@ -33,6 +33,7 @@ CREATE TABLE positions (
     symbol VARCHAR(20) NOT NULL,
     status VARCHAR(10) NOT NULL CHECK (status IN ('OPEN', 'CLOSED')),
     tier INTEGER NOT NULL,
+    direction VARCHAR(5) DEFAULT 'LONG' CHECK (direction IN ('LONG', 'SHORT')),
 
     -- Entry
     entry_price DECIMAL(20,8) NOT NULL,
@@ -91,6 +92,7 @@ CREATE TABLE trades (
     position_id INTEGER REFERENCES positions(id),
     symbol VARCHAR(20) NOT NULL,
     trade_type VARCHAR(20) NOT NULL CHECK (trade_type IN ('ENTRY', 'DCA', 'PARTIAL_EXIT', 'FULL_EXIT')),
+    direction VARCHAR(5) DEFAULT 'LONG' CHECK (direction IN ('LONG', 'SHORT')),
 
     price DECIMAL(20,8) NOT NULL,
     size DECIMAL(20,8) NOT NULL,
@@ -177,7 +179,7 @@ CREATE TABLE decisions (
     symbol VARCHAR(20) NOT NULL,
 
     -- Decision
-    action VARCHAR(20) NOT NULL CHECK (action IN ('BUY', 'SELL', 'HOLD', 'DCA', 'PARTIAL_EXIT', 'PASS')),
+    action VARCHAR(20) NOT NULL CHECK (action IN ('BUY', 'SHORT', 'SELL', 'HOLD', 'DCA', 'PARTIAL_EXIT', 'PASS')),
     confidence DECIMAL(4,3) NOT NULL,
 
     -- If BUY/DCA

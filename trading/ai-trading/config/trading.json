@@ -120,6 +120,12 @@
     "rate": 0.001,
     "note": "Per-side trading fee rate. Match to your Binance fee tier."
   },
+  "short_selling": {
+    "enabled": false,
+    "paper_only": true,
+    "max_short_positions": 2,
+    "note": "SHORT disabled by default. Paper-only — Binance.US spot does not support short selling."
+  },
   "emergency_stop_loss": {
     "enabled": true,
     "tier_1_percent": -20,

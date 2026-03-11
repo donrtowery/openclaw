@@ -501,6 +501,9 @@ async function executeDecision(decision, triggered) {
       case 'BUY':
         result = await executeBuy(decision, triggered);
         break;
+      case 'SHORT':
+        result = await executeShort(decision, triggered);
+        break;
       case 'SELL':
       case 'PARTIAL_EXIT':
         result = await executeSell(decision, triggered);
@@ -662,6 +665,98 @@ async function executeBuy(decision, triggered) {
   invalidatePortfolioCache();
   logger.info(`[Engine] EXECUTED BUY: ${symbol} ${fillQty.toFixed(6)} @ $${fillPrice.toFixed(2)} ($${fillCost.toFixed(2)})`);
   sendAlert('BUY', symbol, { price: fillPrice, confidence: decision.confidence, reasoning: decision.reasoning }).catch(() => {});
+  return { escalated: true, executed: true };
+}
+
+async function executeShort(decision, triggered) {
+  const { symbol, tier } = triggered;
+  const shortConfig = tradingConfig.short_selling || {};
+
+  if (!shortConfig.enabled) {
+    const reason = 'SHORT rejected — short selling disabled in config';
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
+  if (shortConfig.paper_only && !tradingConfig.account.paper_trading) {
+    const reason = 'SHORT rejected — short selling is paper-only, but live trading is enabled';
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
+  // Check max short positions
+  const openPositions = await getOpenPositions();
+  const shortPositions = openPositions.filter(p => p.direction === 'SHORT');
+  const maxShorts = shortConfig.max_short_positions || 2;
+  if (shortPositions.length >= maxShorts) {
+    const reason = `SHORT rejected — max short positions (${shortPositions.length}/${maxShorts})`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
+  // Check no existing position on symbol (any direction)
+  const existing = await getPositionBySymbol(symbol);
+  if (existing) {
+    const reason = `SHORT rejected — already have open ${existing.direction} position #${existing.id}`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
+  // Position sizing — same as BUY but for shorts
+  const tierKey = `tier_${tier}`;
+  const tierConfig = tradingConfig.position_sizing[tierKey];
+  let positionSizeUsd = decision.position_details?.position_size_usd ?? tierConfig?.base_position_usd ?? 600;
+
+  // Cap at tier max
+  if (tierConfig?.max_position_usd && positionSizeUsd > tierConfig.max_position_usd) {
+    positionSizeUsd = tierConfig.max_position_usd;
+  }
+
+  // Confidence scaling
+  if (decision.confidence < 0.85) {
+    const scaleFactor = Math.min(Math.pow(decision.confidence / 0.85, 2), 1.0);
+    positionSizeUsd = Math.round(positionSizeUsd * scaleFactor);
+  }
+
+  const shortPortfolio = await getCachedPortfolio();
+  if (positionSizeUsd < 10) {
+    const reason = `SHORT rejected — position size too small ($${positionSizeUsd.toFixed(2)})`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+  if (positionSizeUsd > shortPortfolio.available_capital) {
+    const reason = `SHORT rejected — insufficient capital ($${positionSizeUsd} > $${shortPortfolio.available_capital.toFixed(2)} available)`;
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
+  // Execute — paper mode SELL acts as short entry
+  const estimatedPrice = await getCurrentPrice(symbol);
+  const estimatedQty = positionSizeUsd / estimatedPrice;
+  const order = await placeOrder(symbol, 'SELL', estimatedQty);
+  const fillPrice = order.price;
+  const fillQty = parseFloat(order.executedQty) || estimatedQty;
+  const fillCost = parseFloat(order.cummulativeQuoteQty) || (fillPrice * fillQty);
+
+  const positionId = await openPosition(
+    symbol, tier, fillPrice, fillQty, fillCost,
+    decision.reasoning, decision.confidence, decision.decision_id,
+    tradingConfig.account.paper_trading, 'SHORT'
+  );
+
+  await queueEvent('SHORT', symbol, {
+    position_id: positionId,
+    price: fillPrice,
+    quantity: fillQty,
+    cost: fillCost,
+    tier,
+    confidence: decision.confidence,
+    reasoning: decision.reasoning,
+  });
+
+  invalidatePortfolioCache();
+  logger.info(`[Engine] EXECUTED SHORT: ${symbol} ${fillQty.toFixed(6)} @ $${fillPrice.toFixed(2)} ($${fillCost.toFixed(2)})`);
+  sendAlert('SHORT', symbol, { price: fillPrice, confidence: decision.confidence, reasoning: decision.reasoning }).catch(() => {});
   return { escalated: true, executed: true };
 }
 
