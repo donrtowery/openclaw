@@ -28,6 +28,10 @@ export class Backtester {
     const startTime = Date.now();
     logger.info(`[Backtest] Starting: ${this.startDate} to ${this.endDate}`);
 
+    // Fetch symbol tiers
+    const tierResult = await query('SELECT symbol, tier FROM symbols WHERE is_active = true');
+    this.symbolTiers = new Map(tierResult.rows.map(r => [r.symbol, r.tier]));
+
     // Fetch all snapshots in the date range
     const snapshots = await this.fetchSnapshots();
     if (snapshots.length === 0) {
@@ -76,7 +80,8 @@ export class Backtester {
     }
 
     // Close any remaining open positions at last known price
-    for (const [symbol, pos] of this.positions) {
+    const remainingSymbols = [...this.positions.keys()];
+    for (const symbol of remainingSymbols) {
       const lastCycle = cycles[cycles.length - 1];
       const lastSnap = lastCycle.snapshots.find(s => s.symbol === symbol);
       if (lastSnap) {
@@ -182,6 +187,10 @@ export class Backtester {
         sma50: snap.sma50 != null ? parseFloat(snap.sma50) : null,
         sma200: snap.sma200 != null ? parseFloat(snap.sma200) : null,
       },
+      fibonacci: snap.fib_nearest_support || snap.fib_nearest_resistance ? {
+        nearest_support: snap.fib_nearest_support ? { level: null, price: parseFloat(snap.fib_nearest_support) } : null,
+        nearest_resistance: snap.fib_nearest_resistance ? { level: null, price: parseFloat(snap.fib_nearest_resistance) } : null,
+      } : null,
       support: snap.support_nearest != null ? [parseFloat(snap.support_nearest)] : [],
       resistance: snap.resistance_nearest != null ? [parseFloat(snap.resistance_nearest)] : [],
     };
@@ -262,7 +271,8 @@ export class Backtester {
       if (analysis.volume && analysis.volume.ratio < 1.0) return;
 
       this.signalsEscalated++;
-      this.openPosition(symbol, analysis.price, 1, timestamp);
+      const tier = this.symbolTiers.get(symbol) || 1;
+      this.openPosition(symbol, analysis.price, tier, timestamp);
 
       if (this.verbose) {
         logger.info(`[Backtest] BUY ${symbol} @ $${analysis.price.toFixed(2)} — ${bullishCrossings.join(', ')}`);
@@ -276,8 +286,9 @@ export class Backtester {
     const cost = Math.min(baseSize, this.virtualCapital);
     if (cost < 10) return;
 
+    const feeRate = this.config.fees?.rate ?? 0.001;
     const size = cost / price;
-    this.virtualCapital -= cost;
+    this.virtualCapital -= cost * (1 + feeRate);
 
     this.positions.set(symbol, {
       entry_price: price,
@@ -308,7 +319,7 @@ export class Backtester {
       dca_count: 0,
     };
 
-    const urgency = computeExitUrgency(posObj, analysis, currentPrice);
+    const urgency = computeExitUrgency(posObj, analysis, currentPrice, timestamp);
 
     if (urgency.score >= (this.config.exit_scanner?.urgency_threshold ?? 30)) {
       this.closePosition(symbol, currentPrice, urgency.factors.join(', '), timestamp);

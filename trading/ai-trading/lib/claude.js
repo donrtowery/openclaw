@@ -572,6 +572,7 @@ function formatExitEvalInput(position, analysis, urgency, newsContext, portfolio
 
   msg += `## Position\n`;
   msg += `Symbol: ${position.symbol} (Tier ${position.tier})\n`;
+  msg += `Direction: ${position.direction || 'LONG'}\n`;
   msg += `Entry: $${avgEntry.toFixed(4)} | Current: $${currentPrice.toFixed(4)}\n`;
   msg += `P&L: ${urgency.pnl_percent.toFixed(2)}%\n`;
   msg += `Hold time: ${holdHours.toFixed(1)}h\n`;
@@ -702,10 +703,14 @@ function formatHaikuInput(triggeredSignal) {
 
   if (has_position && position) {
     const entryPrice = parseFloat(position.entry_price || position.avg_entry_price);
-    const pnlPercent = ((analysis.price - entryPrice) / entryPrice * 100).toFixed(2);
+    const direction = position.direction || 'LONG';
+    const pnlPercent = direction === 'SHORT'
+      ? ((entryPrice - analysis.price) / entryPrice * 100).toFixed(2)
+      : ((analysis.price - entryPrice) / entryPrice * 100).toFixed(2);
     const holdHours = ((Date.now() - new Date(position.entry_time).getTime()) / (1000 * 60 * 60)).toFixed(1);
 
     msg += `\nEXISTING POSITION:\n`;
+    msg += `  Direction: ${direction}\n`;
     msg += `  Entry: ${entryPrice.toFixed(2)} | Current P&L: ${pnlPercent}% | Hold: ${holdHours}h\n`;
     msg += `  Size: ${parseFloat(position.current_size).toFixed(6)} | Invested: $${parseFloat(position.total_cost).toFixed(2)}\n`;
     msg += `  DCAs: ${position.dca_count || 0}\n`;
@@ -812,6 +817,12 @@ function enforceConfidenceThresholds(decision, config) {
     decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${thresholds.sonnet_minimum_for_new_entry} threshold]`;
   }
 
+  if (decision.action === 'SHORT' && decision.confidence < thresholds.sonnet_minimum_for_new_entry) {
+    logger.warn(`[Sonnet] SHORT confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_new_entry}, downgrading to PASS`);
+    decision.action = 'PASS';
+    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${thresholds.sonnet_minimum_for_new_entry} threshold]`;
+  }
+
   if (decision.action === 'SELL' && decision.confidence < thresholds.sonnet_minimum_for_exit) {
     logger.warn(`[Sonnet] SELL confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_exit}, downgrading to HOLD`);
     decision.action = 'HOLD';
@@ -871,7 +882,7 @@ async function logSignal(triggeredSignal, haikuResponse, tokensUsed) {
     analysis.support?.[0] ?? null,
     analysis.resistance?.[0] ?? null,
     analysis.trend?.direction ?? null,
-    (() => { const s = String(haikuResponse.signal || '').toUpperCase(); return ['BUY', 'SELL', 'NONE'].includes(s) ? s : 'NONE'; })(),
+    (() => { const s = String(haikuResponse.signal || '').toUpperCase(); return ['BUY', 'SELL', 'SHORT', 'NONE'].includes(s) ? s : 'NONE'; })(),
     (() => { const s = String(haikuResponse.strength || '').toUpperCase(); return ['STRONG', 'MODERATE', 'WEAK', 'TRAP'].includes(s) ? s : 'WEAK'; })(),
     haikuResponse.confidence || 0,
     JSON.stringify(haikuResponse.reasons || []),

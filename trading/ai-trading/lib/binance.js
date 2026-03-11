@@ -23,7 +23,10 @@ try {
 let exchangeConfig = {};
 try {
   const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
-  exchangeConfig = config.exchange?.exchanges?.[exchangeId] || {};
+  exchangeConfig = {
+    ...(config.exchange?.exchanges?.[exchangeId] || {}),
+    paper_trading: config.account?.paper_trading,
+  };
 } catch { /* use defaults from env */ }
 
 const exchange = createExchange(exchangeId, exchangeConfig);

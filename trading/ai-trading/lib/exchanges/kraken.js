@@ -44,27 +44,29 @@ export class KrakenExchange extends ExchangeInterface {
 
   async request(path, params = {}, isPrivate = false) {
     const url = `${this.baseUrl}${path}`;
-    const options = { method: isPrivate ? 'POST' : 'GET' };
+    let response;
 
     if (isPrivate) {
       const nonce = Date.now() * 1000;
       const body = new URLSearchParams({ ...params, nonce }).toString();
-      const sha256 = crypto.createHash('sha256').update(nonce + body).digest();
+      const sha256 = crypto.createHash('sha256').update(String(nonce) + body).digest();
       const hmac = crypto.createHmac('sha512', Buffer.from(this.apiSecret || '', 'base64'))
         .update(Buffer.concat([Buffer.from(path), sha256]))
         .digest('base64');
-      options.body = body;
-      options.headers = {
-        'API-Key': this.apiKey,
-        'API-Sign': hmac,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      };
-    } else if (Object.keys(params).length > 0) {
-      const qs = new URLSearchParams(params).toString();
-      return await (await fetch(`${url}?${qs}`)).json();
+      response = await fetch(url, {
+        method: 'POST',
+        body,
+        headers: {
+          'API-Key': this.apiKey,
+          'API-Sign': hmac,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      });
+    } else {
+      const qs = Object.keys(params).length > 0 ? '?' + new URLSearchParams(params).toString() : '';
+      response = await fetch(`${url}${qs}`);
     }
 
-    const response = await fetch(url, options);
     if (!response.ok) throw new Error(`Kraken API ${response.status}: ${await response.text()}`);
     const data = await response.json();
     if (data.error && data.error.length > 0) throw new Error(`Kraken error: ${data.error.join(', ')}`);
@@ -98,7 +100,8 @@ export class KrakenExchange extends ExchangeInterface {
   }
 
   async getAllPrices() {
-    const result = await this.request('/0/public/Ticker');
+    const pairs = Object.values(SYMBOL_MAP).join(',');
+    const result = await this.request('/0/public/Ticker', { pair: pairs });
     const priceMap = {};
     for (const [pair, data] of Object.entries(result)) {
       const internal = this.toInternalSymbol(pair);

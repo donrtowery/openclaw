@@ -92,9 +92,9 @@ export async function addToPosition(positionId, dcaPrice, dcaSize, dcaCost, reas
     `, [newTotalSize, newTotalCost, newAvgEntry, dcaPrice, newTotalFees, positionId]);
 
     await client.query(`
-      INSERT INTO trades (position_id, symbol, trade_type, price, size, cost, reasoning, confidence, paper_trade)
-      VALUES ($1, $2, 'DCA', $3, $4, $5, $6, $7, $8)
-    `, [positionId, pos.symbol, dcaPrice, dcaSize, dcaCostWithFees, reasoning, confidence, paperTrade]);
+      INSERT INTO trades (position_id, symbol, trade_type, direction, price, size, cost, reasoning, confidence, paper_trade)
+      VALUES ($1, $2, 'DCA', $3, $4, $5, $6, $7, $8, $9)
+    `, [positionId, pos.symbol, pos.direction || 'LONG', dcaPrice, dcaSize, dcaCostWithFees, reasoning, confidence, paperTrade]);
 
     await client.query('COMMIT');
     logger.info(`[Position] DCA #${positionId} @ $${dcaPrice.toFixed(2)}, new avg: $${newAvgEntry.toFixed(2)} (fee: $${dcaFee.toFixed(2)})`);
@@ -192,10 +192,10 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
     // Log trade
     await client.query(`
       INSERT INTO trades (
-        position_id, symbol, trade_type, price, size, cost,
+        position_id, symbol, trade_type, direction, price, size, cost,
         exit_percent, pnl, pnl_percent, reasoning, confidence, paper_trade
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-    `, [positionId, pos.symbol, tradeType, exitPrice, exitSize, netExitValue,
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    `, [positionId, pos.symbol, tradeType, direction, exitPrice, exitSize, netExitValue,
         exitPercent, pnl, pnlPercent, reasoning, confidence, paperTrade]);
 
     await client.query('COMMIT');
@@ -258,6 +258,7 @@ export async function getPortfolioSummary(config, options = {}) {
   let totalInvested = 0;
   let totalCurrentValue = 0;
   let totalPartialProfitTaken = 0;
+  let totalUnrealizedPnl = 0;
 
   // Fetch all prices in one API call instead of N individual calls
   let priceMap = {};
@@ -281,6 +282,12 @@ export async function getPortfolioSummary(config, options = {}) {
       totalCurrentValue += currentValue;
       totalPartialProfitTaken += parseFloat(pos.total_profit_taken || 0) || 0;
 
+      const direction = pos.direction || 'LONG';
+      const posUnrealizedPnl = direction === 'SHORT'
+        ? invested - currentValue  // SHORT: profit when current value < invested
+        : currentValue - invested; // LONG: profit when current value > invested
+      totalUnrealizedPnl += posUnrealizedPnl;
+
       // Update live price in DB (skip when called from exit scanner which already has fresh prices)
       if (!options.skipPriceUpdate) {
         await query('UPDATE positions SET current_price = $1, updated_at = NOW() WHERE id = $2', [currentPrice, pos.id]);
@@ -288,14 +295,22 @@ export async function getPortfolioSummary(config, options = {}) {
     } catch (error) {
       logger.error(`[Position] Price fetch failed for ${pos.symbol}: ${error.message}`);
       // Use last known price
-      totalInvested += parseFloat(pos.total_cost) || 0;
-      totalCurrentValue += (parseFloat(pos.current_size) || 0) * (parseFloat(pos.current_price || pos.entry_price) || 0);
+      const fallbackInvested = parseFloat(pos.total_cost) || 0;
+      const fallbackCurrentValue = (parseFloat(pos.current_size) || 0) * (parseFloat(pos.current_price || pos.entry_price) || 0);
+      totalInvested += fallbackInvested;
+      totalCurrentValue += fallbackCurrentValue;
       totalPartialProfitTaken += parseFloat(pos.total_profit_taken || 0) || 0;
+
+      const direction = pos.direction || 'LONG';
+      const posUnrealizedPnl = direction === 'SHORT'
+        ? fallbackInvested - fallbackCurrentValue  // SHORT: profit when current value < invested
+        : fallbackCurrentValue - fallbackInvested; // LONG: profit when current value > invested
+      totalUnrealizedPnl += posUnrealizedPnl;
     }
   }
 
-  // Unrealized P&L = current value of remaining holdings vs their cost basis
-  const unrealizedPnl = totalCurrentValue - totalInvested;
+  // Unrealized P&L = direction-aware sum computed per-position in the loop above
+  const unrealizedPnl = totalUnrealizedPnl;
 
   // Realized P&L from closed positions
   const realizedResult = await query(

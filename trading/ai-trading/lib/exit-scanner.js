@@ -12,7 +12,7 @@ const exitCooldowns = new Map();
  *
  * Returns: { score, factors, pnl_percent, hold_hours, drawdown_from_peak, max_gain }
  */
-export function computeExitUrgency(position, analysis, currentPrice) {
+export function computeExitUrgency(position, analysis, currentPrice, currentTime = null) {
   let score = 0;
   const factors = [];
 
@@ -26,7 +26,7 @@ export function computeExitUrgency(position, analysis, currentPrice) {
   const pnlPercent = direction === 'SHORT'
     ? ((avgEntry - currentPrice) / avgEntry) * 100
     : ((currentPrice - avgEntry) / avgEntry) * 100;
-  const holdMs = Date.now() - new Date(position.entry_time).getTime();
+  const holdMs = (currentTime || Date.now()) - new Date(position.entry_time).getTime();
   const holdHours = holdMs / (1000 * 60 * 60);
   const maxGain = parseFloat(position.max_unrealized_gain_percent || 0);
   const drawdownFromPeak = maxGain - pnlPercent;
@@ -150,10 +150,17 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push(`Held ${holdHours.toFixed(0)}h (>12h)`);
   }
 
-  // Bollinger Bands upper touch
-  if (analysis.bollingerBands?.position === 'UPPER') {
-    score += 10;
-    factors.push('Price at BB upper band');
+  // Bollinger Bands — direction-aware
+  if (direction === 'SHORT') {
+    if (analysis.bollingerBands?.position === 'LOWER') {
+      score += 10;
+      factors.push('Price at BB lower band — SHORT target zone');
+    }
+  } else {
+    if (analysis.bollingerBands?.position === 'UPPER') {
+      score += 10;
+      factors.push('Price at BB upper band');
+    }
   }
 
   // MACD — for shorts, bullish MACD signals trigger exit (reversal against short)
@@ -205,10 +212,13 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push(`Loss ${pnlPercent.toFixed(1)}% held >24h — accelerated exit pressure`);
   }
 
-  // ── Cut losers faster: loss + hold time + bearish signals ──
-  if (pnlPercent < -5 && holdHours > 12 && analysis.macd?.crossover === 'BEARISH') {
+  // ── Cut losers faster: loss + hold time + adverse MACD ──
+  const adverseMacd = direction === 'SHORT'
+    ? analysis.macd?.crossover === 'BULLISH'
+    : analysis.macd?.crossover === 'BEARISH';
+  if (pnlPercent < -5 && holdHours > 12 && adverseMacd) {
     score += 15;
-    factors.push(`Loser held ${holdHours.toFixed(0)}h with MACD bearish — cut loss`);
+    factors.push(`Loser held ${holdHours.toFixed(0)}h with MACD ${direction === 'SHORT' ? 'bullish' : 'bearish'} — cut loss`);
   }
 
   // ── Declining volume with profit — fading buying interest ──
@@ -217,10 +227,11 @@ export function computeExitUrgency(position, analysis, currentPrice) {
     factors.push(`Volume declining with +${pnlPercent.toFixed(1)}% profit — fading interest`);
   }
 
-  // ── OBV divergence: price up but volume flow down = smart money exiting ──
-  if (analysis.obv && pnlPercent > 3 && analysis.obv.trend === 'FALLING') {
+  // ── OBV divergence: profitable but volume flow adverse ──
+  const adverseObvTrend = direction === 'SHORT' ? 'RISING' : 'FALLING';
+  if (analysis.obv && pnlPercent > 3 && analysis.obv.trend === adverseObvTrend) {
     score += 15;
-    factors.push(`OBV divergence: price +${pnlPercent.toFixed(1)}% but OBV falling — smart money exiting`);
+    factors.push(`OBV divergence: ${direction} +${pnlPercent.toFixed(1)}% but OBV ${analysis.obv.trend.toLowerCase()} — ${direction === 'SHORT' ? 'buyers returning' : 'smart money exiting'}`);
   }
 
   // ── Low volume on losing position — no recovery interest ──
@@ -301,7 +312,8 @@ export async function runExitScan(config) {
 
   for (const position of openPositions) {
     try {
-      const inCooldown = isInExitCooldown(position.symbol, cooldownMinutes);
+      const cooldownKey = `${position.symbol}:${position.direction || 'LONG'}`;
+      const inCooldown = isInExitCooldown(cooldownKey, cooldownMinutes);
 
       const analysis = await analyzeSymbol(position.symbol);
       if (analysis.error) {
@@ -316,7 +328,10 @@ export async function runExitScan(config) {
       let posForUrgency = position;
       const avgEntry = parseFloat(position.avg_entry_price);
       if (avgEntry > 0) {
-        const currentPnlPct = ((currentPrice - avgEntry) / avgEntry) * 100;
+        const direction = position.direction || 'LONG';
+        const currentPnlPct = direction === 'SHORT'
+          ? ((avgEntry - currentPrice) / avgEntry) * 100
+          : ((currentPrice - avgEntry) / avgEntry) * 100;
         const storedPeak = parseFloat(position.max_unrealized_gain_percent || 0);
         if (currentPnlPct > storedPeak) {
           posForUrgency = { ...position, max_unrealized_gain_percent: currentPnlPct };

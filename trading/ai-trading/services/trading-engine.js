@@ -2,8 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { readFileSync } from 'fs';
-import { query, endPool } from '../db/connection.js';
-import { testConnection } from '../db/connection.js';
+import { query, endPool, testConnection } from '../db/connection.js';
 import { testConnectivity, placeOrder, getCurrentPrice, getAllPrices } from '../lib/binance.js';
 import { initScanner, runScanCycle } from '../lib/scanner.js';
 import { callHaikuBatch, callSonnet, callSonnetExitEval, resetApiCosts } from '../lib/claude.js';
@@ -466,7 +465,7 @@ async function processEscalatedSignal(triggered, haikuResult, news, portfolio, l
   const decision = await callSonnet(haikuResult, triggered, news, enrichedPortfolio, learningRules, tradingConfig);
 
   // Execute if actionable (with per-symbol lock to prevent concurrent operations)
-  if (['BUY', 'SELL', 'DCA', 'PARTIAL_EXIT'].includes(decision.action)) {
+  if (['BUY', 'SHORT', 'SELL', 'DCA', 'PARTIAL_EXIT'].includes(decision.action)) {
     return await withPositionLock(symbol, () => executeDecision(decision, triggered));
   }
 
@@ -781,7 +780,8 @@ async function executeSell(decision, triggered) {
   }
   const exitSize = currentSize * (intendedExitPercent / 100);
 
-  const order = await placeOrder(symbol, 'SELL', exitSize);
+  const orderSide = (position.direction === 'SHORT') ? 'BUY' : 'SELL';
+  const order = await placeOrder(symbol, orderSide, exitSize);
   const fillPrice = order.price;
   const fillQty = parseFloat(order.executedQty) || exitSize;
 
@@ -840,6 +840,12 @@ async function executeDCA(decision, triggered) {
   const position = await getPositionBySymbol(symbol);
   if (!position) {
     const reason = 'DCA rejected — no open position';
+    logger.warn(`[Engine] ${symbol}: ${reason}`);
+    return { escalated: true, executed: false, reason };
+  }
+
+  if (position.direction === 'SHORT') {
+    const reason = 'DCA rejected — not supported for SHORT positions';
     logger.warn(`[Engine] ${symbol}: ${reason}`);
     return { escalated: true, executed: false, reason };
   }
@@ -1032,7 +1038,7 @@ async function runExitScanCycle() {
 
     if (sonnetResults[i].status === 'rejected') {
       logger.error(`[Engine] Exit eval failed for ${position.symbol}: ${sonnetResults[i].reason?.message}`);
-      recordExitCooldown(position.symbol);
+      recordExitCooldown(`${position.symbol}:${position.direction || 'LONG'}`);
       continue;
     }
 
@@ -1068,15 +1074,15 @@ async function runExitScanCycle() {
           logger.info(`[Engine] ${position.symbol}: Partial exit — skipping cooldown and dedup for follow-up evaluation`);
           lastSonnetEvaluation.delete(position.symbol);
         } else {
-          recordExitCooldown(position.symbol);
+          recordExitCooldown(`${position.symbol}:${position.direction || 'LONG'}`);
         }
       } else {
-        recordExitCooldown(position.symbol);
+        recordExitCooldown(`${position.symbol}:${position.direction || 'LONG'}`);
       }
 
       await markDecisionExecuted(decision.decision_id, result.executed, result.reason || null);
     } else {
-      recordExitCooldown(position.symbol);
+      recordExitCooldown(`${position.symbol}:${position.direction || 'LONG'}`);
       await markDecisionExecuted(decision.decision_id, false, `Exit eval: ${decision.action}`);
       logger.info(`[Engine] ${position.symbol}: Exit eval — Sonnet chose ${decision.action}`);
     }
@@ -1109,7 +1115,10 @@ async function runHourlyRiskCheck() {
     try {
       const currentPrice = priceMap[pos.symbol] || await getCurrentPrice(pos.symbol);
       const avgEntry = parseFloat(pos.avg_entry_price);
-      const pnlPercent = ((currentPrice - avgEntry) / avgEntry * 100);
+      const direction = pos.direction || 'LONG';
+      const pnlPercent = direction === 'SHORT'
+        ? ((avgEntry - currentPrice) / avgEntry * 100)
+        : ((currentPrice - avgEntry) / avgEntry * 100);
       const holdHours = (Date.now() - new Date(pos.entry_time).getTime()) / (1000 * 60 * 60);
 
       // Track max unrealized gain/loss
@@ -1242,7 +1251,7 @@ async function reconcileState() {
   const orphanDecisions = await query(`
     SELECT d.id, d.symbol, d.action FROM decisions d
     WHERE d.executed = true
-      AND d.action IN ('BUY', 'SELL', 'DCA', 'PARTIAL_EXIT')
+      AND d.action IN ('BUY', 'SHORT', 'SELL', 'DCA', 'PARTIAL_EXIT')
       AND d.created_at > NOW() - INTERVAL '24 hours'
       AND NOT EXISTS (
         SELECT 1 FROM trades t
@@ -1307,7 +1316,7 @@ async function getEscalationConfidenceFloor() {
     // Exclude exit scanner HOLDs from denominator — they aren't entry escalations
     const result = await query(`
       SELECT
-        COUNT(*) FILTER (WHERE action IN ('BUY','SELL','DCA','PARTIAL_EXIT') AND executed = true) AS traded,
+        COUNT(*) FILTER (WHERE action IN ('BUY','SHORT','SELL','DCA','PARTIAL_EXIT') AND executed = true) AS traded,
         COUNT(*) AS total
       FROM decisions
       WHERE created_at > NOW() - INTERVAL '48 hours'
@@ -1441,7 +1450,10 @@ async function runEmergencyStopCheck() {
       const avgEntry = parseFloat(pos.avg_entry_price);
       if (!avgEntry || avgEntry <= 0) continue;
 
-      const pnlPercent = ((currentPrice - avgEntry) / avgEntry) * 100;
+      const direction = pos.direction || 'LONG';
+      const pnlPercent = direction === 'SHORT'
+        ? ((avgEntry - currentPrice) / avgEntry) * 100
+        : ((currentPrice - avgEntry) / avgEntry) * 100;
       const tier = pos.tier || 1;
       const stopConfig = tradingConfig.emergency_stop_loss || {};
       const threshold = tier === 1
@@ -1459,7 +1471,8 @@ async function runEmergencyStopCheck() {
           const currentSize = parseFloat(freshPos.current_size);
           if (!currentSize || currentSize <= 0) return;
 
-          const order = await placeOrder(pos.symbol, 'SELL', currentSize);
+          const closeSide = (pos.direction || 'LONG') === 'SHORT' ? 'BUY' : 'SELL';
+          const order = await placeOrder(pos.symbol, closeSide, currentSize);
           const fillPrice = order.price;
 
           const closeResult = await closePosition(

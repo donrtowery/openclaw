@@ -44,8 +44,10 @@ export class CoinbaseExchange extends ExchangeInterface {
     const seconds = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '6h': 21600, '1d': 86400 };
     const start = end - (seconds[interval] || 300) * limit;
 
-    const url = `${this.baseUrl}/api/v3/brokerage/market/products/${productId}/candles?start=${start}&end=${end}&granularity=${granularity}`;
-    const response = await fetch(url, { headers: this._authHeaders('GET', `/api/v3/brokerage/market/products/${productId}/candles`) });
+    const queryString = `?start=${start}&end=${end}&granularity=${granularity}`;
+    const authPath = `/api/v3/brokerage/market/products/${productId}/candles${queryString}`;
+    const url = `${this.baseUrl}${authPath}`;
+    const response = await fetch(url, { headers: this._authHeaders('GET', authPath) });
 
     if (!response.ok) throw new Error(`Coinbase API ${response.status}: ${await response.text()}`);
     const data = await response.json();
@@ -63,16 +65,18 @@ export class CoinbaseExchange extends ExchangeInterface {
 
   async getCurrentPrice(symbol) {
     const productId = this.normalizeSymbol(symbol);
-    const url = `${this.baseUrl}/api/v3/brokerage/market/products/${productId}`;
-    const response = await fetch(url, { headers: this._authHeaders('GET', `/api/v3/brokerage/market/products/${productId}`) });
+    const authPath = `/api/v3/brokerage/market/products/${productId}`;
+    const url = `${this.baseUrl}${authPath}`;
+    const response = await fetch(url, { headers: this._authHeaders('GET', authPath) });
     if (!response.ok) throw new Error(`Coinbase API ${response.status}: ${await response.text()}`);
     const data = await response.json();
     return parseFloat(data.price);
   }
 
   async getAllPrices() {
-    const url = `${this.baseUrl}/api/v3/brokerage/market/products?product_type=SPOT`;
-    const response = await fetch(url, { headers: this._authHeaders('GET', '/api/v3/brokerage/market/products') });
+    const authPath = '/api/v3/brokerage/market/products?product_type=SPOT';
+    const url = `${this.baseUrl}${authPath}`;
+    const response = await fetch(url, { headers: this._authHeaders('GET', authPath) });
     if (!response.ok) throw new Error(`Coinbase API ${response.status}: ${await response.text()}`);
     const data = await response.json();
     const priceMap = {};
@@ -87,8 +91,9 @@ export class CoinbaseExchange extends ExchangeInterface {
 
   async get24hTicker(symbol) {
     const productId = this.normalizeSymbol(symbol);
-    const url = `${this.baseUrl}/api/v3/brokerage/market/products/${productId}`;
-    const response = await fetch(url, { headers: this._authHeaders('GET', `/api/v3/brokerage/market/products/${productId}`) });
+    const authPath = `/api/v3/brokerage/market/products/${productId}`;
+    const url = `${this.baseUrl}${authPath}`;
+    const response = await fetch(url, { headers: this._authHeaders('GET', authPath) });
     if (!response.ok) throw new Error(`Coinbase API ${response.status}: ${await response.text()}`);
     const data = await response.json();
     return {
@@ -126,10 +131,10 @@ export class CoinbaseExchange extends ExchangeInterface {
     throw new Error('Coinbase getAccountInfo not yet implemented');
   }
 
-  _authHeaders(method, path) {
+  _authHeaders(method, path, body = '') {
     if (!this.apiKey || !this.apiSecret) return {};
     const timestamp = Math.floor(Date.now() / 1000).toString();
-    const message = timestamp + method.toUpperCase() + path;
+    const message = timestamp + method.toUpperCase() + path + body;
     const signature = crypto.createHmac('sha256', this.apiSecret).update(message).digest('hex');
     return {
       'CB-ACCESS-KEY': this.apiKey,

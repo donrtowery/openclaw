@@ -16,6 +16,8 @@ export class BinanceUSExchange extends ExchangeInterface {
     this.apiSecret = config.api_secret || process.env.BINANCE_SECRET_KEY;
     this.exchangeInfoCache = null;
     this.exchangeInfoExpiry = 0;
+    this.paperTrading = config.paper_trading ?? (process.env.PAPER_TRADING === 'true');
+    this.slippageConfig = null; // lazy-loaded
   }
 
   sign(queryString) {
@@ -131,8 +133,30 @@ export class BinanceUSExchange extends ExchangeInterface {
     return parseFloat(rounded.toFixed(decimals));
   }
 
+  _getSlippage(symbol) {
+    if (!this.slippageConfig) {
+      try {
+        const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
+        this.slippageConfig = {
+          t1Label: config.position_sizing?.tier_1?.label || '',
+          t1Slippage: config.position_sizing?.tier_1?.slippage_pct || 0.0005,
+          t2Slippage: config.position_sizing?.tier_2?.slippage_pct || 0.0015,
+        };
+      } catch {
+        this.slippageConfig = {
+          t1Label: '',
+          t1Slippage: 0.0005,
+          t2Slippage: 0.0015,
+        };
+      }
+    }
+    const symbolBase = symbol.replace('USDT', '');
+    if (this.slippageConfig.t1Label.includes(symbolBase)) return this.slippageConfig.t1Slippage;
+    return this.slippageConfig.t2Slippage;
+  }
+
   async placeOrder(symbol, side, quantity, price = null) {
-    const isPaper = process.env.PAPER_TRADING === 'true';
+    const isPaper = this.paperTrading;
 
     if (isPaper) {
       const basePrice = price || await this.getCurrentPrice(symbol);
@@ -140,16 +164,7 @@ export class BinanceUSExchange extends ExchangeInterface {
       const roundedQty = this.roundToStepSize(quantity, stepSize);
       if (roundedQty <= 0) throw new Error(`Paper order quantity ${quantity} rounds to 0 for ${symbol} (step: ${stepSize})`);
 
-      const defaultSlippage = parseFloat(process.env.PAPER_SLIPPAGE_PCT || '0.001');
-      const slippagePct = (() => {
-        try {
-          const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
-          const t1Label = config.position_sizing?.tier_1?.label || '';
-          const symbolBase = symbol.replace('USDT', '');
-          if (t1Label.includes(symbolBase)) return config.position_sizing?.tier_1?.slippage_pct || 0.0005;
-          return config.position_sizing?.tier_2?.slippage_pct || 0.0015;
-        } catch { return defaultSlippage; }
-      })();
+      const slippagePct = this._getSlippage(symbol);
       const fillPrice = side === 'BUY' ? basePrice * (1 + slippagePct) : basePrice * (1 - slippagePct);
       const fillCost = fillPrice * roundedQty;
       const feeRate = parseFloat(process.env.TRADING_FEE_RATE || '0.001');

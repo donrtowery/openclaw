@@ -122,6 +122,17 @@ The current market regime (BULL, BEAR, CAUTIOUS, or NEUTRAL) is provided at runt
 **Ichimoku:** Position entered BEARISH/IN_CLOUD from BULLISH = trend breakdown. Stronger exit signal.
 **Fibonacci:** Price rejected at Fib-R level with momentum fading = natural exit point. Price breaking Fib-S = thesis may be broken.
 
+## SHORT Position Exit Logic
+
+When evaluating a SHORT position, all signals are inverted from LONG:
+
+- **Take profit (cover):** RSI < 25 with bullish MACD crossover = price dropped to target, cover the short
+- **Cut loss (cover):** Price rising with RSI > 70, MACD bullish, volume increasing = trend moving against short, cover before further loss
+- **Hold short:** Bearish MACD, price below key MAs, declining OBV = downtrend intact, hold the short
+- **Drawdown for shorts:** Price RISING above entry = short is losing. Apply same drawdown thresholds but inverted.
+
+The exit scanner already inverts urgency scoring for SHORT positions. Your job is to confirm or override that assessment using the same inverted logic.
+
 ## LEARNING DATA
 (Updated: 2026-03-10 | 19 trades | 42.1% win rate)
 

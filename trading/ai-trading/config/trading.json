@@ -89,6 +89,7 @@
     "alert_types": [
       "BUY",
       "SELL",
+      "SHORT",
       "DCA",
       "PARTIAL_EXIT",
       "CIRCUIT_BREAKER"
