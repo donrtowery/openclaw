@@ -29,6 +29,7 @@ process.env.PAPER_TRADING = String(tradingConfig.account.paper_trading);
 
 let isRunning = false;
 let scanIntervalId = null;
+let stopLossIntervalId = null;
 let cycleCount = 0;
 let cycleInProgress = false;
 
@@ -151,6 +152,14 @@ async function start() {
       cycleInProgress = false;
     }
   }, intervalMs);
+
+  // 10. Start emergency stop-loss monitor (independent of scan cycle)
+  const stopLossConfig = tradingConfig.emergency_stop_loss || {};
+  if (stopLossConfig.enabled !== false) {
+    const stopLossIntervalMs = stopLossConfig.check_interval_ms || 30000;
+    stopLossIntervalId = setInterval(runEmergencyStopCheck, stopLossIntervalMs);
+    logger.info(`Emergency stop-loss monitor active — checking every ${stopLossIntervalMs / 1000}s (T1: ${stopLossConfig.tier_1_percent ?? -20}%, T2: ${stopLossConfig.tier_2_percent ?? -15}%)`);
+  }
 }
 
 // ── Portfolio Cache ──────────────────────────────────────────
@@ -950,7 +959,8 @@ async function runExitScanCycle() {
         }).catch(() => {});
 
         if (isPartial) {
-          logger.info(`[Engine] ${position.symbol}: Partial exit — skipping cooldown for follow-up evaluation`);
+          logger.info(`[Engine] ${position.symbol}: Partial exit — skipping cooldown and dedup for follow-up evaluation`);
+          lastSonnetEvaluation.delete(position.symbol);
         } else {
           recordExitCooldown(position.symbol);
         }
@@ -1142,10 +1152,28 @@ async function reconcileState() {
     issues += orphanDecisions.rows.length;
   }
 
+  // 5. Detect stale prices on open positions (may indicate API issues or delisted symbols)
+  const stalePrices = await query(
+    "SELECT id, symbol, current_price, updated_at FROM positions WHERE status = 'OPEN' AND updated_at < NOW() - INTERVAL '2 hours'"
+  );
+  for (const pos of stalePrices.rows) {
+    logger.warn(`[Engine] Reconcile: Position #${pos.id} ${pos.symbol} price stale since ${pos.updated_at} — may need manual review`);
+    issues++;
+  }
+
+  // 6. Data integrity check — open positions with invalid cost/size/entry
+  const badData = await query(
+    "SELECT id, symbol, total_cost, current_size, avg_entry_price FROM positions WHERE status = 'OPEN' AND (total_cost <= 0 OR current_size <= 0 OR avg_entry_price <= 0)"
+  );
+  for (const pos of badData.rows) {
+    logger.warn(`[Engine] Reconcile: Position #${pos.id} ${pos.symbol} has invalid data — cost:${pos.total_cost} size:${pos.current_size} avg_entry:${pos.avg_entry_price}`);
+    issues++;
+  }
+
   if (issues === 0) {
     logger.info('[Engine] State reconciliation: no issues found');
   } else {
-    logger.warn(`[Engine] State reconciliation: resolved ${issues} issue(s)`);
+    logger.warn(`[Engine] State reconciliation: ${issues} issue(s) detected`);
   }
 }
 
@@ -1267,6 +1295,83 @@ async function getExitLearningRules() {
   return result.rows;
 }
 
+// ── Emergency Stop-Loss Monitor ──────────────────────────────
+
+let stopLossInProgress = false;
+
+async function runEmergencyStopCheck() {
+  if (stopLossInProgress) return;
+  stopLossInProgress = true;
+  try {
+    const openPositions = await getOpenPositions();
+    if (openPositions.length === 0) return;
+
+    const priceMap = await getAllPrices();
+
+    for (const pos of openPositions) {
+      const currentPrice = priceMap[pos.symbol];
+      if (!currentPrice) continue;
+
+      const avgEntry = parseFloat(pos.avg_entry_price);
+      if (!avgEntry || avgEntry <= 0) continue;
+
+      const pnlPercent = ((currentPrice - avgEntry) / avgEntry) * 100;
+      const tier = pos.tier || 1;
+      const stopConfig = tradingConfig.emergency_stop_loss || {};
+      const threshold = tier === 1
+        ? (stopConfig.tier_1_percent ?? -20)
+        : (stopConfig.tier_2_percent ?? -15);
+
+      if (pnlPercent <= threshold) {
+        logger.warn(`[EMERGENCY] Stop-loss triggered: ${pos.symbol} #${pos.id} at ${pnlPercent.toFixed(2)}% (threshold: ${threshold}%)`);
+
+        await withPositionLock(pos.symbol, async () => {
+          // Re-check position is still open (may have been closed by exit scanner)
+          const freshPos = await getPositionBySymbol(pos.symbol);
+          if (!freshPos || freshPos.id !== pos.id) return;
+
+          const currentSize = parseFloat(freshPos.current_size);
+          if (!currentSize || currentSize <= 0) return;
+
+          const order = await placeOrder(pos.symbol, 'SELL', currentSize);
+          const fillPrice = order.price;
+
+          const closeResult = await closePosition(
+            pos.id, fillPrice, 100,
+            `[EMERGENCY] Hard stop-loss at ${pnlPercent.toFixed(2)}% (threshold: ${threshold}%)`,
+            1.0, null, tradingConfig.account.paper_trading
+          );
+
+          await recordLoss(pos.symbol, closeResult.pnl);
+          invalidatePortfolioCache();
+          dailyTradeCount++;
+
+          await queueEvent('EMERGENCY_STOP', pos.symbol, {
+            position_id: pos.id,
+            price: fillPrice,
+            pnl: closeResult.pnl,
+            pnl_percent: closeResult.pnlPercent,
+            threshold_percent: threshold,
+            tier,
+          });
+
+          sendAlert('CIRCUIT_BREAKER', pos.symbol, {
+            price: fillPrice,
+            pnl_percent: closeResult.pnlPercent,
+            reasoning: `[EMERGENCY] Stop-loss: ${pnlPercent.toFixed(1)}% loss exceeded ${threshold}% threshold`,
+          }).catch(() => {});
+
+          logger.warn(`[EMERGENCY] EXECUTED stop-loss: ${pos.symbol} @ $${fillPrice.toFixed(2)} | P&L: $${closeResult.pnl.toFixed(2)} (${closeResult.pnlPercent.toFixed(2)}%)`);
+        });
+      }
+    }
+  } catch (error) {
+    logger.error(`[EMERGENCY] Stop-loss check error: ${error.message}`);
+  } finally {
+    stopLossInProgress = false;
+  }
+}
+
 // ── Market Regime Detection ─────────────────────────────────
 
 let marketRegimeCache = { regime: null, expiry: 0 };
@@ -1309,11 +1414,25 @@ async function getMarketRegime() {
 // ── Trading Session Detection ───────────────────────────────
 
 function getTradingSession() {
-  const hour = new Date().getUTCHours();
-  if (hour >= 0 && hour < 8) return { session: 'ASIA', note: 'Asian session — typically lower volume' };
-  if (hour >= 8 && hour < 14) return { session: 'EUROPE', note: 'European session — moderate volume' };
-  if (hour >= 14 && hour < 21) return { session: 'US', note: 'US session — highest volume' };
-  return { session: 'LATE_US', note: 'Late US/early Asia — declining volume' };
+  const now = new Date();
+  const utcHour = now.getUTCHours();
+  const utcMonth = now.getUTCMonth(); // 0-indexed
+
+  // DST approximation: March (2) through October (9) for US/Europe
+  const isDST = utcMonth >= 2 && utcMonth <= 9;
+
+  // Session boundaries shift ~1h earlier during DST
+  const europeOpen = isDST ? 6 : 7;   // London ~8am local
+  const usOpen = isDST ? 13 : 14;     // NYSE ~9:30am local
+  const usClose = isDST ? 20 : 21;    // NYSE ~4pm local
+
+  if (utcHour >= usOpen && utcHour < usClose)
+    return { session: 'US', note: 'US session — highest volume', is_dst: isDST };
+  if (utcHour >= europeOpen && utcHour < usOpen)
+    return { session: 'EUROPE', note: 'European session — moderate volume', is_dst: isDST };
+  if (utcHour >= 0 && utcHour < europeOpen)
+    return { session: 'ASIA', note: 'Asian session — typically lower volume', is_dst: isDST };
+  return { session: 'LATE_US', note: 'Late US/early Asia — declining volume', is_dst: isDST };
 }
 
 // ── Graceful Shutdown ───────────────────────────────────────
@@ -1327,6 +1446,9 @@ async function shutdown() {
 
   if (scanIntervalId) {
     clearInterval(scanIntervalId);
+  }
+  if (stopLossIntervalId) {
+    clearInterval(stopLossIntervalId);
   }
 
   // Wait for in-progress cycle to finish (up to 60s)

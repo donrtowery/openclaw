@@ -50,7 +50,9 @@
       "volume_spike_ratio": 1.5,
       "macd_crossover": true,
       "bb_squeeze": true,
-      "note": "These are ALERTS to Haiku, not trading triggers. The AI decides what matters."
+      "obv_rising_threshold": 1.05,
+      "obv_falling_threshold": 0.95,
+      "note": "These are ALERTS to Haiku, not trading triggers. The AI decides what matters. OBV thresholds: recent 10-period SMA vs prior 10-period SMA ratio."
     }
   },
   "confidence_thresholds": {
@@ -110,5 +112,12 @@
   "fees": {
     "rate": 0.001,
     "note": "Per-side trading fee rate. Match to your Binance fee tier."
+  },
+  "emergency_stop_loss": {
+    "enabled": true,
+    "tier_1_percent": -20,
+    "tier_2_percent": -15,
+    "check_interval_ms": 30000,
+    "note": "Hard stop-loss bypass — no AI approval needed. Independent 30s price monitoring loop."
   }
 }

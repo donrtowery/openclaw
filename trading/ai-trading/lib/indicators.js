@@ -376,7 +376,7 @@ export function calcStochasticRSI(closes) {
  * @param {{ close: number, volume: number }[]} candles
  * @returns {{ value: number, trend: string } | null}
  */
-export function calcOBV(candles) {
+export function calcOBV(candles, config = {}) {
   try {
     if (candles.length < 20) return null;
     let obv = 0;
@@ -395,9 +395,11 @@ export function calcOBV(candles) {
     const prior10 = obvValues.slice(-20, -10);
     const avgRecent = recent10.reduce((s, v) => s + v, 0) / recent10.length;
     const avgPrior = prior10.length > 0 ? prior10.reduce((s, v) => s + v, 0) / prior10.length : avgRecent;
+    const risingThreshold = config.obv_rising_threshold ?? 1.05;
+    const fallingThreshold = config.obv_falling_threshold ?? 0.95;
     let trend = 'FLAT';
-    if (avgRecent > avgPrior * 1.05) trend = 'RISING';
-    else if (avgRecent < avgPrior * 0.95) trend = 'FALLING';
+    if (avgRecent > avgPrior * risingThreshold) trend = 'RISING';
+    else if (avgRecent < avgPrior * fallingThreshold) trend = 'FALLING';
     return { value: Math.round(current), trend };
   } catch (err) {
     logger.warn(`OBV calc failed: ${err.message}`);

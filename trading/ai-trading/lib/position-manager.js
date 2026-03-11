@@ -236,7 +236,7 @@ export async function getClosedPositions(limit = 50) {
  * Get full portfolio summary with live prices.
  * Reads total_capital from config to avoid hardcoding.
  */
-export async function getPortfolioSummary(config) {
+export async function getPortfolioSummary(config, options = {}) {
   const totalCapital = config?.account?.total_capital || 6000;
   const maxPositions = config?.account?.max_concurrent_positions || 5;
   const openPositions = await getOpenPositions();
@@ -267,8 +267,10 @@ export async function getPortfolioSummary(config) {
       totalCurrentValue += currentValue;
       totalPartialProfitTaken += parseFloat(pos.total_profit_taken || 0) || 0;
 
-      // Update live price in DB
-      await query('UPDATE positions SET current_price = $1, updated_at = NOW() WHERE id = $2', [currentPrice, pos.id]);
+      // Update live price in DB (skip when called from exit scanner which already has fresh prices)
+      if (!options.skipPriceUpdate) {
+        await query('UPDATE positions SET current_price = $1, updated_at = NOW() WHERE id = $2', [currentPrice, pos.id]);
+      }
     } catch (error) {
       logger.error(`[Position] Price fetch failed for ${pos.symbol}: ${error.message}`);
       // Use last known price
