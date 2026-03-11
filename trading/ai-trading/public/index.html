@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenClaw Dashboard</title>
+  <link rel="stylesheet" href="/css/dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+
+<!-- API Key Modal -->
+<div id="key-modal" class="modal" style="display:none">
+  <div class="modal-content">
+    <h2>OpenClaw Dashboard</h2>
+    <p>Enter your API key to continue.</p>
+    <input type="password" id="key-input" placeholder="API Key" autocomplete="off">
+    <button id="key-submit" class="btn btn-primary">Connect</button>
+    <p id="key-error" class="error-text" style="display:none">Invalid API key</p>
+  </div>
+</div>
+
+<!-- Header -->
+<header>
+  <div class="header-left">
+    <h1>OpenClaw</h1>
+    <span class="badge" id="paper-badge" style="display:none">PAPER</span>
+  </div>
+  <div class="header-right">
+    <span id="engine-dot" class="status-dot"></span>
+    <span id="engine-label">--</span>
+    <span class="separator">|</span>
+    <span id="last-refresh">--</span>
+  </div>
+</header>
+
+<!-- Tabs -->
+<nav class="tabs">
+  <button class="tab active" data-tab="overview">Overview</button>
+  <button class="tab" data-tab="performance">Performance</button>
+  <button class="tab" data-tab="signals">Signals</button>
+  <button class="tab" data-tab="history">Trade History</button>
+  <button class="tab" data-tab="controls">Controls</button>
+</nav>
+
+<!-- Tab: Overview -->
+<section id="tab-overview" class="tab-content active">
+  <div class="stat-cards">
+    <div class="stat-card">
+      <div class="stat-label">Current Balance</div>
+      <div class="stat-value" id="stat-balance">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total P&amp;L</div>
+      <div class="stat-value" id="stat-total-pnl">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Today P&amp;L</div>
+      <div class="stat-value" id="stat-today-pnl">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Win Rate</div>
+      <div class="stat-value" id="stat-win-rate">--</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>Open Positions</h3>
+    <div class="table-wrapper">
+      <table id="positions-table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Tier</th>
+            <th>Dir</th>
+            <th>Entry</th>
+            <th>Live Price</th>
+            <th>P&amp;L%</th>
+            <th>Invested</th>
+            <th>Hold Time</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty-msg" id="positions-empty" style="display:none">No open positions</p>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>Balance History</h3>
+    <div class="chart-container">
+      <canvas id="balance-chart"></canvas>
+    </div>
+  </div>
+</section>
+
+<!-- Tab: Performance -->
+<section id="tab-performance" class="tab-content">
+  <div class="stat-cards">
+    <div class="stat-card">
+      <div class="stat-label">Total Trades</div>
+      <div class="stat-value" id="perf-total-trades">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Win</div>
+      <div class="stat-value" id="perf-avg-win">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Avg Loss</div>
+      <div class="stat-value" id="perf-avg-loss">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Profit Factor</div>
+      <div class="stat-value" id="perf-profit-factor">--</div>
+    </div>
+  </div>
+
+  <div class="chart-row">
+    <div class="section">
+      <h3>Daily P&amp;L</h3>
+      <div class="chart-container">
+        <canvas id="pnl-chart"></canvas>
+      </div>
+    </div>
+    <div class="section">
+      <h3>Trade Count</h3>
+      <div class="chart-container">
+        <canvas id="trades-chart"></canvas>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Tab: Signals -->
+<section id="tab-signals" class="tab-content">
+  <div class="chart-row">
+    <div class="section">
+      <h3>Signals per Day</h3>
+      <div class="chart-container">
+        <canvas id="signals-chart"></canvas>
+      </div>
+    </div>
+    <div class="section">
+      <h3>Decision Breakdown</h3>
+      <div class="chart-container">
+        <canvas id="decisions-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h3>Top Symbols</h3>
+    <div class="table-wrapper">
+      <table id="symbols-table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>Signals</th>
+            <th>Escalated</th>
+            <th>Executed Buys</th>
+            <th>Conversion</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty-msg" id="symbols-empty" style="display:none">No signal data</p>
+    </div>
+  </div>
+</section>
+
+<!-- Tab: Trade History -->
+<section id="tab-history" class="tab-content">
+  <div class="section">
+    <div class="table-wrapper">
+      <table id="history-table">
+        <thead>
+          <tr>
+            <th>Symbol</th>
+            <th>P&amp;L</th>
+            <th>P&amp;L%</th>
+            <th>Entry</th>
+            <th>Exit</th>
+            <th>Hold (h)</th>
+            <th>Tier</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="empty-msg" id="history-empty" style="display:none">No closed trades</p>
+    </div>
+    <button id="load-more-btn" class="btn btn-secondary" style="display:none">Load More</button>
+  </div>
+</section>
+
+<!-- Tab: Controls -->
+<section id="tab-controls" class="tab-content">
+  <div class="controls-grid">
+
+    <div class="section">
+      <h3>Engine Control</h3>
+      <div class="engine-controls">
+        <div class="engine-status-display">
+          <span id="ctrl-engine-dot" class="status-dot"></span>
+          <span id="ctrl-engine-label">--</span>
+        </div>
+        <div class="btn-group">
+          <button id="btn-pause" class="btn btn-danger">Pause Engine</button>
+          <button id="btn-resume" class="btn btn-success">Resume Engine</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Settings</h3>
+      <form id="settings-form">
+        <div class="form-grid">
+          <label>Max Positions <input type="number" id="set-max-pos" min="1" max="20"></label>
+          <label>Paper Trading
+            <select id="set-paper">
+              <option value="true">On</option>
+              <option value="false">Off</option>
+            </select>
+          </label>
+          <label>T1 Base ($) <input type="number" id="set-t1" min="50" max="5000" step="50"></label>
+          <label>T2 Base ($) <input type="number" id="set-t2" min="50" max="5000" step="50"></label>
+          <label>T3 Base ($) <input type="number" id="set-t3" min="0" max="5000" step="50"></label>
+          <label>Scanner (min) <input type="number" id="set-scanner" min="1" max="60"></label>
+        </div>
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+        <span id="settings-status" class="status-text"></span>
+      </form>
+    </div>
+
+    <div class="section">
+      <h3>Close Position</h3>
+      <div class="close-controls">
+        <select id="close-select">
+          <option value="">Select position...</option>
+        </select>
+        <input type="text" id="close-reason" placeholder="Reason (min 10 chars)">
+        <div class="btn-group">
+          <button id="btn-close-one" class="btn btn-danger">Close Selected</button>
+          <button id="btn-close-all" class="btn btn-danger">Close All</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>AI Chat</h3>
+      <div class="chat-container">
+        <input type="text" id="chat-input" placeholder="Ask OpenClaw...">
+        <button id="btn-chat" class="btn btn-primary">Ask</button>
+        <div id="chat-response" class="chat-response"></div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<script src="/js/utils.js"></script>
+<script src="/js/api.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

@@ -43,6 +43,9 @@ app.use((_req, res, next) => {
   next();
 });
 
+// ── Static files (no auth — Tailscale handles network access) ──
+app.use(express.static('public'));
+
 const PORT = process.env.DASHBOARD_API_PORT || 3000;
 const HOST = process.env.DASHBOARD_API_HOST || '0.0.0.0';
 const API_KEY = process.env.DASHBOARD_API_KEY;
@@ -545,6 +548,144 @@ async function handleAction(action, params) {
           tier_2_base: freshConfig.position_sizing.tier_2.base_position_usd,
           tier_3_base: freshConfig.position_sizing.tier_3.base_position_usd,
           scanner_interval: freshConfig.scanner.interval_minutes,
+        },
+      };
+    }
+
+    // ── Dashboard Web Endpoints ─────────────────────────────────
+
+    case 'get_daily_pnl': {
+      const days = parseInt(params.days) || 30;
+      const result = await query(`
+        SELECT DATE(exit_time) as day,
+               SUM(realized_pnl)::float as daily_pnl,
+               COUNT(*)::int as closed_count,
+               COUNT(CASE WHEN realized_pnl > 0 THEN 1 END)::int as wins,
+               COUNT(CASE WHEN realized_pnl <= 0 THEN 1 END)::int as losses
+        FROM positions
+        WHERE status = 'CLOSED' AND exit_time >= NOW() - $1 * INTERVAL '1 day'
+        GROUP BY DATE(exit_time)
+        ORDER BY day
+      `, [days]);
+      return { data: result.rows };
+    }
+
+    case 'get_daily_trades': {
+      const days = parseInt(params.days) || 30;
+      const result = await query(`
+        SELECT DATE(executed_at) as day,
+               COUNT(*)::int as total,
+               COUNT(CASE WHEN trade_type = 'ENTRY' THEN 1 END)::int as entries,
+               COUNT(CASE WHEN trade_type = 'DCA' THEN 1 END)::int as dcas,
+               COUNT(CASE WHEN trade_type IN ('FULL_EXIT', 'PARTIAL_EXIT') THEN 1 END)::int as exits
+        FROM trades
+        WHERE executed_at >= NOW() - $1 * INTERVAL '1 day'
+        GROUP BY DATE(executed_at)
+        ORDER BY day
+      `, [days]);
+      return { data: result.rows };
+    }
+
+    case 'get_escalation_stats': {
+      const days = parseInt(params.days) || 30;
+      const [signalsByDay, decisionsByDay, topSymbols] = await Promise.all([
+        query(`
+          SELECT DATE(created_at) as day,
+                 COUNT(*)::int as total_signals,
+                 COUNT(CASE WHEN escalated THEN 1 END)::int as escalated,
+                 COUNT(CASE WHEN NOT escalated THEN 1 END)::int as skipped
+          FROM signals
+          WHERE created_at >= NOW() - $1 * INTERVAL '1 day'
+          GROUP BY DATE(created_at)
+          ORDER BY day
+        `, [days]),
+        query(`
+          SELECT DATE(created_at) as day,
+                 COUNT(*)::int as total_decisions,
+                 COUNT(CASE WHEN action = 'BUY' THEN 1 END)::int as buys,
+                 COUNT(CASE WHEN action = 'PASS' THEN 1 END)::int as passes,
+                 COUNT(CASE WHEN action = 'SELL' THEN 1 END)::int as sells,
+                 COUNT(CASE WHEN action = 'HOLD' THEN 1 END)::int as holds,
+                 COUNT(CASE WHEN executed THEN 1 END)::int as executed
+          FROM decisions
+          WHERE created_at >= NOW() - $1 * INTERVAL '1 day'
+          GROUP BY DATE(created_at)
+          ORDER BY day
+        `, [days]),
+        query(`
+          SELECT s.symbol,
+                 COUNT(*)::int as total_signals,
+                 COUNT(CASE WHEN s.escalated THEN 1 END)::int as escalated,
+                 COUNT(CASE WHEN d.action = 'BUY' AND d.executed THEN 1 END)::int as executed_buys
+          FROM signals s
+          LEFT JOIN decisions d ON d.signal_id = s.id
+          WHERE s.created_at >= NOW() - $1 * INTERVAL '1 day'
+          GROUP BY s.symbol
+          ORDER BY total_signals DESC
+          LIMIT 20
+        `, [days]),
+      ]);
+      return {
+        data: {
+          signals_by_day: signalsByDay.rows,
+          decisions_by_day: decisionsByDay.rows,
+          top_symbols: topSymbols.rows,
+        },
+      };
+    }
+
+    case 'get_balance_history': {
+      const days = parseInt(params.days) || 30;
+      const startingCapital = config.account.total_capital;
+
+      const [priorResult, dailyResult] = await Promise.all([
+        query(`
+          SELECT COALESCE(SUM(realized_pnl), 0)::float as prior_pnl
+          FROM positions
+          WHERE status = 'CLOSED' AND exit_time < NOW() - $1 * INTERVAL '1 day'
+        `, [days]),
+        query(`
+          SELECT DATE(exit_time) as day,
+                 SUM(realized_pnl)::float as daily_pnl
+          FROM positions
+          WHERE status = 'CLOSED' AND exit_time >= NOW() - $1 * INTERVAL '1 day'
+          GROUP BY DATE(exit_time)
+          ORDER BY day
+        `, [days]),
+      ]);
+
+      const priorPnl = priorResult.rows[0]?.prior_pnl || 0;
+      let cumulative = priorPnl;
+      const history = dailyResult.rows.map(row => {
+        cumulative += row.daily_pnl;
+        return {
+          day: row.day,
+          balance: parseFloat((startingCapital + cumulative).toFixed(2)),
+          daily_pnl: parseFloat(row.daily_pnl.toFixed(2)),
+          cumulative_pnl: parseFloat(cumulative.toFixed(2)),
+        };
+      });
+
+      const totalPnl = priorPnl + dailyResult.rows.reduce((sum, r) => sum + r.daily_pnl, 0);
+
+      return {
+        data: {
+          starting_capital: startingCapital,
+          current_balance: parseFloat((startingCapital + totalPnl).toFixed(2)),
+          history,
+        },
+      };
+    }
+
+    case 'get_settings': {
+      return {
+        data: {
+          max_positions: config.account.max_concurrent_positions,
+          paper_trading: config.account.paper_trading,
+          tier_1_base: config.position_sizing.tier_1.base_position_usd,
+          tier_2_base: config.position_sizing.tier_2.base_position_usd,
+          tier_3_base: config.position_sizing.tier_3.base_position_usd,
+          scanner_interval: config.scanner.interval_minutes,
         },
       };
     }
