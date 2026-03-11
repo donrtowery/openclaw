@@ -34,11 +34,10 @@
       "note": "Half-Kelly position sizing. Requires min_trades completed trades. Disabled until sufficient data."
     },
     "tier_3": {
-      "label": "Coinbase Mid/Small Caps (197 symbols)",
-      "base_position_usd": 400,
-      "max_position_usd": 1200,
-      "slippage_pct": 0.002,
-      "note": "Coinbase-routed symbols. Smaller positions, higher slippage budget."
+      "label": "UNUSED — no T3 symbols active",
+      "base_position_usd": 0,
+      "max_position_usd": 0,
+      "note": "All active symbols are T1 or T2. Meme coins and speculative tokens excluded."
     }
   },
   "dca": {
@@ -51,7 +50,7 @@
   "scanner": {
     "interval_minutes": 5,
     "signal_cooldown_minutes": 60,
-    "tier_filter": [1, 2, 3],
+    "tier_filter": [1, 2],
     "thresholds": {
       "rsi_oversold": 30,
       "rsi_overbought": 70,
@@ -131,7 +130,7 @@
   },
   "exchange": {
     "primary": "binance_us",
-    "note": "Multi-exchange routing active. Symbols routed per DB 'exchange' column. binance_us (33 symbols) + coinbase (197 symbols).",
+    "note": "Multi-exchange routing active. Symbols routed per DB 'exchange' column. binance_us (30 symbols) + coinbase (53 symbols).",
     "exchanges": {
       "binance_us": { "note": "Uses BINANCE_API_KEY and BINANCE_SECRET_KEY from .env" },
       "coinbase": {
