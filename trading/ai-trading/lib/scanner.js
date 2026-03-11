@@ -1,6 +1,9 @@
 import { query } from '../db/connection.js';
 import { analyzeSymbol, analyzeAll } from './technical-analysis.js';
 import logger from './logger.js';
+import { readFileSync } from 'fs';
+
+const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
 
 // Track previous indicator values to detect threshold CROSSINGS (not states)
 const previousIndicators = new Map();
@@ -26,7 +29,8 @@ export async function initScanner() {
     return cachedSymbols;
   }
 
-  const result = await query('SELECT * FROM symbols WHERE is_active = true AND tier <= 2 ORDER BY tier, symbol');
+  const tierFilter = config.scanner?.tier_filter || [1, 2];
+  const result = await query(`SELECT * FROM symbols WHERE is_active = true AND tier = ANY($1) ORDER BY tier, symbol`, [tierFilter]);
   cachedSymbols = result.rows;
   symbolsCacheTime = now;
   logger.info(`[Scanner] Loaded ${cachedSymbols.length} active symbols`);

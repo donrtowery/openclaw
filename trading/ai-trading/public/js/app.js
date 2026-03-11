@@ -241,10 +241,19 @@ async function loadHistory(append) {
 
   emptyMsg.style.display = 'none';
 
-  const rows = allTrades.map(t => {
+  const rows = allTrades.map((t, i) => {
     const pnl = parseFloat(t.realized_pnl) || 0;
     const pnlPct = parseFloat(t.realized_pnl_percent) || 0;
-    return `<tr class="${pnl >= 0 ? 'row-green' : 'row-red'}">
+    const entryPrice = parseFloat(t.avg_entry_price) || parseFloat(t.entry_price) || 0;
+    const exitPrice = parseFloat(t.exit_price) || 0;
+    const totalCost = parseFloat(t.total_cost) || parseFloat(t.entry_cost) || 0;
+    const sellValue = totalCost + pnl;
+    const fees = parseFloat(t.total_fees) || 0;
+    const dcaCount = parseInt(t.dca_count) || 0;
+    const maxGain = parseFloat(t.max_unrealized_gain_percent) || 0;
+    const maxLoss = parseFloat(t.max_unrealized_loss_percent) || 0;
+
+    return `<tr class="${pnl >= 0 ? 'row-green' : 'row-red'} expandable-row" data-idx="${i}" style="cursor:pointer">
       <td><strong>${t.symbol}</strong></td>
       <td class="${pnlClass(pnl)}">${fmtCurrency(pnl)}</td>
       <td class="${pnlClass(pnlPct)}">${fmtPercent(pnlPct)}</td>
@@ -252,6 +261,46 @@ async function loadHistory(append) {
       <td>${fmtDateTime(t.exit_time)}</td>
       <td>${t.hold_hours ? parseFloat(t.hold_hours).toFixed(1) : '--'}</td>
       <td>T${t.tier}</td>
+    </tr>
+    <tr class="detail-row" id="detail-${i}" style="display:none">
+      <td colspan="7">
+        <div class="trade-detail">
+          <div class="detail-grid">
+            <div class="detail-item">
+              <span class="detail-label">Entry Price</span>
+              <span class="detail-value">${fmtPrice(entryPrice)}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Exit Price</span>
+              <span class="detail-value">${fmtPrice(exitPrice)}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Total Purchased</span>
+              <span class="detail-value">${fmtCurrency(totalCost)}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Sell Value</span>
+              <span class="detail-value ${pnlClass(pnl)}">${fmtCurrency(sellValue)}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Net P&L</span>
+              <span class="detail-value ${pnlClass(pnl)}">${fmtCurrency(pnl)} (${fmtPercent(pnlPct)})</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Fees Paid</span>
+              <span class="detail-value">${fmtCurrency(fees)}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">DCAs</span>
+              <span class="detail-value">${dcaCount}</span>
+            </div>
+            <div class="detail-item">
+              <span class="detail-label">Peak Gain / Loss</span>
+              <span class="detail-value"><span class="pnl-positive">${fmtPercent(maxGain)}</span> / <span class="pnl-negative">${fmtPercent(-Math.abs(maxLoss))}</span></span>
+            </div>
+          </div>
+        </div>
+      </td>
     </tr>`;
   }).join('');
 
@@ -261,6 +310,17 @@ async function loadHistory(append) {
 }
 
 document.getElementById('load-more-btn').addEventListener('click', () => loadHistory(true));
+
+document.querySelector('#history-table').addEventListener('click', (e) => {
+  const row = e.target.closest('.expandable-row');
+  if (!row) return;
+  const idx = row.dataset.idx;
+  const detail = document.getElementById('detail-' + idx);
+  if (!detail) return;
+  const isOpen = detail.style.display !== 'none';
+  detail.style.display = isOpen ? 'none' : 'table-row';
+  row.classList.toggle('expanded', !isOpen);
+});
 
 // ── Controls Tab ───────────────────────────────────────────
 
