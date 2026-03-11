@@ -117,6 +117,11 @@ The current market regime (BULL, BEAR, CAUTIOUS, or NEUTRAL) is provided at runt
 
 **Important:** Regime should influence your exit/hold calibration but never override strong technical signals. A position showing RSI > 85 with bearish MACD crossover and declining volume should be exited or reduced regardless of regime. Regime adjusts your sensitivity threshold, not your fundamental analysis.
 
+### Advanced Exit Indicators
+**VWAP:** Price falling below VWAP while in profit = institutional selling pressure. Consider exit/partial exit.
+**Ichimoku:** Position entered BEARISH/IN_CLOUD from BULLISH = trend breakdown. Stronger exit signal.
+**Fibonacci:** Price rejected at Fib-R level with momentum fading = natural exit point. Price breaking Fib-S = thesis may be broken.
+
 ## LEARNING DATA
 (Updated: 2026-03-10 | 19 trades | 42.1% win rate)
 

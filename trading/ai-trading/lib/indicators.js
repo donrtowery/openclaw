@@ -1,4 +1,4 @@
-import { RSI, MACD, SMA, EMA, BollingerBands, ATR, ADX, StochasticRSI } from 'technicalindicators';
+import { RSI, MACD, SMA, EMA, BollingerBands, ATR, ADX, StochasticRSI, VWAP, IchimokuCloud } from 'technicalindicators';
 import logger from './logger.js';
 
 /**
@@ -428,6 +428,114 @@ export function calcADX(candles) {
     return { value, pdi, mdi, signal };
   } catch (err) {
     logger.warn(`ADX calc failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Calculate VWAP (Volume-Weighted Average Price) from candle data.
+ * @param {{ high: number, low: number, close: number, volume: number }[]} candles
+ * @param {number} currentPrice
+ * @returns {{ value: number, signal: string } | null}
+ */
+export function calcVWAP(candles, currentPrice) {
+  try {
+    if (candles.length < 20) return null;
+    const values = VWAP.calculate({
+      high: candles.map(c => c.high),
+      low: candles.map(c => c.low),
+      close: candles.map(c => c.close),
+      volume: candles.map(c => c.volume),
+    });
+    if (values.length === 0) return null;
+    const value = values[values.length - 1];
+    let signal = 'NEUTRAL';
+    if (currentPrice > value * 1.02) signal = 'ABOVE';
+    else if (currentPrice < value * 0.98) signal = 'BELOW';
+    return { value, signal };
+  } catch (err) {
+    logger.warn(`VWAP calc failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Calculate Ichimoku Cloud from candle data.
+ * @param {{ high: number, low: number }[]} candles
+ * @param {number} currentPrice
+ * @returns {{ conversion: number, base: number, spanA: number, spanB: number, cloud_top: number, cloud_bottom: number, signal: string } | null}
+ */
+export function calcIchimoku(candles, currentPrice) {
+  try {
+    if (candles.length < 52) return null;
+    const values = IchimokuCloud.calculate({
+      high: candles.map(c => c.high),
+      low: candles.map(c => c.low),
+      conversionPeriod: 9,
+      basePeriod: 26,
+      spanPeriod: 52,
+      displacement: 26,
+    });
+    if (values.length === 0) return null;
+    const current = values[values.length - 1];
+    const { conversion, base, spanA, spanB } = current;
+    if (spanA == null || spanB == null) return null;
+
+    const cloud_top = Math.max(spanA, spanB);
+    const cloud_bottom = Math.min(spanA, spanB);
+
+    let signal = 'NEUTRAL';
+    if (currentPrice > cloud_top && conversion > base) signal = 'STRONG_BULLISH';
+    else if (currentPrice > cloud_top) signal = 'BULLISH';
+    else if (currentPrice < cloud_bottom && conversion < base) signal = 'STRONG_BEARISH';
+    else if (currentPrice < cloud_bottom) signal = 'BEARISH';
+    else signal = 'IN_CLOUD';
+
+    return { conversion, base, spanA, spanB, cloud_top, cloud_bottom, signal };
+  } catch (err) {
+    logger.warn(`Ichimoku calc failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * Calculate Fibonacci retracement levels from swing high/low in candle data.
+ * @param {{ high: number, low: number }[]} candles
+ * @param {number} currentPrice
+ * @returns {{ levels: Object, nearest_support: Object, nearest_resistance: Object, swing_high: number, swing_low: number } | null}
+ */
+export function calcFibonacci(candles, currentPrice) {
+  try {
+    if (candles.length < 30) return null;
+    const high = Math.max(...candles.map(c => c.high));
+    const low = Math.min(...candles.map(c => c.low));
+    const range = high - low;
+    if (range <= 0) return null;
+
+    const levels = {
+      '0.0': high,
+      '0.236': high - range * 0.236,
+      '0.382': high - range * 0.382,
+      '0.5': high - range * 0.5,
+      '0.618': high - range * 0.618,
+      '0.786': high - range * 0.786,
+      '1.0': low,
+    };
+
+    let nearest_support = null;
+    let nearest_resistance = null;
+    for (const [label, price_level] of Object.entries(levels)) {
+      if (price_level < currentPrice && (!nearest_support || price_level > nearest_support.price)) {
+        nearest_support = { level: label, price: price_level };
+      }
+      if (price_level > currentPrice && (!nearest_resistance || price_level < nearest_resistance.price)) {
+        nearest_resistance = { level: label, price: price_level };
+      }
+    }
+
+    return { levels, nearest_support, nearest_resistance, swing_high: high, swing_low: low };
+  } catch (err) {
+    logger.warn(`Fibonacci calc failed: ${err.message}`);
     return null;
   }
 }

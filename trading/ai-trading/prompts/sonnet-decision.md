@@ -131,6 +131,19 @@ Because volume is not pre-filtered by rigid thresholds, treat it as one input am
 - RISING OBV + falling price = bullish divergence — accumulation phase. Potential buy opportunity if other indicators confirm.
 - Use OBV to resolve ambiguous signals: two otherwise equal setups, prefer the one with OBV confirmation.
 
+**VWAP** — Volume-weighted average price, institutional fair value benchmark.
+- Price above VWAP with bullish signals = institutional buyers supporting. Higher conviction.
+- Price below VWAP with buy signal = trading against institutional flow. Reduce confidence or PASS.
+
+**Ichimoku Cloud** — Multi-dimensional trend/momentum system.
+- STRONG_BULLISH (above cloud, conversion > base) = highest conviction long entries.
+- IN_CLOUD = indecision — avoid new entries, PASS.
+- BEARISH/STRONG_BEARISH = avoid longs entirely, consider exits.
+
+**Fibonacci Retracements** — Key support/resistance levels from swing high/low.
+- Price near Fib-S 0.618 with bullish reversal signals = strong entry opportunity.
+- Price at Fib-R with weakening momentum = take profits or PASS on new entries.
+
 
 ## LEARNING DATA
 (Updated: 2026-03-10 | 19 trades | 42.1% win rate)

@@ -250,6 +250,10 @@ CREATE TABLE indicator_snapshots (
     adx DECIMAL(6,2),
     adx_signal VARCHAR(20),
     obv DECIMAL(20,2),
+    vwap DECIMAL(20,8),
+    ichimoku_signal VARCHAR(20),
+    fib_nearest_support DECIMAL(20,8),
+    fib_nearest_resistance DECIMAL(20,8),
 
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

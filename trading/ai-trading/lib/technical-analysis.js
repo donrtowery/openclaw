@@ -3,6 +3,7 @@ import {
   calcRSI, calcMACD, calcSMAs, calcEMAs,
   calcBollingerBands, calcVolume, calcSupportResistance, calcTrend,
   calcATR, calcStochasticRSI, calcADX, calcOBV,
+  calcVWAP, calcIchimoku, calcFibonacci,
 } from './indicators.js';
 import logger from './logger.js';
 
@@ -107,6 +108,9 @@ export async function analyzeSymbol(symbol) {
   const stochRsi = calcStochasticRSI(closes1h);
   const adx = calcADX(candles1h);
   const obv = calcOBV(candles1h);
+  const vwap = calcVWAP(candles1h, price);
+  const ichimoku = calcIchimoku(candles1h, price);
+  const fibonacci = calcFibonacci(candles1h, price);
 
   // 4h timeframe trend for macro context
   const closes4h = candles4h.map(c => c.close);
@@ -134,6 +138,9 @@ export async function analyzeSymbol(symbol) {
     stochRsi,
     adx,
     obv,
+    vwap,
+    ichimoku,
+    fibonacci,
     trend4h,
     timestamp: new Date().toISOString(),
   };
@@ -201,7 +208,15 @@ export function formatForClaude(a) {
   if (a.obv) momentumParts.push(`OBV:${a.obv.trend.toLowerCase()}`);
   if (momentumParts.length) lines.push(momentumParts.join(' | '));
 
-  // Line 3c: 4h timeframe context
+  // Line 3c: Advanced indicators (VWAP, Ichimoku, Fibonacci)
+  const advParts = [];
+  if (a.vwap) advParts.push(`VWAP:$${a.vwap.value >= 1 ? a.vwap.value.toFixed(2) : a.vwap.value.toPrecision(6)}(${a.vwap.signal.toLowerCase()})`);
+  if (a.ichimoku) advParts.push(`Ichimoku:${a.ichimoku.signal.toLowerCase()}`);
+  if (a.fibonacci?.nearest_support) advParts.push(`Fib-S:${a.fibonacci.nearest_support.level}($${a.fibonacci.nearest_support.price.toFixed(2)})`);
+  if (a.fibonacci?.nearest_resistance) advParts.push(`Fib-R:${a.fibonacci.nearest_resistance.level}($${a.fibonacci.nearest_resistance.price.toFixed(2)})`);
+  if (advParts.length) lines.push(advParts.join(' | '));
+
+  // Line 3d: 4h timeframe context
   if (a.trend4h) {
     lines.push(`4h: ${a.trend4h.direction} ${a.trend4h.strength}`);
   }

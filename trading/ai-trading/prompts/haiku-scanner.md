@@ -81,6 +81,24 @@ Valid JSON only:
 - Weight the 4h trend more heavily for T1 (blue chips follow macro trends closely).
 
 
+**VWAP (available in data line 3c)**
+- VWAP shows the average price weighted by volume — institutional benchmark.
+- Price ABOVE VWAP = buyers in control (bullish bias for entries).
+- Price BELOW VWAP = sellers in control (bearish bias, caution on buys).
+- VWAP cross signals (VWAP_CROSS_ABOVE/BELOW) indicate momentum shifts.
+
+**Ichimoku Cloud (available in data line 3c)**
+- Price above cloud (BULLISH/STRONG_BULLISH) = strong uptrend confirmed.
+- Price below cloud (BEARISH/STRONG_BEARISH) = strong downtrend confirmed.
+- Price IN_CLOUD = indecision zone — avoid new entries, wait for breakout.
+- Ichimoku cross signals indicate cloud breakouts — high conviction when aligned with other indicators.
+
+**Fibonacci Retracements (available in data line 3c)**
+- Fib-S/Fib-R show nearest support/resistance from Fibonacci levels (0.236, 0.382, 0.5, 0.618, 0.786).
+- 0.618 is the "golden ratio" — strongest support/resistance level.
+- Price bouncing off Fib-S with bullish indicators = potential entry.
+- Price rejected at Fib-R with bearish indicators = potential exit.
+
 ## SELL Signal Evaluation
 
 When evaluating SELL signals for existing positions:

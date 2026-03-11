@@ -152,6 +152,22 @@ function detectThresholdCrossings(symbol, current, previous, thresholds) {
     }
   }
 
+  // --- Ichimoku cloud transitions ---
+  if (previous.ichimoku && current.ichimoku) {
+    const wasBullish = previous.ichimoku.signal === 'BULLISH' || previous.ichimoku.signal === 'STRONG_BULLISH';
+    const isBullish = current.ichimoku.signal === 'BULLISH' || current.ichimoku.signal === 'STRONG_BULLISH';
+    const wasBearish = previous.ichimoku.signal === 'BEARISH' || previous.ichimoku.signal === 'STRONG_BEARISH';
+    const isBearish = current.ichimoku.signal === 'BEARISH' || current.ichimoku.signal === 'STRONG_BEARISH';
+    if (!wasBullish && isBullish) crossed.push('ICHIMOKU_BULLISH_CROSS');
+    if (!wasBearish && isBearish) crossed.push('ICHIMOKU_BEARISH_CROSS');
+  }
+
+  // --- VWAP crossings ---
+  if (previous.vwap && current.vwap) {
+    if (previous.vwap.signal !== 'ABOVE' && current.vwap.signal === 'ABOVE') crossed.push('VWAP_CROSS_ABOVE');
+    if (previous.vwap.signal !== 'BELOW' && current.vwap.signal === 'BELOW') crossed.push('VWAP_CROSS_BELOW');
+  }
+
   return crossed;
 }
 
@@ -292,7 +308,7 @@ export async function runScanCycle(config) {
 async function saveIndicatorSnapshots(analyses) {
   if (analyses.length === 0) return;
 
-  const COLS = 27;
+  const COLS = 31;
   const values = [];
   const placeholders = [];
 
@@ -328,6 +344,10 @@ async function saveIndicatorSnapshots(analyses) {
       a.adx?.value ?? null,
       a.adx?.signal ?? null,
       a.obv?.value ?? null,
+      a.vwap?.value ?? null,
+      a.ichimoku?.signal ?? null,
+      a.fibonacci?.nearest_support?.price ?? null,
+      a.fibonacci?.nearest_resistance?.price ?? null,
     );
   }
 
@@ -337,7 +357,8 @@ async function saveIndicatorSnapshots(analyses) {
       sma10, sma30, sma50, sma200, ema9, ema21,
       bb_upper, bb_middle, bb_lower, volume_24h, volume_ratio,
       support_nearest, resistance_nearest, trend,
-      atr, atr_percent, stoch_rsi_k, stoch_rsi_d, adx, adx_signal, obv
+      atr, atr_percent, stoch_rsi_k, stoch_rsi_d, adx, adx_signal, obv,
+      vwap, ichimoku_signal, fib_nearest_support, fib_nearest_resistance
     ) VALUES ${placeholders.join(',')}
   `, values);
 }
