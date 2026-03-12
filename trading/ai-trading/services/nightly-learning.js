@@ -8,7 +8,11 @@ import logger from '../lib/logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { extractJSON } from '../lib/claude.js';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+  defaultHeaders: { 'anthropic-beta': 'prompt-caching-2024-07-31' },
+});
+const OPUS_MODEL = process.env.OPUS_MODEL || 'claude-opus-4-20250514';
 const SONNET_MODEL = process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250929';
 
 const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
@@ -104,11 +108,11 @@ async function run() {
     logger.info(`[Learning] Current escalation conversion: ${escConvRate}%`);
   }
 
-  // ── Step 3: Call Sonnet for analysis (ONE call) ───────────
+  // ── Step 3: Call Opus for analysis (ONE call) ─────────────
 
-  const analysis = await callSonnetForAnalysis(stats, defensiveMode, trajectoryRows);
+  const analysis = await callOpusForAnalysis(stats, defensiveMode, trajectoryRows);
 
-  // ── Step 3b: Validate Sonnet's generated rules ────────────
+  // ── Step 3b: Validate Opus's generated rules ──────────────
   // Run validation BEFORE injecting corrective rules so the contradiction
   // detector doesn't strip system-generated calibration rules.
 
@@ -178,7 +182,7 @@ async function run() {
 
   let promptsUpdated = false;
   if (analysis._parseFailure) {
-    logger.warn(`[Learning] Skipping prompt/rule updates — Sonnet parse failure this cycle`);
+    logger.warn(`[Learning] Skipping prompt/rule updates — Opus parse failure this cycle`);
   } else if (skipPromptUpdates) {
     logger.info(`[Learning] Skipping prompt/rule updates — insufficient new trade data`);
   } else {
@@ -635,9 +639,9 @@ async function calculateStats() {
   };
 }
 
-// ── Sonnet Analysis Call ────────────────────────────────────
+// ── Opus Analysis Call ──────────────────────────────────────
 
-async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRows = []) {
+async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows = []) {
   const hasTrades = stats.total_trades > 0;
 
   // Adapt prompt framing based on what data exists
@@ -1009,7 +1013,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     }
   }
 
-  const LEARNING_TIMEOUT_MS = 120000; // 2 min timeout for learning analysis
+  const LEARNING_TIMEOUT_MS = 300000; // 5 min timeout for Opus learning analysis
   const MAX_RETRIES = 2;
 
   try {
@@ -1020,32 +1024,32 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
         const cleanup = () => clearTimeout(timer);
         message = await Promise.race([
           anthropic.messages.create({
-            model: SONNET_MODEL,
+            model: OPUS_MODEL,
             max_tokens: 8192,
             system: [{ type: 'text', text: 'You are a conservative trading performance analyst for a utility-focused crypto bot. Quality over quantity — never bias toward more trading. Losing trades matter as much as missed opportunities. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral' } }],
             messages: [{ role: 'user', content: prompt }],
           }).then(r => { cleanup(); return r; }, err => { cleanup(); throw err; }),
-          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Sonnet learning timed out after ${LEARNING_TIMEOUT_MS}ms`)), LEARNING_TIMEOUT_MS); }),
+          new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Opus learning timed out after ${LEARNING_TIMEOUT_MS}ms`)), LEARNING_TIMEOUT_MS); }),
         ]);
         break; // Success
       } catch (retryErr) {
         const isRetryable = retryErr.message?.includes('timed out') || retryErr.status === 429 || (retryErr.status >= 500 && retryErr.status < 600);
         if (!isRetryable || attempt === MAX_RETRIES) throw retryErr;
         const delay = 1000 * Math.pow(2, attempt - 1) + Math.random() * 500;
-        logger.warn(`[Learning] Sonnet attempt ${attempt} failed (${retryErr.message}), retrying in ${(delay/1000).toFixed(1)}s...`);
+        logger.warn(`[Learning] Opus attempt ${attempt} failed (${retryErr.message}), retrying in ${(delay/1000).toFixed(1)}s...`);
         await new Promise(r => setTimeout(r, delay));
       }
     }
 
     const text = message.content?.[0]?.text;
     if (!text) {
-      logger.error('[Learning] Empty Sonnet response for analysis');
+      logger.error('[Learning] Empty Opus response for analysis');
       return { _parseFailure: true, haiku_rules: [], sonnet_rules: [], haiku_escalation_calibration: [], exit_rules: [] };
     }
-    logger.info(`[Learning] Sonnet analysis: ${message.usage.input_tokens}in/${message.usage.output_tokens}out tokens, stop_reason: ${message.stop_reason}`);
+    logger.info(`[Learning] Opus analysis: ${message.usage.input_tokens}in/${message.usage.output_tokens}out tokens, stop_reason: ${message.stop_reason}`);
 
     if (message.stop_reason === 'max_tokens') {
-      logger.warn(`[Learning] Sonnet response truncated at max_tokens — skipping parse to prevent partial rule sets`);
+      logger.warn(`[Learning] Opus response truncated at max_tokens — skipping parse to prevent partial rule sets`);
       return {
         haiku_rules: [],
         sonnet_rules: [],
@@ -1062,7 +1066,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     try {
       parsed = extractJSON(text);
     } catch (parseError) {
-      logger.error(`[Learning] Failed to parse Sonnet response: ${parseError.message}`);
+      logger.error(`[Learning] Failed to parse Opus response: ${parseError.message}`);
       logger.warn(`[Learning] Returning empty analysis — prompts will not be updated this cycle`);
       return {
         haiku_rules: [],
@@ -1077,7 +1081,7 @@ async function callSonnetForAnalysis(stats, defensiveMode = false, trajectoryRow
     }
     return parsed;
   } catch (error) {
-    logger.error(`[Learning] Sonnet call failed: ${error.message}`);
+    logger.error(`[Learning] Opus call failed: ${error.message}`);
     throw error;
   }
 }
