@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import { createHash } from 'crypto';
 import { readFileSync, writeFileSync, renameSync } from 'fs';
 import { query, getClient, testConnection } from '../db/connection.js';
 import { queueEvent } from '../lib/events.js';
@@ -31,6 +32,14 @@ if (!Number.isInteger(PASS_EVAL_WINDOW_HOURS) || PASS_EVAL_WINDOW_HOURS < 1 || P
 const DEFENSIVE_WIN_RATE_THRESHOLD = config.learning?.defensive_mode_win_rate_threshold || 50;
 const DEFENSIVE_MAX_ESC_TARGET = config.learning?.defensive_mode_max_escalation_target || 15;
 const DEFENSIVE_MIN_ESCALATE_RATIO = config.learning?.defensive_mode_min_escalate_ratio || 0.2;
+
+// Changelog config
+const CHANGELOG_ENABLED = config.learning?.changelog?.enabled !== false;
+const CHANGELOG_OSCILLATION_WINDOW_DAYS = config.learning?.changelog?.oscillation_window_days || 14;
+const CHANGELOG_OSCILLATION_THRESHOLD = config.learning?.changelog?.oscillation_threshold || 3;
+const CHANGELOG_CONTEXT_WINDOW_DAYS = config.learning?.changelog?.context_window_days || 30;
+const CHANGELOG_MAX_CONTEXT_ENTRIES = config.learning?.changelog?.max_context_entries || 50;
+const CHANGELOG_RETENTION_DAYS = config.learning?.changelog?.retention_days || 90;
 
 async function run() {
   logger.info('[Learning] === Nightly Learning Job Started ===');
@@ -187,7 +196,7 @@ async function run() {
     logger.info(`[Learning] Skipping prompt/rule updates — insufficient new trade data`);
   } else {
     await updatePromptFiles(stats, analysis, defensiveMode);
-    await saveLearningRules(analysis);
+    await saveLearningRules(analysis, stats);
     promptsUpdated = true;
   }
 
@@ -803,6 +812,44 @@ async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows 
       prompt += '\n';
     }
     prompt += '\n';
+  }
+
+  // Changelog context — prevents oscillation and gives Opus historical awareness
+  const changelogContext = await fetchChangelogContext();
+  if (changelogContext) {
+    prompt += `═══ RULE CHANGE HISTORY — READ BEFORE GENERATING NEW RULES ═══\n\n`;
+
+    if (changelogContext.oscillating.length > 0) {
+      prompt += `*** OSCILLATING RULES (BLOCKED — do NOT re-add these) ***\n`;
+      prompt += `These rules have been added and removed ${CHANGELOG_OSCILLATION_THRESHOLD}+ times in ${CHANGELOG_OSCILLATION_WINDOW_DAYS} days. They are automatically blocked. Do NOT generate rules with the same intent.\n`;
+      for (const osc of changelogContext.oscillating) {
+        const types = osc.change_types.slice(0, 4).join('→');
+        prompt += `- [${osc.rule_type}] "${osc.rule_text}" (${osc.change_count} changes: ${types})\n`;
+        if (osc.reasons[0]) prompt += `  Last reason: ${osc.reasons[0]}\n`;
+      }
+      prompt += '\n';
+    }
+
+    if (changelogContext.deactivations.length > 0) {
+      prompt += `RECENTLY REMOVED RULES (last ${CHANGELOG_CONTEXT_WINDOW_DAYS} days) — learn from these:\n`;
+      for (const d of changelogContext.deactivations) {
+        const date = new Date(d.created_at).toISOString().split('T')[0];
+        prompt += `- [${date}] [${d.rule_type}] REMOVED: "${d.rule_text.substring(0, 100)}"\n`;
+        prompt += `  Reason: ${d.reason}\n`;
+      }
+      prompt += '\n';
+    }
+
+    if (changelogContext.recent.length > 0) {
+      prompt += `RECENT RULE CHANGES (${changelogContext.recent.length} changes in last ${CHANGELOG_CONTEXT_WINDOW_DAYS} days):\n`;
+      for (const c of changelogContext.recent.slice(0, 20)) {
+        const date = new Date(c.created_at).toISOString().split('T')[0];
+        prompt += `- [${date}] ${c.change_type} [${c.rule_type}]: "${c.rule_text.substring(0, 80)}"\n`;
+      }
+      prompt += '\n';
+    }
+
+    prompt += `INSTRUCTIONS: Do NOT re-create rules that were recently deactivated unless you have NEW evidence (new trades, changed win rates) that justifies them. Reference specific data points when re-proposing any previously-removed rule.\n\n`;
   }
 
   // Missed opportunities — consolidated into one section with type markers
@@ -1868,6 +1915,134 @@ async function updateOutcomes() {
   logger.info('[Learning] Outcomes updated');
 }
 
+// ── Learning Changelog ──────────────────────────────────────
+
+/**
+ * Generate a normalized fingerprint for a rule to detect semantic duplicates.
+ * Strips statistics, percentages, and trade counts so that "REJECT X — 3/3 losses"
+ * and "REJECT X — 2/5 losses" produce the same fingerprint.
+ */
+function generateRuleFingerprint(ruleType, ruleText) {
+  if (typeof ruleText !== 'string') return '';
+  const normalized = ruleText
+    .toLowerCase()
+    .replace(/\d+(?:\.\d+)?%?\s*(?:wr|win\s*rate|trades?|samples?|losses?|wins?|lost|won)/gi, '') // strip stats
+    .replace(/\d+\s*\/\s*\d+/g, '')  // strip ratios like 3/5
+    .replace(/\$\s*\d+(?:\.\d+)?/g, '')  // strip dollar amounts
+    .replace(/avg\s*[+-]?\s*\$?\s*\d+(?:\.\d+)?/gi, '')  // strip avg P&L
+    .replace(/\+?\d+(?:\.\d+)?%/g, '')  // strip standalone percentages
+    .replace(/\(\s*\)/g, '')  // strip empty parens left behind
+    .replace(/\s+/g, ' ')
+    .trim();
+  return createHash('sha256').update(`${ruleType}:${normalized}`).digest('hex').substring(0, 16);
+}
+
+/**
+ * Log a change to the learning_changelog table.
+ */
+async function logChangelog(client, { changeType, ruleType, ruleText, previousRuleText, reason, stats, fingerprint, learningHistoryId }) {
+  if (!CHANGELOG_ENABLED) return;
+  const fp = fingerprint || generateRuleFingerprint(ruleType, ruleText);
+
+  // Count prior oscillations for this fingerprint
+  const oscResult = await client.query(`
+    SELECT COUNT(*) as cnt FROM learning_changelog
+    WHERE rule_fingerprint = $1
+      AND created_at > NOW() - INTERVAL '1 day' * $2
+  `, [fp, CHANGELOG_OSCILLATION_WINDOW_DAYS]);
+  const oscillationCount = parseInt(oscResult.rows[0].cnt) || 0;
+
+  await client.query(`
+    INSERT INTO learning_changelog (
+      change_type, rule_type, rule_text, previous_rule_text, reason,
+      win_rate_at_change, total_pnl_at_change, total_trades_at_change,
+      rule_fingerprint, oscillation_count, learning_history_id
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+  `, [
+    changeType, ruleType, ruleText, previousRuleText || null, reason,
+    stats?.win_rate ?? null, stats?.total_pnl ?? null, stats?.total_trades ?? null,
+    fp, oscillationCount, learningHistoryId || null,
+  ]);
+}
+
+/**
+ * Check if a rule fingerprint is oscillating (added/deactivated too many times recently).
+ * Returns { isOscillating, count, history } where history contains the last few changes.
+ */
+async function detectOscillation(client, ruleType, ruleText) {
+  if (!CHANGELOG_ENABLED) return { isOscillating: false, count: 0, history: [] };
+
+  const fp = generateRuleFingerprint(ruleType, ruleText);
+  const result = await client.query(`
+    SELECT change_type, reason, created_at
+    FROM learning_changelog
+    WHERE rule_fingerprint = $1
+      AND created_at > NOW() - INTERVAL '1 day' * $2
+    ORDER BY created_at DESC
+    LIMIT 10
+  `, [fp, CHANGELOG_OSCILLATION_WINDOW_DAYS]);
+
+  const changes = result.rows;
+  // Count state transitions (ADDED→DEACTIVATED or vice versa)
+  const transitions = changes.filter(c => c.change_type === 'ADDED' || c.change_type === 'DEACTIVATED').length;
+
+  return {
+    isOscillating: transitions >= CHANGELOG_OSCILLATION_THRESHOLD,
+    count: transitions,
+    history: changes,
+  };
+}
+
+/**
+ * Fetch changelog context for the Opus prompt. Returns three sections:
+ * 1. Oscillating rules — rules that keep being added and removed
+ * 2. Recent changes — what changed in the last N days
+ * 3. Deactivation reasons — why rules were removed
+ */
+async function fetchChangelogContext() {
+  if (!CHANGELOG_ENABLED) return null;
+
+  // 1. Oscillating rules (fingerprints with 3+ changes in the window)
+  const oscillating = await query(`
+    SELECT rule_fingerprint, rule_type, rule_text, COUNT(*) as change_count,
+           array_agg(change_type ORDER BY created_at DESC) as change_types,
+           array_agg(reason ORDER BY created_at DESC) as reasons
+    FROM learning_changelog
+    WHERE created_at > NOW() - INTERVAL '1 day' * $1
+    GROUP BY rule_fingerprint, rule_type, rule_text
+    HAVING COUNT(*) >= $2
+    ORDER BY COUNT(*) DESC
+    LIMIT 10
+  `, [CHANGELOG_OSCILLATION_WINDOW_DAYS, CHANGELOG_OSCILLATION_THRESHOLD]);
+
+  // 2. Recent changes (last context_window_days, capped)
+  const recent = await query(`
+    SELECT change_type, rule_type, rule_text, reason, created_at
+    FROM learning_changelog
+    WHERE created_at > NOW() - INTERVAL '1 day' * $1
+    ORDER BY created_at DESC
+    LIMIT $2
+  `, [CHANGELOG_CONTEXT_WINDOW_DAYS, CHANGELOG_MAX_CONTEXT_ENTRIES]);
+
+  // 3. Deactivation reasons (why rules were removed — most useful for Opus)
+  const deactivations = await query(`
+    SELECT rule_type, rule_text, reason, created_at
+    FROM learning_changelog
+    WHERE change_type IN ('DEACTIVATED', 'EXPIRED', 'OSCILLATION_BLOCKED')
+      AND created_at > NOW() - INTERVAL '1 day' * $1
+    ORDER BY created_at DESC
+    LIMIT 20
+  `, [CHANGELOG_CONTEXT_WINDOW_DAYS]);
+
+  if (oscillating.rows.length === 0 && recent.rows.length === 0) return null;
+
+  return {
+    oscillating: oscillating.rows,
+    recent: recent.rows,
+    deactivations: deactivations.rows,
+  };
+}
+
 // ── Database Rule Saver ─────────────────────────────────────
 
 const toArray = (val) => Array.isArray(val) ? val : [];
@@ -1931,33 +2106,74 @@ function extractRuleMetrics(ruleText) {
   return metrics;
 }
 
-async function saveLearningRules(analysis) {
+async function saveLearningRules(analysis, currentStats = null) {
   const client = await getClient();
+  let savedCount = 0;
+  let blockedCount = 0;
   try {
     await client.query('BEGIN');
 
-    // Deactivate old rules (>7 days)
-    await client.query(`
-      UPDATE learning_rules SET is_active = false
+    // Fetch rules about to be deactivated (for changelog logging)
+    const oldRulesResult = await client.query(`
+      SELECT id, rule_type, rule_text FROM learning_rules
       WHERE is_active = true AND created_at < NOW() - INTERVAL '7 days'
     `);
 
+    // Deactivate old rules (>7 days)
+    await client.query(`
+      UPDATE learning_rules SET is_active = false, deactivated_at = NOW()
+      WHERE is_active = true AND created_at < NOW() - INTERVAL '7 days'
+    `);
+
+    // Log expired deactivations to changelog
+    for (const old of oldRulesResult.rows) {
+      await logChangelog(client, {
+        changeType: 'EXPIRED',
+        ruleType: old.rule_type,
+        ruleText: old.rule_text,
+        reason: 'Rule expired after 7 days',
+        stats: currentStats,
+        fingerprint: generateRuleFingerprint(old.rule_type, old.rule_text),
+      });
+    }
+
     // Deactivate rules of the types we're about to insert — but only those 48+ hours old
-    // Rules younger than 48h survive alongside new rules to let them prove themselves
     const typesToReplace = [];
     if (toArray(analysis.haiku_rules).length > 0) typesToReplace.push('haiku_escalation');
     if (toArray(analysis.sonnet_rules).length > 0) typesToReplace.push('sonnet_decision');
     if (toArray(analysis.haiku_escalation_calibration).length > 0) typesToReplace.push('haiku_calibration');
     if (toArray(analysis.exit_rules).length > 0) typesToReplace.push('sonnet_exit');
+
     if (typesToReplace.length > 0) {
+      // Fetch rules about to be replaced (for changelog)
+      const replacedResult = await client.query(`
+        SELECT id, rule_type, rule_text FROM learning_rules
+        WHERE is_active = true
+          AND rule_type = ANY($1)
+          AND created_at < NOW() - INTERVAL '48 hours'
+      `, [typesToReplace]);
+
       const deactivated = await client.query(`
         UPDATE learning_rules SET is_active = false, deactivated_at = NOW()
         WHERE is_active = true
           AND rule_type = ANY($1)
           AND created_at < NOW() - INTERVAL '48 hours'
       `, [typesToReplace]);
+
       if (deactivated.rowCount > 0) {
         logger.info(`[Learning] Deactivated ${deactivated.rowCount} old rules (48h+) for types: ${typesToReplace.join(', ')}`);
+
+        // Log replaced deactivations to changelog
+        for (const replaced of replacedResult.rows) {
+          await logChangelog(client, {
+            changeType: 'DEACTIVATED',
+            ruleType: replaced.rule_type,
+            ruleText: replaced.rule_text,
+            reason: 'Replaced by new nightly learning rules',
+            stats: currentStats,
+            fingerprint: generateRuleFingerprint(replaced.rule_type, replaced.rule_text),
+          });
+        }
       }
     }
 
@@ -1969,15 +2185,40 @@ async function saveLearningRules(analysis) {
     ];
 
     for (const rule of allRules) {
+      // Check for oscillation before inserting
+      const { isOscillating, count, history } = await detectOscillation(client, rule.type, rule.text);
+      if (isOscillating) {
+        blockedCount++;
+        logger.warn(`[Learning] OSCILLATION BLOCKED: "${rule.text.substring(0, 80)}..." (${count} changes in ${CHANGELOG_OSCILLATION_WINDOW_DAYS}d)`);
+        await logChangelog(client, {
+          changeType: 'OSCILLATION_BLOCKED',
+          ruleType: rule.type,
+          ruleText: rule.text,
+          reason: `Blocked: ${count} add/deactivate cycles in ${CHANGELOG_OSCILLATION_WINDOW_DAYS} days. Last deactivation reason: ${history.find(h => h.change_type === 'DEACTIVATED')?.reason || 'unknown'}`,
+          stats: currentStats,
+        });
+        continue;
+      }
+
       const metrics = extractRuleMetrics(rule.text);
       await client.query(`
         INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at, sample_size, win_rate, avg_pnl, confidence_score)
         VALUES ($1, $2, true, NOW(), $3, $4, $5, $6)
       `, [rule.type, rule.text, metrics.sample_size, metrics.win_rate, metrics.avg_pnl, metrics.confidence_score]);
+      savedCount++;
+
+      // Log the addition to changelog
+      await logChangelog(client, {
+        changeType: 'ADDED',
+        ruleType: rule.type,
+        ruleText: rule.text,
+        reason: analysis.rule_changes || 'Nightly learning update',
+        stats: currentStats,
+      });
     }
 
     await client.query('COMMIT');
-    logger.info(`[Learning] Saved ${allRules.length} learning rules`);
+    logger.info(`[Learning] Saved ${savedCount} learning rules` + (blockedCount > 0 ? `, blocked ${blockedCount} oscillating rules` : ''));
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
     logger.error(`[Learning] saveLearningRules failed, rolled back: ${error.message}`);
@@ -2054,6 +2295,14 @@ async function cleanup() {
   `);
   if (deleteResult.rowCount > 0) {
     logger.info(`[Learning] Deleted ${deleteResult.rowCount} old deactivated learning rules (>90 days)`);
+  }
+
+  // Clean old changelog entries
+  const changelogResult = await query(`
+    DELETE FROM learning_changelog WHERE created_at < NOW() - INTERVAL '1 day' * $1
+  `, [CHANGELOG_RETENTION_DAYS]);
+  if (changelogResult.rowCount > 0) {
+    logger.info(`[Learning] Cleaned ${changelogResult.rowCount} old changelog entries (>${CHANGELOG_RETENTION_DAYS} days)`);
   }
 }
 

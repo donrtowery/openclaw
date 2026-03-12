@@ -362,7 +362,31 @@ CREATE TABLE circuit_breaker (
 -- Initialize
 INSERT INTO circuit_breaker (consecutive_losses, is_active) VALUES (0, false);
 
--- 11. BACKTEST_RUNS - Historical backtest results
+-- 11. LEARNING_CHANGELOG - Tracks all learning rule changes to prevent oscillation
+CREATE TABLE learning_changelog (
+    id SERIAL PRIMARY KEY,
+    change_type VARCHAR(20) NOT NULL CHECK (change_type IN ('ADDED', 'DEACTIVATED', 'MODIFIED', 'EXPIRED', 'OSCILLATION_BLOCKED')),
+    rule_type VARCHAR(50) NOT NULL,
+    rule_text TEXT NOT NULL,
+    previous_rule_text TEXT,
+    reason TEXT NOT NULL,
+    win_rate_at_change DECIMAL(5,2),
+    total_pnl_at_change DECIMAL(20,8),
+    total_trades_at_change INTEGER,
+    rule_fingerprint VARCHAR(64) NOT NULL,
+    oscillation_count INTEGER DEFAULT 0,
+    learning_history_id INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_changelog_fingerprint ON learning_changelog(rule_fingerprint, created_at);
+CREATE INDEX idx_changelog_type ON learning_changelog(change_type, created_at);
+CREATE INDEX idx_changelog_rule_type ON learning_changelog(rule_type, created_at);
+CREATE INDEX idx_changelog_created ON learning_changelog(created_at);
+
+COMMENT ON TABLE learning_changelog IS 'Tracks all learning rule changes to prevent oscillation and give Opus historical context';
+
+-- 12. BACKTEST_RUNS - Historical backtest results
 CREATE TABLE backtest_runs (
     id SERIAL PRIMARY KEY,
     start_date DATE NOT NULL,

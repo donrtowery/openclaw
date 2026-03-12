@@ -115,6 +115,15 @@
     "defensive_mode_max_escalation_target": 15,
     "defensive_mode_min_escalate_ratio": 0.2,
     "min_new_trades_for_update": 0,
+    "changelog": {
+      "enabled": true,
+      "oscillation_window_days": 14,
+      "oscillation_threshold": 3,
+      "context_window_days": 30,
+      "max_context_entries": 50,
+      "retention_days": 90,
+      "note": "Tracks rule changes to prevent add/remove oscillation. Rules added+deactivated 3+ times in 14 days are blocked. Opus sees last 30 days of changes."
+    },
     "note": "min_new_trades_for_update set to 0 to allow learning to update rules even with no new trades — prevents stale REJECT rules from locking the system."
   },
   "fees": {
