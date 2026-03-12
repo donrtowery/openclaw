@@ -70,12 +70,12 @@
     "note": "Safety net — Sonnet can still make intelligent decisions below these, but actions are downgraded"
   },
   "escalation": {
-    "min_confidence_to_escalate": 0.65,
+    "min_confidence_to_escalate": 0.55,
     "sonnet_dedup_minutes": 30,
-    "volume_threshold_ceiling": 5.0,
-    "stagnation_sessions_to_override": 3,
+    "volume_threshold_ceiling": 3.0,
+    "stagnation_sessions_to_override": 1,
     "stagnation_confidence_floor": 0.50,
-    "note": "volume_threshold_ceiling prevents learning from raising volume filters above this max. stagnation override activates after N sessions with 0 new trades."
+    "note": "min_confidence lowered 0.65→0.55 to break stagnation. volume_threshold_ceiling lowered 5.0→3.0 to allow T2 signals through. stagnation override triggers after 1 session with 0 trades."
   },
   "circuit_breaker": {
     "consecutive_losses_to_activate": 4,
@@ -114,8 +114,8 @@
     "defensive_mode_win_rate_threshold": 50,
     "defensive_mode_max_escalation_target": 15,
     "defensive_mode_min_escalate_ratio": 0.2,
-    "min_new_trades_for_update": 2,
-    "note": "min_new_trades_for_update prevents churning rules when no new trade data exists."
+    "min_new_trades_for_update": 0,
+    "note": "min_new_trades_for_update set to 0 to allow learning to update rules even with no new trades — prevents stale REJECT rules from locking the system."
   },
   "fees": {
     "rate": 0.001,

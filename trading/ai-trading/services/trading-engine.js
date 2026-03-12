@@ -486,33 +486,6 @@ async function runCycle() {
   }
 }
 
-// ── Process Escalated Signal (Haiku → Sonnet → Execute) ─────
-
-async function processEscalatedSignal(triggered, haikuResult, news, portfolio, learningRules, prefetchedRegime) {
-  const { symbol, tier } = triggered;
-
-  logger.info(`[Engine] ${symbol}: Escalated to Sonnet (${haikuResult.strength} ${haikuResult.signal} conf:${haikuResult.confidence})`);
-  lastSonnetEvaluation.set(symbol, Date.now());
-
-  // Use pre-fetched market regime (avoids redundant API call per signal)
-  const marketRegime = prefetchedRegime;
-  const tradingSession = getTradingSession();
-  const enrichedPortfolio = { ...portfolio, market_regime: marketRegime, trading_session: tradingSession };
-
-  // Call Sonnet (context pre-fetched by caller)
-  const decision = await callSonnet(haikuResult, triggered, news, enrichedPortfolio, learningRules, tradingConfig);
-
-  // Execute if actionable (with per-symbol lock to prevent concurrent operations)
-  if (['BUY', 'SHORT', 'SELL', 'DCA', 'PARTIAL_EXIT'].includes(decision.action)) {
-    return await withPositionLock(symbol, () => executeDecision(decision, triggered));
-  }
-
-  // Non-actionable (PASS/HOLD) — mark decision so it's not orphaned
-  await markDecisionExecuted(decision.decision_id, false, `Sonnet chose ${decision.action}`);
-  logger.info(`[Engine] ${symbol}: Sonnet chose ${decision.action} — no execution needed`);
-  return { escalated: true, executed: false };
-}
-
 // ── Mark Decision Executed ───────────────────────────────────
 
 async function markDecisionExecuted(decisionId, executed, notes) {

@@ -99,8 +99,8 @@ Valid JSON only:
 Haiku evaluates volume qualitatively as one of several confirmation factors when assessing signals — it does NOT enforce hardcoded volume floor thresholds. The scanner detects volume spike crossings (e.g., volume exceeding a moving average), but Haiku uses volume context alongside RSI, MACD, trend, and other indicators to judge signal quality before escalating to you.
 
 Because volume is not pre-filtered by rigid thresholds, treat it as one input among many:
-- Volume 2-3x with 2+ indicator confirmations is adequate for T1 signals
-- For T2 signals, require volume >5x with RSI and MACD confirmation — T2's lower win rate demands the strictest standards
+- Volume 1.5-3x with 2+ indicator confirmations is adequate for T1 signals
+- For T2 signals, require volume >2.5x with RSI and MACD confirmation — T2 needs more confirmation but not impossibly high thresholds
 - Higher volume increases conviction — it confirms institutional participation and reduces the chance of a false breakout
 - Low volume (<2x) with any signal should reduce your confidence by at least 0.10
 - Do not blanket-reject signals solely on volume — evaluate volume in context with momentum, trend strength, and other confirmations
@@ -147,33 +147,29 @@ Because volume is not pre-filtered by rigid thresholds, treat it as one input am
 
 
 ## LEARNING DATA
-(Updated: 2026-03-10 | 19 trades | 42.1% win rate)
+(Updated: 2026-03-12 | 20 trades | 45% win rate | RESET — prior rules caused 4-day trading freeze)
 
 PERFORMANCE:
-- 42.1% WR (8W/11L) | PF: 0.69
+- 45% WR (9W/11L) | PF: 0.69
 - Avg win: +$34.34 | Avg loss: $-36.12
 - Hold: Winners 52.6h, Losers 30.1h
-- Best tier: T1 (57% WR)
+- Best tier: T1 (57% WR), T2 (33% WR — smaller sample, needs more data)
 
-BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
-- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69 (EXCEPTION: sub-pattern wins 63% on 8 trades — approve if RSI <55 and volume >3x)
+BAD TRADE PATTERNS (reduce confidence, don't blanket-reject):
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE STRONG: 3/3 lost, avg -$41.76 — reduce confidence 0.15, PASS unless other strong confirmations
+- VOLUME_SPIKE STRONG with RSI >60: late breakout chasing — reduce confidence 0.10
 
 RULES FROM EXPERIENCE:
-1. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE any strength — 3/3 actual losses avg -7.0%, not theoretical risk
-2. REJECT VOLUME_SPIKE STRONG with RSI >55 — 3/3 actual losses avg -4.2%, proven late-chase failure
-3. REJECT BB_SQUEEZE any strength — 1/1 actual loss -10.7%, compression breakouts failing
-4. REJECT T2 unless volume >5x AND RSI 40-52 AND MACD bullish — T2 33% WR vs T1 57%, -$184.69 loss
-5. REJECT triple-indicator combos on T2 — 0% conversion to winning trades, over-complication loses edge
-6. REJECT MODERATE signals unless T1 with volume >5x AND RSI 40-50 — 42.1% WR requires higher bar
-7. REJECT STRONG signals with RSI >52 unless T1 AND volume >5x — only 41% WR overall, insufficient edge
-8. STOP citing insufficient volume for T1 signals when volume >2.5x AND 2+ confirmations present — 98% of passes cite volume, over-filtering proven winners
-9. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 on T1 only — 8 trades 63% WR avg +224.0%, best pattern
-10. APPROVE SELL for positions <-8% held >24h with MACD bearish — avg loser hold 30.1h vs winner 52.6h
-11. APPROVE SELL for winners held >60h with RSI >70 OR price >8% above EMA(8) — lock gains before reversal
+1. APPROVE T1 signals with 2+ confirmations and volume >1.5x — T1 has 57% WR, give it room to work
+2. APPROVE T2 signals with 3+ confirmations and volume >2.5x and RSI 35-55 — T2 needs more confirmation but should not be blanket-rejected
+3. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 on T1 — best pattern, 63% WR, avg +$45.30
+4. Use ATR-adjusted sizing: high ATR (>5%) = reduce position size, not auto-reject
+5. APPROVE SELL for positions <-8% held >24h with bearish MACD — cut losers faster than 30.1h avg
+6. APPROVE SELL for winners held >60h with RSI >70 — lock gains before reversal
+7. Do NOT cite "insufficient volume" as sole reason to PASS on T1 with volume >1.5x — this over-filtering blocked 98% of prior signals and caused complete trading freeze
+8. Evaluate each signal on its technical merits — pattern-based rejection should reduce confidence, not auto-PASS
 
 EXAMPLES FROM ACTUAL TRADES:
-- VOLUME_SPIKE STRONG T1 RSI 40-55 — approve best pattern: Position +$45.30 (+13.2%) in 51h, validates pattern edge
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — reject proven loser: Signal declined -6.1% over 48h, correct rejection
-- VOLUME_SPIKE STRONG but RSI 58 >55 — reject late chase: Signal peaked +1.8% then fell -5.4%, correct rejection
+- VOLUME_SPIKE STRONG T1 RSI 40-55 — approve best pattern: Position +$45.30 (+13.2%) in 51h
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — reduce confidence: Signal declined -6.1% over 48h
 

@@ -139,10 +139,19 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
     // Use total_cost / current_size for all-in cost (includes entry fees) instead of raw avg_entry_price
     const allInCostPerUnit = parseFloat(pos.total_cost) / currentSize;
     const costBasis = exitSize * allInCostPerUnit;
-    // Direction-aware P&L: LONG profits when price goes up, SHORT profits when price goes down
-    const pnl = direction === 'SHORT'
-      ? costBasis - netExitValue  // SHORT: profit = entry - exit
-      : netExitValue - costBasis; // LONG: profit = exit - entry
+    // Direction-aware P&L
+    let pnl;
+    if (direction === 'SHORT') {
+      // SHORT: profit = (entry_price - exit_price) * size - all fees
+      // Can't use costBasis (entry+fees) directly because fee accounting is inverted for shorts
+      const rawPnl = (avgEntry - exitPrice) * exitSize;
+      const totalEntryFees = Math.max(0, parseFloat(pos.total_cost) - currentSize * avgEntry);
+      const proportionalEntryFee = (exitSize / currentSize) * totalEntryFees;
+      pnl = rawPnl - proportionalEntryFee - exitFee;
+    } else {
+      // LONG: profit = exit_proceeds - cost_basis
+      pnl = netExitValue - costBasis;
+    }
     const pnlPercent = costBasis > 0 ? (pnl / costBasis) * 100 : 0;
     const isFull = exitPercent >= 99;
     const tradeType = isFull ? 'FULL_EXIT' : 'PARTIAL_EXIT';

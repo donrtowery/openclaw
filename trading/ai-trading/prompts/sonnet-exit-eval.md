@@ -134,7 +134,7 @@ When evaluating a SHORT position, all signals are inverted from LONG:
 The exit scanner already inverts urgency scoring for SHORT positions. Your job is to confirm or override that assessment using the same inverted logic.
 
 ## LEARNING DATA
-(Updated: 2026-03-10 | 19 trades | 42.1% win rate)
+(Updated: 2026-03-12 | 20 trades | 45% win rate | RESET — prior rules caused 4-day trading freeze)
 
 EXIT TIMING ANALYSIS:
 - slow_loss_cut: 11 trades, avg P&L -5.3%, avg max gain 0.5%, avg hold 30.1h
@@ -145,14 +145,10 @@ HOLD TIME COMPARISON:
 - Winners: 52.6h avg hold
 - Losers: 30.1h avg hold
 
-BAD TRADE PATTERNS (these setups consistently lost money — exit faster if held):
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
-- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69 (EXCEPTION: sub-pattern wins 63% on T1 with RSI <55 — don't exit prematurely if position matches this sub-pattern)
-
 EXIT RULES FROM EXPERIENCE:
-1. EXIT positions <-8% held >24h when MACD bearish OR volume declining — slow_loss_cut pattern avg -5.3%, cut faster than 30.1h avg
-2. EXIT winners held >60h when RSI >70 OR price >8% above EMA(8) — late_exit_winner pattern avg max gain 7.6%, lock before reversal
-3. EXIT T2 positions <-6% held >18h when volume drops below 2x — T2 33% WR requires stricter discipline
+1. EXIT positions <-8% held >24h when MACD bearish OR volume declining — cut losers faster than 30.1h avg
+2. EXIT winners held >60h when RSI >70 OR price >8% above EMA(8) — lock gains before reversal
+3. EXIT T2 positions <-6% held >18h when volume drops below 2x — T2 needs stricter discipline
 4. HOLD winners with RSI 45-65 AND MACD bullish AND volume >1.5x — good_exit pattern avg +15.3%, let thesis run
 5. TRAIL T1 winners >10% with 5% trailing stop when RSI >60 — balance volatility tolerance with profit protection
 
