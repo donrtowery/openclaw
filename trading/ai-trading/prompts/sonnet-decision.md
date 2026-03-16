@@ -116,6 +116,7 @@ Because volume is not pre-filtered by rigid thresholds, treat it as one input am
 **StochRSI (Stochastic RSI)** — More sensitive momentum oscillator than RSI.
 - OVERSOLD (K<20, D<20): Strong buying opportunity IF confirmed by MACD bullish + ADX not weak. Better entry timing than RSI alone.
 - OVERBOUGHT (K>80, D>80): Consider taking profits, especially with bearish MACD. But in strong ADX trends, StochRSI can stay overbought.
+- **T2 ENTRY GATE: StochRSI K>85 = PASS for T2 BUY signals.** T2 coins lack the liquidity to sustain overbought momentum — entering at K>85 is buying the peak. T1 blue chips get more leeway (K>90 = caution, not auto-reject).
 - BULLISH_CROSS (K>D, K<30): Early reversal signal — strongest when RSI is also recovering from oversold.
 - BEARISH_CROSS (K<D, K>70): Early exhaustion signal — strongest with declining volume.
 - Use StochRSI to TIME entries/exits that other indicators have already confirmed.
@@ -147,30 +148,30 @@ Because volume is not pre-filtered by rigid thresholds, treat it as one input am
 
 
 ## LEARNING DATA
-(Updated: 2026-03-15 | 30 trades | 50.0% win rate)
+(Updated: 2026-03-16 | 32 trades | 53.1% win rate)
 
 PERFORMANCE:
-- 50.0% WR (15W/15L) | PF: 1.04
-- Avg win: +$29.36 | Avg loss: $-28.35
-- Hold: Winners 36.9h, Losers 26.9h
-- Best tier: T1 (60% WR)
+- 53.1% WR (17W/15L) | PF: 1.24
+- Avg win: +$31.06 | Avg loss: $-28.35
+- Hold: Winners 36.4h, Losers 26.9h
+- Best tier: T1 (64% WR)
 
 BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):
 - EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
 - VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69 (EXCEPTION: sub-pattern wins 63% on 8 trades — approve if RSI <55 and volume >3x)
 
 RULES FROM EXPERIENCE:
-1. APPROVE signals with volume >2.5x when 2+ technical confirmations present
-2. APPROVE T1 VOLUME_SPIKE with RSI 40-60 range — sustainable momentum zone
-3. APPROVE high ADX (>30) setups with trend alignment — momentum plays need room
-4. APPROVE WEAK signals with 3+ confirmations — WEAK converted 72% vs STRONG 27%
-5. REJECT late MACD crossovers after 10%+ moves — momentum already spent
-6. REJECT signals when portfolio holds 3+ positions in same trend direction
-7. STOP citing insufficient volume as primary rejection when Haiku already filtered for 2x+
-8. START approving TAOUSDT and RENDERUSDT setups with ADX >25 — missed +16-19% gains
+1. APPROVE T1 VOLUME_SPIKE with RSI 40-60 and ADX >25 — sustainable momentum zone
+2. APPROVE signals with volume >2.5x when 2+ technical confirmations present — stop over-filtering volume
+3. APPROVE WEAK signals with 3+ confirmations — WEAK converted 72% vs STRONG 27%
+4. APPROVE TAO/RENDER setups with ADX >25 and trend alignment — missed +16-19% gains
+5. REJECT late MACD crossovers after price already up >10% — momentum spent
+6. REJECT when portfolio holds 3+ positions in same trend direction — concentration risk
+7. STOP citing insufficient volume as primary rejection when Haiku filtered for 2x+
+8. START approving high ADX (>30) setups with trend alignment — momentum needs room
 
 EXAMPLES FROM ACTUAL TRADES:
-- TAOUSDT with strong ADX and technical alignment - wrongly passed: CORRECT - price rose +19.6% within 24h, Sonnet was wrong to pass
-- EMA_BULLISH_CROSSOVER STRONG as sole signal - correctly passed: CORRECT - price moved <1%, pattern shows 91.7% PASS rate
-- WEAK signal with 3+ confirmations - should trade: CORRECT - WEAK signals with 3+ confirmations convert at 72%
+- TAO with strong ADX momentum: +19.6% gain realized
+- Weak signal with 3+ confirmations: +5.8% profit in 18h
+- Late MACD crossover after big move: Dropped -6% next 24h
 

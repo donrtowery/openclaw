@@ -867,12 +867,18 @@ async function executeSell(decision, triggered) {
     return { escalated: true, executed: false, reason };
   }
 
-  // Dust position guard: if remaining value after partial exit would be < $15, do a full exit instead
+  // Auto-close: upgrade to full exit if position has had 4+ partial exits or remaining value would be < $50
   if (intendedExitPercent < 100) {
-    const remainingValue = currentSize * currentPrice * (1 - intendedExitPercent / 100);
-    if (remainingValue < 15) {
-      logger.info(`[Engine] ${symbol}: Upgrading partial exit to full — remaining value would be $${remainingValue.toFixed(2)} (< $15 dust threshold)`);
+    const partialCount = parseInt(position.partial_exits) || 0;
+    if (partialCount >= 4) {
+      logger.info(`[Engine] ${symbol}: Upgrading to full exit — ${partialCount} partial exits already (max 4)`);
       intendedExitPercent = 100;
+    } else {
+      const remainingValue = currentSize * currentPrice * (1 - intendedExitPercent / 100);
+      if (remainingValue < 50) {
+        logger.info(`[Engine] ${symbol}: Upgrading to full exit — remaining value would be $${remainingValue.toFixed(2)} (< $50 dust threshold)`);
+        intendedExitPercent = 100;
+      }
     }
   }
 

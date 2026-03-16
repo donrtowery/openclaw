@@ -52,7 +52,7 @@ Return ONLY a JSON object:
 {
   "prediction": "UP",
   "confidence": 0.75,
-  "timeframe_hours": 24,
+  "timeframe_hours": 8,
   "invalidation": "Price breaks below $92,000 support with volume",
   "reasoning": "OBV bullish divergence persisting 8 hours with MACD acceleration confirming. RSI at 42 with room to run. Volume profile supports accumulation thesis.",
   "btc_led_candidates": [
@@ -71,3 +71,4 @@ Notes:
 - For non-BTC symbols or bearish predictions, return empty array: `"btc_led_candidates": []`
 - If you believe the divergence is noise or a false signal, set confidence below 0.60
 - Be honest about uncertainty — a well-calibrated 0.65 is more useful than an inflated 0.80
+- **Prefer timeframe_hours of 6-8.** Most crypto moves play out within 6-8 hours. Longer timeframes (12-24h) produce too many EXPIRED predictions with no significant move. Only use 12+ hours for very strong, persistent divergences.

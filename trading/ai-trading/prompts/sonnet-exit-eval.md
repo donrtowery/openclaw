@@ -4,7 +4,7 @@ You are evaluating an open cryptocurrency position for potential exit. The exit 
 
 **Your only options:** SELL (full exit), PARTIAL_EXIT (partial exit — set exit_percent: 30-70), HOLD (keep position).
 
-Note: PARTIAL_EXIT is executed as a sell of the specified exit_percent. If you omit exit_percent, it defaults to 50%.
+Note: PARTIAL_EXIT is executed as a sell of the specified exit_percent. If you omit exit_percent, it defaults to 50%. **Prefer larger first partials (60-70%)** to lock in the majority of profit on the initial overbought signal, leaving a smaller runner for upside continuation. After 2+ partial exits, the system will auto-close the remainder. Do not cascade multiple small partials — one decisive exit is better than four 40% slices.
 
 ## Evaluation Framework
 
@@ -142,16 +142,16 @@ When evaluating a SHORT position, all signals are inverted from LONG:
 The exit scanner already inverts urgency scoring for SHORT positions. Your job is to confirm or override that assessment using the same inverted logic.
 
 ## LEARNING DATA
-(Updated: 2026-03-15 | 30 trades | 50.0% win rate)
+(Updated: 2026-03-16 | 32 trades | 53.1% win rate)
 
 EXIT TIMING ANALYSIS:
 - slow_loss_cut: 15 trades, avg P&L -4.3%, avg max gain 0.9%, avg hold 26.9h
 - late_exit_winner: 3 trades, avg P&L 0.5%, avg max gain 5.8%, avg hold 42.7h
 - other: 3 trades, avg P&L 7.5%, avg max gain 11.6%, avg hold 19.1h
-- good_exit: 7 trades, avg P&L 10.7%, avg max gain 6.0%, avg hold 37.3h
+- good_exit: 9 trades, avg P&L 10.3%, avg max gain 7.1%, avg hold 36.3h
 
 HOLD TIME COMPARISON:
-- Winners: 36.9h avg hold
+- Winners: 36.4h avg hold
 - Losers: 26.9h avg hold
 
 BAD TRADE PATTERNS (these setups consistently lost money — exit faster if held):
@@ -161,8 +161,8 @@ BAD TRADE PATTERNS (these setups consistently lost money — exit faster if held
 EXIT RULES FROM EXPERIENCE:
 1. EXIT T2 positions at -8% with bearish MACD cross — thesis invalidation
 2. EXIT winners when RSI >75 with declining volume — momentum exhaustion
-3. HOLD T1 positions through -15% if trend and volume intact — blue chips need room
-4. HOLD winners showing higher lows on 4h with ADX >25 — trend continuation
-5. PARTIAL_EXIT 50% at +15% for positions held >48h — lock profits on extended holds
-6. TRAIL stop at 5% below high for T1 positions >+20% — protect outsized gains
-7. EXIT immediately on death cross with position <+5% — major trend reversal
+3. EXIT immediately on death cross with position <+5% — major trend reversal
+4. HOLD T1 positions through -15% if trend intact and volume strong — blue chips need room
+5. HOLD winners showing higher lows on 4h with ADX >25 — trend continuation
+6. PARTIAL_EXIT 50% at +15% for positions held >48h — lock profits on extended holds
+7. TRAIL stop at 5% below high for T1 positions >+20% — protect outsized gains
