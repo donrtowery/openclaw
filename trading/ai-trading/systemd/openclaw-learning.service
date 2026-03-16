@@ -8,5 +8,6 @@ User=don
 WorkingDirectory=/home/don/openclaw/trading/ai-trading
 ExecStart=/usr/bin/node services/nightly-learning.js
 Environment=NODE_ENV=production
+Environment=TZ=America/New_York
 StandardOutput=append:/home/don/openclaw/trading/ai-trading/logs/learning.log
 StandardError=append:/home/don/openclaw/trading/ai-trading/logs/learning-error.log

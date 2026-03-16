@@ -5,7 +5,7 @@ import { readFileSync } from 'fs';
 import { query, endPool, testConnection } from '../db/connection.js';
 import { testConnectivity, placeOrder, getCurrentPrice, getAllPrices } from '../lib/binance.js';
 import { initScanner, runScanCycle } from '../lib/scanner.js';
-import { callHaikuBatch, callSonnet, callSonnetBatch, callSonnetExitEval, resetApiCosts } from '../lib/claude.js';
+import { callHaikuBatch, callSonnet, callSonnetBatch, callSonnetExitEval, callSonnetPrediction, resetApiCosts } from '../lib/claude.js';
 import { runExitScan, recordExitCooldown } from '../lib/exit-scanner.js';
 import { getNewsContext } from '../lib/brave-search.js';
 import {
@@ -15,6 +15,8 @@ import {
 import { queueEvent } from '../lib/events.js';
 import { sendAlert } from '../lib/sms.js';
 import { analyzeSymbol } from '../lib/technical-analysis.js';
+import { detectLeadingSignals, computeBTCCorrelation, getHighBetaAltcoins, rankBTCLedCandidates } from '../lib/predictive-analyzer.js';
+import { createPrediction, canOpenPredictivePosition, calcPredictivePositionSize, linkPredictionToPosition, getSymbolPredictionAccuracy, evaluatePredictions, hasPendingPrediction } from '../lib/prediction-manager.js';
 import logger from '../lib/logger.js';
 
 // ── Config ──────────────────────────────────────────────────
@@ -42,15 +44,29 @@ let portfolioCachePromise = null; // prevents concurrent fetches
 // Sonnet deduplication — tracks last escalation time per symbol
 const lastSonnetEvaluation = new Map();
 
-// Daily trade counter — resets at midnight UTC
+// Predictive system state
+let lastBtcCorrelationUpdate = 0; // timestamp of last BTC correlation compute
+
+// Escalation rate cache — re-query only every 60 minutes
+let escalationRateCache = null;
+let escalationRateCacheTime = 0;
+
+// Daily trade counter — resets at midnight EST (TZ=America/New_York)
 let dailyTradeCount = 0;
-let dailyTradeDate = new Date().toISOString().split('T')[0];
+let dailyTradeDate = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local TZ
 
 // Per-symbol position locking — prevents concurrent buy/sell/DCA on same symbol
 const positionLocks = new Map();
+const LOCK_TIMEOUT_MS = 60_000; // 60s max wait for lock acquisition
 
 async function withPositionLock(symbol, fn) {
+  const waitStart = Date.now();
   while (positionLocks.has(symbol)) {
+    if (Date.now() - waitStart > LOCK_TIMEOUT_MS) {
+      logger.error(`[Lock] Timeout waiting for lock on ${symbol} after ${LOCK_TIMEOUT_MS}ms — forcing release`);
+      positionLocks.delete(symbol);
+      break;
+    }
     await positionLocks.get(symbol).catch(() => {});
   }
   let resolve;
@@ -89,13 +105,13 @@ async function start() {
     symbolNames.set(row.symbol, row.name);
   }
 
-  // 4. Restore daily trade counter from DB (survives restarts)
+  // 4. Restore daily trade counter from DB (survives restarts) — only count entries, not exits
   const todayTradesResult = await query(
-    "SELECT COUNT(*) as cnt FROM trades WHERE executed_at >= CURRENT_DATE"
+    "SELECT COUNT(*) as cnt FROM trades WHERE executed_at >= CURRENT_DATE AND trade_type IN ('ENTRY', 'DCA')"
   );
   dailyTradeCount = parseInt(todayTradesResult.rows[0].cnt) || 0;
   if (dailyTradeCount > 0) {
-    logger.info(`[Engine] Restored daily trade count: ${dailyTradeCount} trades today`);
+    logger.info(`[Engine] Restored daily entry count: ${dailyTradeCount} entries today`);
   }
 
   // 5. Startup state reconciliation
@@ -200,8 +216,8 @@ async function runCycle() {
 
   logger.info(`[Engine] === Cycle ${cycleCount} ===`);
 
-  // 0. Reset daily trade counter at midnight UTC
-  const today = new Date().toISOString().split('T')[0];
+  // 0. Reset daily trade counter at midnight EST
+  const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local TZ
   if (today !== dailyTradeDate) {
     logger.info(`[Engine] New trading day ${today} — resetting daily trade count (was ${dailyTradeCount})`);
     dailyTradeCount = 0;
@@ -249,19 +265,31 @@ async function runCycle() {
   // 3. Process triggered signals through Haiku (batched)
 
   if (scanResult.triggered.length > 0) {
-    // Pre-filter: skip single-trigger signals before sending to Haiku (saves ~67% of Haiku tokens)
+    // Pre-filter: skip single-trigger signals and SELL signals for non-held symbols before Haiku
     const multiTrigger = [];
     let singleSkipped = 0;
+    let sellNoPositionSkipped = 0;
+    const prefetchedPositions = await getOpenPositions();
+    const openPositionSymbols = new Set(prefetchedPositions.map(p => p.symbol));
     for (const sig of scanResult.triggered) {
-      if (sig.thresholds_crossed.length >= 2) {
-        multiTrigger.push(sig);
-      } else {
+      if (sig.thresholds_crossed.length < 2) {
         singleSkipped++;
-        logger.info(`[Engine] ${sig.symbol}: Skipped Haiku — single trigger (${sig.thresholds_crossed[0]})`);
+        continue;
       }
+      // Skip bearish signals on symbols we don't hold — exit scanner handles held positions
+      const isBearish = sig.thresholds_crossed.some(t =>
+        t.includes('BEARISH') || t === 'BB_LOWER_TOUCH' || t === 'BB_SQUEEZE'
+      ) && !sig.thresholds_crossed.some(t =>
+        t.includes('BULLISH') || t === 'VOLUME_SPIKE' || t === 'BB_UPPER_TOUCH'
+      );
+      if (isBearish && !openPositionSymbols.has(sig.symbol)) {
+        sellNoPositionSkipped++;
+        continue;
+      }
+      multiTrigger.push(sig);
     }
-    if (singleSkipped > 0) {
-      logger.info(`[Engine] Pre-filtered ${singleSkipped} single-trigger signals, ${multiTrigger.length} sent to Haiku`);
+    if (singleSkipped > 0 || sellNoPositionSkipped > 0) {
+      logger.info(`[Engine] Pre-filtered ${singleSkipped} single-trigger, ${sellNoPositionSkipped} bearish-no-position — ${multiTrigger.length} sent to Haiku`);
     }
 
     if (multiTrigger.length === 0) {
@@ -277,7 +305,7 @@ async function runCycle() {
     const haikuResults = multiTrigger.length > 0 ? await callHaikuBatch(multiTrigger, tradingConfig) : [];
 
     // Filter to escalatable signals first, then process in parallel
-    const openPositions = await getOpenPositions();
+    const openPositions = prefetchedPositions;
     const atMaxPositions = openPositions.length >= tradingConfig.account.max_concurrent_positions;
 
     let toEscalate = [];
@@ -300,15 +328,22 @@ async function runCycle() {
 
       if (!haikuResult || !haikuResult.escalate) {
         logger.info(`[Engine] ${triggered.symbol}: Haiku did not escalate (${haikuResult?.strength} ${haikuResult?.signal} conf:${haikuResult?.confidence})`);
+        if (haikuResult?.signal_id) {
+          query('UPDATE signals SET outcome = $1 WHERE id = $2 AND outcome = $3', ['NEUTRAL', haikuResult.signal_id, 'PENDING'])
+            .catch(() => {});
+        }
         continue;
       }
 
       // Dynamic confidence floor — tightens when escalation conversion rate exceeds target
-      const { floor: dynamicConfFloor, stats: confFloorStats } = await getEscalationConfidenceFloor();
-      if (haikuResult.confidence < dynamicConfFloor) {
-        logger.info(`[Engine] ${triggered.symbol}: Below dynamic confidence floor ${dynamicConfFloor.toFixed(2)} (conf:${haikuResult.confidence}, conversion:${confFloorStats?.convRate?.toFixed(1) || '?'}%)`);
-        markFiltered(haikuResult.signal_id, 'CONF_FLOOR');
-        continue;
+      // Exempt SELL signals: exit decisions for held positions should always reach Sonnet
+      if (haikuResult.signal !== 'SELL') {
+        const { floor: dynamicConfFloor, stats: confFloorStats } = await getEscalationConfidenceFloor();
+        if (haikuResult.confidence < dynamicConfFloor) {
+          logger.info(`[Engine] ${triggered.symbol}: Below dynamic confidence floor ${dynamicConfFloor.toFixed(2)} (conf:${haikuResult.confidence}, conversion:${confFloorStats?.convRate?.toFixed(1) || '?'}%)`);
+          markFiltered(haikuResult.signal_id, 'CONF_FLOOR');
+          continue;
+        }
       }
 
       // Skip SELL/PARTIAL_EXIT escalations when we don't hold the coin
@@ -329,9 +364,9 @@ async function runCycle() {
       }
 
       // Sonnet dedup — skip if recently evaluated
-      // SELL signals use shorter dedup (10 min) to avoid same-cycle double eval while still allowing timely exits
+      // SELL signals use same dedup as BUY — exit scanner independently handles held positions
       const dedupMinutes = tradingConfig.escalation.sonnet_dedup_minutes || 30;
-      const sellDedupMinutes = Math.min(10, dedupMinutes);
+      const sellDedupMinutes = dedupMinutes;
       const effectiveDedupMinutes = haikuResult.signal === 'SELL' ? sellDedupMinutes : dedupMinutes;
       const lastEval = lastSonnetEvaluation.get(triggered.symbol);
       if (lastEval && (Date.now() - lastEval) < effectiveDedupMinutes * 60 * 1000) {
@@ -345,14 +380,22 @@ async function runCycle() {
     }
 
     // Hard escalation throttle — if rolling 24h rate exceeds 35%, raise minimum confidence
+    // Cached for 60 minutes to avoid running this query every cycle
     try {
-      const escRateResult = await query(`
-        SELECT COUNT(*) as total,
-          COUNT(*) FILTER (WHERE escalated = true) as escalated
-        FROM signals WHERE created_at > NOW() - INTERVAL '24 hours'
-      `);
-      const rollingTotal = parseInt(escRateResult.rows[0]?.total) || 0;
-      const rollingEscalated = parseInt(escRateResult.rows[0]?.escalated) || 0;
+      const ESC_RATE_CACHE_TTL = 60 * 60 * 1000; // 60 minutes
+      if (!escalationRateCache || (Date.now() - escalationRateCacheTime) > ESC_RATE_CACHE_TTL) {
+        const escRateResult = await query(`
+          SELECT COUNT(*) as total,
+            COUNT(*) FILTER (WHERE escalated = true) as escalated
+          FROM signals WHERE created_at > NOW() - INTERVAL '24 hours'
+        `);
+        escalationRateCache = {
+          rollingTotal: parseInt(escRateResult.rows[0]?.total) || 0,
+          rollingEscalated: parseInt(escRateResult.rows[0]?.escalated) || 0,
+        };
+        escalationRateCacheTime = Date.now();
+      }
+      const { rollingTotal, rollingEscalated } = escalationRateCache;
       const rollingEscRate = rollingTotal > 20 ? (rollingEscalated / rollingTotal * 100) : 0;
 
       if (rollingEscRate > 35) {
@@ -418,16 +461,26 @@ async function runCycle() {
 
       // Phase 2: Sequential execution (preserves capital safety)
       for (let i = 0; i < toEscalate.length; i++) {
-        const { triggered } = toEscalate[i];
+        const { triggered, haikuResult } = toEscalate[i];
         const decision = sonnetDecisions[i];
         if (!decision) continue;
+
+        // Update signal outcome based on Sonnet's decision
+        const signalOutcome = ['BUY', 'SHORT', 'DCA'].includes(decision.action) ? 'WIN'
+          : ['SELL', 'PARTIAL_EXIT'].includes(decision.action) ? 'WIN'
+          : decision.action === 'PASS' ? 'NOT_TRADED'
+          : 'NEUTRAL';
+        if (haikuResult.signal_id) {
+          query('UPDATE signals SET outcome = $1 WHERE id = $2 AND outcome = $3', [signalOutcome, haikuResult.signal_id, 'PENDING'])
+            .catch(err => logger.warn(`[Engine] Signal outcome update failed: ${err.message}`));
+        }
 
         try {
           if (['BUY', 'SHORT', 'SELL', 'DCA', 'PARTIAL_EXIT'].includes(decision.action)) {
             const result = await withPositionLock(triggered.symbol, () => executeDecision(decision, triggered));
             if (result.executed) {
               tradesExecuted++;
-              dailyTradeCount++;
+              if (['BUY', 'SHORT', 'DCA'].includes(decision.action)) dailyTradeCount++;
               invalidatePortfolioCache();
               const refreshedPortfolio = await getCachedPortfolio();
               sharedPortfolio = { ...refreshedPortfolio, circuit_breaker_active: cb.is_active, consecutive_losses: cb.consecutive_losses };
@@ -451,7 +504,29 @@ async function runCycle() {
   const cycleDuration = Date.now() - cycleStart;
   logger.info(`[Engine] Cycle ${cycleCount} complete in ${cycleDuration}ms — ${signalsEscalated} escalated, ${tradesExecuted} trades`);
 
-  // 4. Exit scanner — ALWAYS runs, even during circuit breaker / drawdown protection
+  // 4. Predictive analysis cycle — runs every 3 scan cycles (~30 min)
+  const predConfig = tradingConfig.predictive || {};
+  const predScanMinutes = predConfig.scan_interval_minutes || 30;
+  const predCycleInterval = Math.max(1, Math.round(predScanMinutes / (tradingConfig.scanner.interval_minutes || 10)));
+  if (predConfig.enabled && !skipNewEntries && cycleCount % predCycleInterval === 0) {
+    try {
+      await runPredictiveCycle();
+    } catch (error) {
+      logger.error(`[Engine] Predictive cycle error: ${error.message}`);
+      logger.error(error.stack);
+    }
+    // Score any predictions whose timeframe has elapsed
+    try {
+      const evalResult = await evaluatePredictions();
+      if (evalResult.evaluated > 0) {
+        logger.info(`[Engine] Prediction scoring: ${evalResult.evaluated} evaluated, ${evalResult.correct} correct, ${evalResult.wrong} wrong`);
+      }
+    } catch (error) {
+      logger.error(`[Engine] Prediction scoring error: ${error.message}`);
+    }
+  }
+
+  // 5. Exit scanner — ALWAYS runs, even during circuit breaker / drawdown protection
   const exitConfig = tradingConfig.exit_scanner || {};
   const regime = await getMarketRegime();
   const exitInterval = (regime.regime === 'BEAR' || regime.regime === 'CAUTIOUS') ? 1 : (exitConfig.interval_cycles || 3);
@@ -464,7 +539,7 @@ async function runCycle() {
     }
   }
 
-  // 5. Hourly tasks (dynamic based on scan interval)
+  // 6. Hourly tasks (dynamic based on scan interval)
   const cyclesPerHour = Math.round(60 / (tradingConfig.scanner?.interval_minutes || 10));
   if (cycleCount % cyclesPerHour === 0) {
     try {
@@ -619,12 +694,14 @@ async function executeBuy(decision, triggered) {
   // Portfolio drawdown-aware sizing: reduce when underwater
   const buyPortfolio = await getCachedPortfolio();
   const portfolioPnlPct = buyPortfolio.total_pnl_percent || 0;
-  if (portfolioPnlPct < -7) {
+  const drawdownSevereThreshold = tradingConfig.position_sizing?.drawdown_severe_threshold || -7;
+  const drawdownReduceThreshold = tradingConfig.position_sizing?.drawdown_reduce_threshold || -5;
+  if (portfolioPnlPct < drawdownSevereThreshold) {
     positionSizeUsd = Math.round(positionSizeUsd * 0.5);
-    logger.warn(`[Engine] ${symbol}: Drawdown sizing: 50% reduction (portfolio ${portfolioPnlPct.toFixed(1)}% < -7%)`);
-  } else if (portfolioPnlPct < -5) {
+    logger.warn(`[Engine] ${symbol}: Drawdown sizing: 50% reduction (portfolio ${portfolioPnlPct.toFixed(1)}% < ${drawdownSevereThreshold}%)`);
+  } else if (portfolioPnlPct < drawdownReduceThreshold) {
     positionSizeUsd = Math.round(positionSizeUsd * 0.8);
-    logger.warn(`[Engine] ${symbol}: Drawdown sizing: 20% reduction (portfolio ${portfolioPnlPct.toFixed(1)}% < -5%)`);
+    logger.warn(`[Engine] ${symbol}: Drawdown sizing: 20% reduction (portfolio ${portfolioPnlPct.toFixed(1)}% < ${drawdownReduceThreshold}%)`);
   }
   // Kelly criterion sizing: adapt to actual win rate and payoff ratio
   const kellyConfig = tradingConfig.position_sizing.kelly || {};
@@ -781,7 +858,7 @@ async function executeSell(decision, triggered) {
   }
 
   // Determine exit percent — Sonnet may specify partial exit
-  const intendedExitPercent = parseFloat(decision.position_details?.exit_percent) || 100;
+  let intendedExitPercent = parseFloat(decision.position_details?.exit_percent) || 100;
   const currentPrice = await getCurrentPrice(symbol);
   const currentSize = parseFloat(position.current_size);
   if (!currentSize || isNaN(currentSize) || currentSize <= 0) {
@@ -789,6 +866,16 @@ async function executeSell(decision, triggered) {
     logger.warn(`[Engine] ${symbol}: ${reason}`);
     return { escalated: true, executed: false, reason };
   }
+
+  // Dust position guard: if remaining value after partial exit would be < $15, do a full exit instead
+  if (intendedExitPercent < 100) {
+    const remainingValue = currentSize * currentPrice * (1 - intendedExitPercent / 100);
+    if (remainingValue < 15) {
+      logger.info(`[Engine] ${symbol}: Upgrading partial exit to full — remaining value would be $${remainingValue.toFixed(2)} (< $15 dust threshold)`);
+      intendedExitPercent = 100;
+    }
+  }
+
   const exitSize = currentSize * (intendedExitPercent / 100);
 
   const orderSide = (position.direction === 'SHORT') ? 'BUY' : 'SELL';
@@ -975,6 +1062,359 @@ async function executeDCA(decision, triggered) {
   return { escalated: true, executed: true };
 }
 
+// ── Predictive Analysis Cycle ────────────────────────────────
+
+async function runPredictiveCycle() {
+  const predConfig = tradingConfig.predictive || {};
+  if (!predConfig.enabled) return;
+
+  const predStart = Date.now();
+  logger.info('[Engine] Running predictive analysis cycle...');
+
+  try {
+    // 1. Update BTC correlations if cache expired (hourly)
+    const corrUpdateInterval = (predConfig.btc_correlation?.update_interval_minutes || 60) * 60 * 1000;
+    if (Date.now() - lastBtcCorrelationUpdate > corrUpdateInterval) {
+      await updateBTCCorrelations();
+      lastBtcCorrelationUpdate = Date.now();
+    }
+
+    // 2. Get T1 symbols for divergence analysis
+    const t1Result = await query(
+      "SELECT symbol, tier FROM symbols WHERE is_active = true AND tier = 1"
+    );
+    const t1Symbols = t1Result.rows;
+
+    if (t1Symbols.length === 0) {
+      logger.info('[Engine] Predictive: no T1 symbols to analyze');
+      return;
+    }
+
+    // 3. Analyze T1 symbols with candle data for divergence detection
+    let predictionsCreated = 0;
+    let tradesExecuted = 0;
+
+    for (const sym of t1Symbols) {
+      try {
+        // Check if we can still open predictive positions
+        const canOpen = await canOpenPredictivePosition(predConfig);
+        if (!canOpen) {
+          logger.info('[Engine] Predictive: max predictive positions reached — stopping scan');
+          break;
+        }
+
+        // Check for existing position on this symbol
+        const existing = await getPositionBySymbol(sym.symbol);
+        if (existing) continue;
+
+        // Analyze with candles included
+        const analysis = await analyzeSymbol(sym.symbol, { includeCandles: true });
+        if (analysis.error || !analysis._candles1h) continue;
+
+        // Detect leading indicator divergences
+        const divergence = detectLeadingSignals(sym.symbol, analysis, analysis._candles1h, predConfig);
+        if (!divergence) continue;
+
+        logger.info(`[Engine] Predictive: ${sym.symbol} divergence detected — ${divergence.divergence_type} ${divergence.direction} (strength: ${divergence.combined_strength})`);
+
+        // Deduplication: skip if a matching PENDING prediction already exists
+        const predDirection = divergence.direction === 'BULLISH' ? 'UP' : 'DOWN';
+        const isDuplicate = await hasPendingPrediction(sym.symbol, predDirection, divergence.divergence_type);
+        if (isDuplicate) {
+          logger.info(`[Engine] Predictive: ${sym.symbol} skipping — pending ${predDirection} ${divergence.divergence_type} prediction already exists`);
+          continue;
+        }
+
+        // Auto-calibration: raise threshold if rolling accuracy is poor, reset if acceptable
+        const defaultThreshold = predConfig.confidence_threshold || 0.70;
+        let confidenceThreshold = defaultThreshold;
+        const symbolAccuracy = await getSymbolPredictionAccuracy(sym.symbol);
+        if (symbolAccuracy !== null && symbolAccuracy < 40) {
+          confidenceThreshold = 0.80;
+          logger.info(`[Engine] Predictive: ${sym.symbol} accuracy ${symbolAccuracy.toFixed(1)}% < 40% — threshold raised to 0.80`);
+        } else if (symbolAccuracy !== null && symbolAccuracy >= 50) {
+          confidenceThreshold = defaultThreshold;
+          logger.info(`[Engine] Predictive: ${sym.symbol} accuracy ${symbolAccuracy.toFixed(1)}% >= 50% — threshold at default ${defaultThreshold}`);
+        }
+
+        // Get BTC correlation for context
+        const corrResult = await query(
+          'SELECT pearson_r, beta, r_squared FROM btc_correlations WHERE symbol = $1 ORDER BY created_at DESC LIMIT 1',
+          [sym.symbol]
+        );
+        const btcCorr = corrResult.rows[0] || null;
+
+        // Get portfolio for Sonnet context
+        const portfolio = await getCachedPortfolio();
+
+        // Call Sonnet for prediction
+        const predResult = await callSonnetPrediction(
+          sym.symbol, analysis, divergence, btcCorr, portfolio, tradingConfig
+        );
+
+        logger.info(`[Engine] Predictive: ${sym.symbol} Sonnet prediction — ${predResult.prediction} conf:${predResult.confidence} timeframe:${predResult.timeframe_hours}h`);
+
+        // Store prediction regardless of confidence (for learning)
+        const predId = await createPrediction({
+          symbol: sym.symbol,
+          tier: sym.tier,
+          direction: predResult.prediction,
+          confidence: predResult.confidence,
+          timeframe_hours: predResult.timeframe_hours,
+          invalidation_criteria: predResult.invalidation,
+          divergence_type: divergence.divergence_type,
+          divergence_details: {
+            obv: divergence.obv,
+            macd: divergence.macd,
+            combined_strength: divergence.combined_strength,
+          },
+          reasoning: predResult.reasoning,
+        });
+        predictionsCreated++;
+
+        // Execute if confidence meets threshold and prediction is bullish (UP)
+        if (predResult.confidence >= confidenceThreshold && predResult.prediction === 'UP') {
+          const execResult = await executePredictiveBuy(
+            sym.symbol, sym.tier, predResult, predId, 'PREDICTIVE'
+          );
+          if (execResult.executed) tradesExecuted++;
+        }
+
+        // BTC-led path: if BTCUSDT has bullish prediction with high confidence
+        if (sym.symbol === 'BTCUSDT' && predResult.prediction === 'UP' &&
+            predResult.confidence >= (predConfig.btc_led_confidence_threshold || 0.75)) {
+          const btcLedResult = await runBTCLedEntries(predResult, analysis, portfolio, predConfig);
+          tradesExecuted += btcLedResult.executed;
+        }
+      } catch (err) {
+        logger.error(`[Engine] Predictive: error analyzing ${sym.symbol}: ${err.message}`);
+      }
+    }
+
+    const duration = Date.now() - predStart;
+    logger.info(`[Engine] Predictive cycle complete in ${duration}ms — ${predictionsCreated} predictions, ${tradesExecuted} trades`);
+  } catch (err) {
+    logger.error(`[Engine] Predictive cycle error: ${err.message}`);
+  }
+}
+
+/**
+ * Execute a predictive BUY entry.
+ */
+async function executePredictiveBuy(symbol, tier, prediction, predictionId, entryMode) {
+  try {
+    // Check available capital
+    const portfolio = await getCachedPortfolio();
+    const positionSizeUsd = calcPredictivePositionSize(tier, prediction.confidence, tradingConfig);
+
+    if (positionSizeUsd < 10) {
+      logger.info(`[Engine] Predictive: ${symbol} position too small ($${positionSizeUsd})`);
+      return { executed: false };
+    }
+    if (positionSizeUsd > portfolio.available_capital) {
+      logger.info(`[Engine] Predictive: ${symbol} insufficient capital ($${positionSizeUsd} > $${portfolio.available_capital.toFixed(2)})`);
+      return { executed: false };
+    }
+
+    // Check no existing position
+    const existing = await getPositionBySymbol(symbol);
+    if (existing) {
+      logger.info(`[Engine] Predictive: ${symbol} already has position #${existing.id}`);
+      return { executed: false };
+    }
+
+    const estimatedPrice = await getCurrentPrice(symbol);
+    const estimatedQty = positionSizeUsd / estimatedPrice;
+    const order = await placeOrder(symbol, 'BUY', estimatedQty);
+    const fillPrice = order.price;
+    const fillQty = parseFloat(order.executedQty) || estimatedQty;
+    const fillCost = parseFloat(order.cummulativeQuoteQty) || (fillPrice * fillQty);
+
+    const positionId = await openPosition(
+      symbol, tier, fillPrice, fillQty, fillCost,
+      `[PREDICTIVE] ${prediction.reasoning}`, prediction.confidence, null,
+      tradingConfig.account.paper_trading, 'LONG', entryMode, predictionId
+    );
+
+    await linkPredictionToPosition(predictionId, positionId);
+
+    await queueEvent('BUY', symbol, {
+      position_id: positionId,
+      price: fillPrice,
+      quantity: fillQty,
+      cost: fillCost,
+      tier,
+      confidence: prediction.confidence,
+      reasoning: `[${entryMode}] ${prediction.reasoning}`,
+      entry_mode: entryMode,
+    });
+
+    invalidatePortfolioCache();
+    dailyTradeCount++;
+    logger.info(`[Engine] EXECUTED ${entryMode} BUY: ${symbol} ${fillQty.toFixed(6)} @ $${fillPrice.toFixed(2)} ($${fillCost.toFixed(2)})`);
+    sendAlert('BUY', symbol, { price: fillPrice, confidence: prediction.confidence, reasoning: `[${entryMode}] ${prediction.reasoning}` }).catch(() => {});
+    return { executed: true };
+  } catch (err) {
+    logger.error(`[Engine] Predictive BUY failed for ${symbol}: ${err.message}`);
+    return { executed: false };
+  }
+}
+
+/**
+ * BTC-led altcoin entry path.
+ * When BTC prediction is UP with high confidence, evaluate high-beta altcoins.
+ */
+async function runBTCLedEntries(btcPrediction, btcAnalysis, portfolio, predConfig) {
+  let executed = 0;
+
+  try {
+    const betaThreshold = predConfig.btc_correlation?.high_beta_threshold || 1.5;
+    const minRSquared = predConfig.btc_correlation?.min_r_squared || 0.30;
+    const maxCandidates = predConfig.btc_correlation?.max_btc_led_candidates || 3;
+
+    const correlations = await getHighBetaAltcoins(betaThreshold, minRSquared);
+    if (correlations.length === 0) {
+      logger.info('[Engine] BTC-led: no high-beta altcoins found');
+      return { executed: 0 };
+    }
+
+    // Analyze all candidates
+    const analysesMap = new Map();
+    for (const corr of correlations) {
+      try {
+        const analysis = await analyzeSymbol(corr.symbol);
+        if (!analysis.error) analysesMap.set(corr.symbol, analysis);
+      } catch { /* skip */ }
+    }
+
+    // Rank by profit potential
+    const ranked = rankBTCLedCandidates(correlations, analysesMap, maxCandidates);
+    if (ranked.length === 0) {
+      logger.info('[Engine] BTC-led: no viable candidates after ranking');
+      return { executed: 0 };
+    }
+
+    logger.info(`[Engine] BTC-led: ${ranked.length} candidates — ${ranked.map(c => `${c.symbol}(β${c.beta},score:${c.profit_score})`).join(', ')}`);
+
+    // Get Sonnet evaluation for each candidate via the BTC prediction call
+    const refreshedPortfolio = await getCachedPortfolio();
+    const btcLedPredResult = await callSonnetPrediction(
+      'BTCUSDT', btcAnalysis, {
+        direction: 'BULLISH',
+        divergence_type: 'BTC_LED_EVALUATION',
+        combined_strength: btcPrediction.confidence,
+      }, null, refreshedPortfolio, tradingConfig, ranked
+    );
+
+    // Process BTC-led candidates from Sonnet's response
+    for (const candidate of btcLedPredResult.btc_led_candidates) {
+      if (candidate.action !== 'BUY' || !candidate.confidence) continue;
+      if (candidate.confidence < (predConfig.confidence_threshold || 0.70)) continue;
+
+      // Check we can still open predictive positions
+      const canOpen = await canOpenPredictivePosition(predConfig);
+      if (!canOpen) break;
+
+      // Hard cap: total open positions (reactive + predictive) must not exceed combined limit
+      const allOpenPositions = await getOpenPositions();
+      const totalPositionCap = (tradingConfig.account.max_concurrent_positions || 7) + (predConfig.max_concurrent_predictive_positions || 3);
+      if (allOpenPositions.length >= totalPositionCap) {
+        logger.info(`[Engine] BTC-led: total position cap reached (${allOpenPositions.length}/${totalPositionCap}) — stopping`);
+        break;
+      }
+
+      // Check no existing position
+      const existing = await getPositionBySymbol(candidate.symbol);
+      if (existing) continue;
+
+      // Get tier for this symbol
+      const symResult = await query('SELECT tier FROM symbols WHERE symbol = $1 AND is_active = true', [candidate.symbol]);
+      if (symResult.rows.length === 0) continue;
+      const tier = symResult.rows[0].tier;
+
+      // Create prediction record for the BTC-led entry
+      const predId = await createPrediction({
+        symbol: candidate.symbol,
+        tier,
+        direction: 'UP',
+        confidence: candidate.confidence,
+        timeframe_hours: btcPrediction.timeframe_hours || 24,
+        invalidation_criteria: `BTC reverses. ${btcPrediction.invalidation || ''}`,
+        divergence_type: 'BTC_LED',
+        divergence_details: {
+          btc_prediction_confidence: btcPrediction.confidence,
+          beta: ranked.find(r => r.symbol === candidate.symbol)?.beta || 0,
+        },
+        reasoning: candidate.reasoning || `BTC-led entry based on BTC UP prediction (conf: ${btcPrediction.confidence})`,
+      });
+
+      const execResult = await executePredictiveBuy(
+        candidate.symbol, tier, { ...candidate, timeframe_hours: btcPrediction.timeframe_hours },
+        predId, 'PREDICTIVE_BTC_LED'
+      );
+
+      if (execResult.executed) executed++;
+    }
+  } catch (err) {
+    logger.error(`[Engine] BTC-led entries error: ${err.message}`);
+  }
+
+  return { executed };
+}
+
+/**
+ * Update BTC correlations for all active symbols.
+ */
+async function updateBTCCorrelations() {
+  try {
+    const symbolResult = await query("SELECT symbol FROM symbols WHERE is_active = true AND symbol != 'BTCUSDT'");
+    const btcAnalysis = await analyzeSymbol('BTCUSDT', { includeCandles: true });
+    if (btcAnalysis.error || !btcAnalysis._candles1h) {
+      logger.warn('[Engine] BTC correlation update: failed to get BTC candles');
+      return;
+    }
+
+    const windowHours = tradingConfig.predictive?.btc_correlation?.window_hours || 24;
+    const btcCandles = btcAnalysis._candles1h.slice(-windowHours);
+    let updated = 0;
+
+    // Process symbols in batches of 5 for concurrency
+    const BATCH_SIZE = 5;
+    const symbols = symbolResult.rows;
+    for (let batchStart = 0; batchStart < symbols.length; batchStart += BATCH_SIZE) {
+      const batch = symbols.slice(batchStart, batchStart + BATCH_SIZE);
+      const results = await Promise.allSettled(batch.map(async (row) => {
+        const altAnalysis = await analyzeSymbol(row.symbol, { includeCandles: true });
+        if (altAnalysis.error || !altAnalysis._candles1h) return null;
+
+        const altCandles = altAnalysis._candles1h.slice(-windowHours);
+        const corr = computeBTCCorrelation(btcCandles, altCandles);
+
+        if (corr.candle_count >= 8) {
+          await query(`
+            INSERT INTO btc_correlations (symbol, pearson_r, beta, r_squared, window_hours, candle_count)
+            VALUES ($1, $2, $3, $4, $5, $6)
+          `, [row.symbol, corr.pearson_r, corr.beta, corr.r_squared, windowHours, corr.candle_count]);
+          return row.symbol;
+        }
+        return null;
+      }));
+
+      for (let i = 0; i < results.length; i++) {
+        if (results[i].status === 'fulfilled' && results[i].value) {
+          updated++;
+        } else if (results[i].status === 'rejected') {
+          logger.warn(`[Engine] BTC correlation for ${batch[i].symbol}: ${results[i].reason?.message}`);
+        }
+      }
+    }
+
+    logger.info(`[Engine] BTC correlations updated: ${updated} symbols`);
+  } catch (err) {
+    logger.error(`[Engine] BTC correlation update error: ${err.message}`);
+  }
+}
+
 // ── Exit Scanner Cycle ──────────────────────────────────────
 
 async function runExitScanCycle() {
@@ -1003,12 +1443,17 @@ async function runExitScanCycle() {
     market_regime: regime,
   };
 
-  // Deduplicate candidates by symbol (keep highest urgency)
+  // Deduplicate candidates by symbol (keep highest urgency, preserve currentPrice)
   const seenSymbols = new Map();
   for (const candidate of exitResult.candidates) {
     const sym = candidate.position.symbol;
     if (!seenSymbols.has(sym) || candidate.urgency.score > seenSymbols.get(sym).urgency.score) {
-      seenSymbols.set(sym, candidate);
+      seenSymbols.set(sym, {
+        position: candidate.position,
+        analysis: candidate.analysis,
+        urgency: candidate.urgency,
+        currentPrice: candidate.currentPrice,
+      });
     }
   }
   const dedupedCandidates = [...seenSymbols.values()];
@@ -1043,6 +1488,7 @@ async function runExitScanCycle() {
 
   // Process results sequentially (executions need ordering for portfolio consistency)
   let exitsExecuted = 0;
+  const partialExitThisCycle = new Set(); // Track symbols that already had a partial exit this cycle
 
   for (let i = 0; i < dedupedCandidates.length; i++) {
     const { position, urgency, currentPrice } = dedupedCandidates[i];
@@ -1062,12 +1508,19 @@ async function runExitScanCycle() {
       const exitPercent = parseFloat(decision.position_details?.exit_percent) || 100;
       const isPartial = exitPercent < 99;
 
+      // Prevent multiple partial exits for same symbol in one cycle
+      if (isPartial && partialExitThisCycle.has(position.symbol)) {
+        logger.info(`[Engine] ${position.symbol}: Skipping additional partial exit — already had one this cycle`);
+        recordExitCooldown(`${position.symbol}:${position.direction || 'LONG'}`);
+        await markDecisionExecuted(decision.decision_id, false, 'Partial exit already executed this cycle');
+        continue;
+      }
+
       const triggered = { symbol: position.symbol, tier: position.tier };
       const result = await withPositionLock(position.symbol, () => executeSell(decision, triggered));
 
       if (result.executed) {
         exitsExecuted++;
-        dailyTradeCount++;
         await queueEvent('EXIT_SCANNER_ACTION', position.symbol, {
           action: decision.action,
           urgency_score: urgency.score,
@@ -1082,6 +1535,7 @@ async function runExitScanCycle() {
         }).catch(() => {});
 
         if (isPartial) {
+          partialExitThisCycle.add(position.symbol);
           logger.info(`[Engine] ${position.symbol}: Partial exit — skipping cooldown and dedup for follow-up evaluation`);
           lastSonnetEvaluation.delete(position.symbol);
         } else {
@@ -1494,7 +1948,6 @@ async function runEmergencyStopCheck() {
 
           await recordLoss(pos.symbol, closeResult.pnl);
           invalidatePortfolioCache();
-          dailyTradeCount++;
 
           await queueEvent('EMERGENCY_STOP', pos.symbol, {
             position_id: pos.id,
@@ -1564,25 +2017,17 @@ async function getMarketRegime() {
 // ── Trading Session Detection ───────────────────────────────
 
 function getTradingSession() {
-  const now = new Date();
-  const utcHour = now.getUTCHours();
-  const utcMonth = now.getUTCMonth(); // 0-indexed
+  // TZ=America/New_York — getHours() returns EST/EDT automatically
+  const estHour = new Date().getHours();
 
-  // DST approximation: March (2) through October (9) for US/Europe
-  const isDST = utcMonth >= 2 && utcMonth <= 9;
-
-  // Session boundaries shift ~1h earlier during DST
-  const europeOpen = isDST ? 6 : 7;   // London ~8am local
-  const usOpen = isDST ? 13 : 14;     // NYSE ~9:30am local
-  const usClose = isDST ? 20 : 21;    // NYSE ~4pm local
-
-  if (utcHour >= usOpen && utcHour < usClose)
-    return { session: 'US', note: 'US session — highest volume', is_dst: isDST };
-  if (utcHour >= europeOpen && utcHour < usOpen)
-    return { session: 'EUROPE', note: 'European session — moderate volume', is_dst: isDST };
-  if (utcHour >= 0 && utcHour < europeOpen)
-    return { session: 'ASIA', note: 'Asian session — typically lower volume', is_dst: isDST };
-  return { session: 'LATE_US', note: 'Late US/early Asia — declining volume', is_dst: isDST };
+  // Session boundaries in EST (no DST math needed — OS handles it)
+  if (estHour >= 9 && estHour < 16)
+    return { session: 'US', note: 'US session — highest volume', hour_est: estHour };
+  if (estHour >= 3 && estHour < 9)
+    return { session: 'EUROPE', note: 'European session — moderate volume', hour_est: estHour };
+  if (estHour >= 16 && estHour < 20)
+    return { session: 'LATE_US', note: 'Late US/early Asia — declining volume', hour_est: estHour };
+  return { session: 'ASIA', note: 'Asian session — typically lower volume', hour_est: estHour };
 }
 
 // ── Graceful Shutdown ───────────────────────────────────────

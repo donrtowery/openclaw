@@ -11,6 +11,7 @@ ExecStart=/usr/bin/node services/dashboard-api.js
 Restart=always
 RestartSec=10
 Environment=NODE_ENV=production
+Environment=TZ=America/New_York
 StandardOutput=append:/home/don/openclaw/trading/ai-trading/logs/api.log
 StandardError=append:/home/don/openclaw/trading/ai-trading/logs/api-error.log
 NoNewPrivileges=true

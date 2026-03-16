@@ -48,6 +48,42 @@ header {
   text-transform: uppercase;
 }
 
+.badge-pred {
+  background: #8b5cf6;
+  color: #fff;
+  font-size: 0.55rem;
+  padding: 1px 5px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.badge-btc-led {
+  background: #f59e0b;
+  color: #000;
+  font-size: 0.55rem;
+  padding: 1px 5px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.text-yellow { color: var(--yellow, #f59e0b); }
+.text-blue { color: #58a6ff; }
+.text-orange { color: #f0883e; }
+.text-red { color: #f85149; }
+
+/* Learning tab */
+.learning-session { margin-bottom: 2.5rem; padding-bottom: 2rem; border-bottom: 2px solid #30363d; }
+.learning-session:last-child { border-bottom: none; }
+.learning-session-prev { opacity: 0.85; }
+.learning-date { color: #e6edf3; font-size: 1.3rem; margin-bottom: 1rem; padding-bottom: 0.5rem; }
+.rule-group { margin-bottom: 1.5rem; }
+.rule-group h4 { color: #8b949e; margin-bottom: 0.5rem; font-size: 0.95rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.rule-list { list-style: none; padding: 0; margin: 0; }
+.rule-list li { padding: 0.4rem 0.6rem; margin-bottom: 0.25rem; border-radius: 4px; font-size: 0.88rem; background: #161b22; border-left: 3px solid #30363d; }
+.rule-list li.rule-reject { border-left-color: #f85149; }
+.rule-list li.rule-approve { border-left-color: #3fb950; }
+.rule-list li.rule-exit { border-left-color: #f0883e; }
+.rule-list li.rule-hold { border-left-color: #58a6ff; }
+.learning-rule-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 1rem; }
+
 .separator { color: var(--border); }
 
 .status-dot {

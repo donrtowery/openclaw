@@ -10,9 +10,14 @@ const pool = new Pool({
   database: process.env.DB_NAME || 'openclaw_db',
   user: process.env.DB_USER || 'openclaw',
   password: process.env.DB_PASSWORD,
-  max: 10,
+  max: 20,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
+});
+
+// Set session timezone on each new connection so DATE(), NOW(), CURRENT_DATE use EST
+pool.on('connect', (client) => {
+  client.query("SET timezone = 'America/New_York'");
 });
 
 pool.on('error', (err) => {

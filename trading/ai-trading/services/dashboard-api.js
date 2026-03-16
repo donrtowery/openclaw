@@ -34,14 +34,49 @@ let config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
 const app = express();
 app.use(express.json());
 
-// ── CORS ─────────────────────────────────────────────────────
+// ── CORS (restrict to Tailscale IPs and localhost) ──
 app.use((_req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = _req.headers.origin;
+  // Only allow specific trusted origins (Tailscale IPs, localhost, loopback)
+  if (origin && (origin.startsWith('http://100.') || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1'))) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
   if (_req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
+
+// ── Rate limiting ────────────────────────────────────────────
+const rateLimitMap = new Map();
+const RATE_LIMIT_WINDOW_MS = 60_000; // 1 minute
+const RATE_LIMIT_MAX = 120; // 120 requests per minute per IP
+const RATE_LIMIT_AI_MAX = 5; // 5 AI chat requests per minute per IP
+
+function rateLimit(req, res, next) {
+  const ip = req.ip || req.connection.remoteAddress;
+  const now = Date.now();
+  if (!rateLimitMap.has(ip)) rateLimitMap.set(ip, []);
+  const hits = rateLimitMap.get(ip).filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+  rateLimitMap.set(ip, hits);
+  if (hits.length >= RATE_LIMIT_MAX) {
+    return res.status(429).json({ error: 'Rate limit exceeded' });
+  }
+  hits.push(now);
+  next();
+}
+
+// Clean up rate limit map periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, hits] of rateLimitMap) {
+    const valid = hits.filter(t => now - t < RATE_LIMIT_WINDOW_MS);
+    if (valid.length === 0) rateLimitMap.delete(ip);
+    else rateLimitMap.set(ip, valid);
+  }
+}, 5 * 60_000);
+
+app.use(rateLimit);
 
 // ── Static files (no auth — Tailscale handles network access) ──
 app.use(express.static('public'));
@@ -123,21 +158,28 @@ async function handleAction(action, params) {
 
     case 'get_positions': {
       const positions = await getOpenPositions();
-      const enriched = [];
-      for (const pos of positions) {
-        try {
-          const currentPrice = await getCurrentPrice(pos.symbol);
-          const avgEntry = parseFloat(pos.avg_entry_price);
-          const pnlPercent = avgEntry > 0 ? ((currentPrice - avgEntry) / avgEntry * 100) : 0;
-          enriched.push({
-            ...pos,
-            live_price: currentPrice,
-            live_pnl_percent: parseFloat(pnlPercent.toFixed(2)),
-          });
-        } catch {
-          enriched.push(pos);
-        }
-      }
+      // Fetch all prices in parallel instead of sequentially (N+1 fix)
+      const priceResults = await Promise.allSettled(
+        positions.map(pos => getCurrentPrice(pos.symbol))
+      );
+      const enriched = positions.map((pos, i) => {
+        if (priceResults[i].status !== 'fulfilled') return pos;
+        const currentPrice = priceResults[i].value;
+        const avgEntry = parseFloat(pos.avg_entry_price);
+        const direction = pos.direction || 'LONG';
+        const pnlPercent = avgEntry > 0
+          ? (direction === 'SHORT' ? ((avgEntry - currentPrice) / avgEntry * 100) : ((currentPrice - avgEntry) / avgEntry * 100))
+          : 0;
+        const currentValue = parseFloat(pos.current_size) * currentPrice;
+        const invested = parseFloat(pos.total_cost) || 0;
+        const pnlUsd = direction === 'SHORT' ? (invested - currentValue) : (currentValue - invested);
+        return {
+          ...pos,
+          live_price: currentPrice,
+          live_pnl_percent: parseFloat(pnlPercent.toFixed(2)),
+          live_pnl_usd: parseFloat(pnlUsd.toFixed(2)),
+        };
+      });
       return { data: enriched };
     }
 
@@ -147,12 +189,40 @@ async function handleAction(action, params) {
       return { data };
     }
 
+    case 'get_trade_log': {
+      const limit = params.limit || 50;
+      const result = await query(`
+        SELECT t.id, t.position_id, t.symbol, t.trade_type, t.direction, t.price, t.size, t.cost,
+          t.exit_percent, t.pnl, t.pnl_percent, t.confidence, t.paper_trade, t.entry_mode,
+          t.executed_at AT TIME ZONE 'America/New_York' as executed_est,
+          LEFT(t.reasoning, 200) as reasoning
+        FROM trades t
+        ORDER BY t.executed_at DESC LIMIT $1
+      `, [limit]);
+      return { data: result.rows };
+    }
+
     case 'get_signals': {
       const limit = params.limit || 20;
       const result = await query(
         'SELECT * FROM signals ORDER BY created_at DESC LIMIT $1',
         [limit]
       );
+      return { data: result.rows };
+    }
+
+    case 'get_recent_signals': {
+      const limit = params.limit || 20;
+      const result = await query(`
+        SELECT s.id, s.symbol, s.signal_type, s.strength, s.confidence, s.outcome,
+          s.triggered_by, s.reasoning,
+          s.created_at AT TIME ZONE 'America/New_York' as created_est,
+          d.action as sonnet_action, d.confidence as sonnet_conf
+        FROM signals s
+        LEFT JOIN decisions d ON d.signal_id = s.id
+        WHERE s.escalated = true
+        ORDER BY s.created_at DESC LIMIT $1
+      `, [limit]);
       return { data: result.rows };
     }
 
@@ -211,6 +281,46 @@ async function handleAction(action, params) {
       };
     }
 
+    case 'get_learning_report': {
+      // Last 2 learning sessions
+      const sessions = await query(`
+        SELECT id, total_trades, winning_trades, losing_trades, win_rate,
+          total_pnl, avg_win_pnl, avg_loss_pnl, best_trade_pnl, worst_trade_pnl,
+          best_patterns, worst_patterns, haiku_prompt_updated, sonnet_prompt_updated,
+          sonnet_analysis,
+          created_at AT TIME ZONE 'America/New_York' as created_est
+        FROM learning_history ORDER BY created_at DESC LIMIT 2
+      `);
+
+      // Active rules grouped by type
+      const rules = await query(`
+        SELECT id, rule_type, rule_text, is_active,
+          created_at AT TIME ZONE 'America/New_York' as created_est
+        FROM learning_rules WHERE is_active = true
+        ORDER BY rule_type, created_at DESC
+      `);
+
+      // Changelog from last 2 sessions
+      const minSessionTime = sessions.rows.length > 0
+        ? sessions.rows[sessions.rows.length - 1].created_est
+        : new Date(Date.now() - 48 * 3600000);
+      const changelog = await query(`
+        SELECT id, change_type, rule_type, rule_text, reason,
+          created_at AT TIME ZONE 'America/New_York' as created_est
+        FROM learning_changelog
+        WHERE created_at >= $1::timestamptz - INTERVAL '1 minute'
+        ORDER BY created_at DESC
+      `, [minSessionTime]);
+
+      return {
+        data: {
+          sessions: sessions.rows,
+          rules: rules.rows,
+          changelog: changelog.rows,
+        },
+      };
+    }
+
     // ── Engine Status & Recent Actions ────────────────────────
 
     case 'get_engine_status': {
@@ -247,6 +357,15 @@ async function handleAction(action, params) {
       if (!question || typeof question !== 'string') {
         return { error: 'question is required' };
       }
+      // Stricter rate limit for AI chat (costs money per call)
+      const aiNow = Date.now();
+      if (!rateLimitMap.has('_ai_chat')) rateLimitMap.set('_ai_chat', []);
+      const aiHits = rateLimitMap.get('_ai_chat').filter(t => aiNow - t < RATE_LIMIT_WINDOW_MS);
+      if (aiHits.length >= RATE_LIMIT_AI_MAX) {
+        return { error: 'AI chat rate limit exceeded — try again in a minute' };
+      }
+      aiHits.push(aiNow);
+      rateLimitMap.set('_ai_chat', aiHits);
 
       const portfolio = await getPortfolioSummary(config);
       const positions = await getOpenPositions();
@@ -341,7 +460,8 @@ async function handleAction(action, params) {
 
       const currentPrice = await getCurrentPrice(position.symbol);
       const exitSize = parseFloat(position.current_size);
-      const order = await placeOrder(position.symbol, 'SELL', exitSize);
+      const closeSide = (position.direction || 'LONG') === 'SHORT' ? 'BUY' : 'SELL';
+      const order = await placeOrder(position.symbol, closeSide, exitSize);
       const fillPrice = order.price;
 
       const closeResult = await closePosition(
@@ -384,7 +504,8 @@ async function handleAction(action, params) {
         try {
           const currentPrice = await getCurrentPrice(position.symbol);
           const exitSize = parseFloat(position.current_size);
-          const order = await placeOrder(position.symbol, 'SELL', exitSize);
+          const closeSide = (position.direction || 'LONG') === 'SHORT' ? 'BUY' : 'SELL';
+          const order = await placeOrder(position.symbol, closeSide, exitSize);
           const fillPrice = order.price;
 
           const closeResult = await closePosition(
@@ -396,7 +517,7 @@ async function handleAction(action, params) {
           totalPnl += closeResult.pnl;
           results.push({ symbol: position.symbol, pnl: closeResult.pnl, pnl_percent: closeResult.pnlPercent });
 
-          await queueEvent('SELL', position.symbol, {
+          await queueEvent(closeSide, position.symbol, {
             position_id: position.id,
             price: fillPrice,
             exit_percent: 100,
@@ -688,6 +809,31 @@ async function handleAction(action, params) {
           scanner_interval: config.scanner.interval_minutes,
         },
       };
+    }
+
+    // ── Predictive Analysis Endpoints ───────────────────────
+
+    case 'get_predictions': {
+      const limit = params.limit || 30;
+      const result = await query(
+        'SELECT * FROM predictions ORDER BY created_at DESC LIMIT $1',
+        [limit]
+      );
+      return { data: result.rows };
+    }
+
+    case 'get_prediction_accuracy': {
+      const result = await query('SELECT * FROM prediction_accuracy ORDER BY total DESC');
+      return { data: result.rows };
+    }
+
+    case 'get_btc_correlations': {
+      const result = await query(`
+        SELECT DISTINCT ON (symbol) symbol, pearson_r, beta, r_squared, window_hours, candle_count, created_at
+        FROM btc_correlations
+        ORDER BY symbol, created_at DESC
+      `);
+      return { data: result.rows.sort((a, b) => parseFloat(b.beta) - parseFloat(a.beta)) };
     }
 
     default:

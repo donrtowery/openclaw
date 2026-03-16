@@ -12,9 +12,9 @@ export function calcRSI(closes) {
     if (values.length === 0) return null;
     const value = values[values.length - 1];
     let signal = 'NEUTRAL';
-    if (value < 30) signal = 'OVERSOLD';
+    if (value <= 30) signal = 'OVERSOLD';
     else if (value < 40) signal = 'APPROACHING_OVERSOLD';
-    else if (value > 70) signal = 'OVERBOUGHT';
+    else if (value >= 70) signal = 'OVERBOUGHT';
     else if (value > 60) signal = 'APPROACHING_OVERBOUGHT';
     return { value, signal };
   } catch (err) {
@@ -145,8 +145,8 @@ export function calcBollingerBands(closes, currentPrice) {
       position = 'MIDDLE';
     } else {
       const pctInBand = (currentPrice - lower) / range;
-      if (pctInBand < 0.2) position = 'LOWER';
-      else if (pctInBand > 0.8) position = 'UPPER';
+      if (pctInBand <= 0.2) position = 'LOWER';
+      else if (pctInBand >= 0.8) position = 'UPPER';
     }
 
     return { upper, middle, lower, width, position };

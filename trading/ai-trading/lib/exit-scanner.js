@@ -12,7 +12,7 @@ const exitCooldowns = new Map();
  *
  * Returns: { score, factors, pnl_percent, hold_hours, drawdown_from_peak, max_gain }
  */
-export function computeExitUrgency(position, analysis, currentPrice, currentTime = null) {
+export function computeExitUrgency(position, analysis, currentPrice, currentTime = null, exitOverrides = null) {
   let score = 0;
   const factors = [];
 
@@ -28,6 +28,18 @@ export function computeExitUrgency(position, analysis, currentPrice, currentTime
     : ((currentPrice - avgEntry) / avgEntry) * 100;
   const holdMs = (currentTime || Date.now()) - new Date(position.entry_time).getTime();
   const holdHours = holdMs / (1000 * 60 * 60);
+
+  // Predictive position hold time override — return 0 urgency if below minimum hold
+  if (exitOverrides?.minHoldHours && holdHours < exitOverrides.minHoldHours) {
+    return {
+      score: 0,
+      factors: [`Predictive hold: ${holdHours.toFixed(1)}h < ${exitOverrides.minHoldHours}h minimum — suppressed`],
+      pnl_percent: pnlPercent,
+      hold_hours: holdHours,
+      drawdown_from_peak: 0,
+      max_gain: parseFloat(position.max_unrealized_gain_percent || 0),
+    };
+  }
   const maxGain = parseFloat(position.max_unrealized_gain_percent || 0);
   const drawdownFromPeak = maxGain - pnlPercent;
   const tier = position.tier || 2;
@@ -138,13 +150,17 @@ export function computeExitUrgency(position, analysis, currentPrice, currentTime
     }
   }
 
-  // Hold time — tier-adjusted
-  if (holdHours > holdTimeThreshold) {
+  // Hold time — tier-adjusted (predictive overrides use longer stagnation thresholds)
+  const effectiveHoldThreshold = exitOverrides?.stagnationStartHours || holdTimeThreshold;
+  const effectiveHoldMedium = exitOverrides?.stagnationStartHours
+    ? Math.round(exitOverrides.stagnationStartHours * 0.5)
+    : holdTimeMedium;
+  if (holdHours > effectiveHoldThreshold) {
     score += 15;
-    factors.push(`Held ${holdHours.toFixed(0)}h (>${holdTimeThreshold}h T${tier})`);
-  } else if (holdHours > holdTimeMedium) {
+    factors.push(`Held ${holdHours.toFixed(0)}h (>${effectiveHoldThreshold}h${exitOverrides ? ' predictive' : ` T${tier}`})`);
+  } else if (holdHours > effectiveHoldMedium) {
     score += 10;
-    factors.push(`Held ${holdHours.toFixed(0)}h (>${holdTimeMedium}h)`);
+    factors.push(`Held ${holdHours.toFixed(0)}h (>${effectiveHoldMedium}h)`);
   } else if (holdHours > 12) {
     score += 5;
     factors.push(`Held ${holdHours.toFixed(0)}h (>12h)`);
@@ -343,11 +359,25 @@ export async function runExitScan(config) {
         }
       }
 
-      const urgency = computeExitUrgency(posForUrgency, analysis, currentPrice);
+      // Predictive positions get different exit thresholds (longer hold, higher urgency threshold)
+      let exitOverrides = null;
+      const entryMode = position.entry_mode || 'REACTIVE';
+      if (entryMode === 'PREDICTIVE' || entryMode === 'PREDICTIVE_BTC_LED') {
+        exitOverrides = {
+          minHoldHours: 6,
+          stagnationStartHours: 12,
+        };
+      }
 
-      logger.info(`[ExitScanner] ${position.symbol}: urgency ${urgency.score} | P&L ${urgency.pnl_percent.toFixed(1)}% | held ${urgency.hold_hours.toFixed(0)}h`);
+      const urgency = computeExitUrgency(posForUrgency, analysis, currentPrice, null, exitOverrides);
 
-      if (urgency.score < urgencyThreshold) continue;
+      logger.info(`[ExitScanner] ${position.symbol}${entryMode !== 'REACTIVE' ? ` [${entryMode}]` : ''}: urgency ${urgency.score} | P&L ${urgency.pnl_percent.toFixed(1)}% | held ${urgency.hold_hours.toFixed(0)}h`);
+
+      // Predictive positions use higher urgency threshold (50 vs 30)
+      const effectiveThreshold = (entryMode === 'PREDICTIVE' || entryMode === 'PREDICTIVE_BTC_LED')
+        ? 50
+        : urgencyThreshold;
+      if (urgency.score < effectiveThreshold) continue;
 
       // Cooldown check — critical urgency bypasses
       if (inCooldown && urgency.score < criticalThreshold) {

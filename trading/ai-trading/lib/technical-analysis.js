@@ -1,3 +1,4 @@
+import { readFileSync } from 'fs';
 import { getCandles } from './binance.js';
 import {
   calcRSI, calcMACD, calcSMAs, calcEMAs,
@@ -7,11 +8,13 @@ import {
 } from './indicators.js';
 import logger from './logger.js';
 
+const tradingConfig = JSON.parse(readFileSync('config/trading.json', 'utf8'));
+
 // ── Candle cache (5-minute TTL) ─────────────────────────────
 
 const candleCache = new Map();
 const CACHE_TTL = 5 * 60 * 1000;
-const MAX_CACHE_ENTRIES = 200; // Prevent unbounded growth
+const MAX_CACHE_ENTRIES = 500; // Prevent unbounded growth
 
 function cacheKey(symbol, interval) {
   return `${symbol}:${interval}`;
@@ -72,7 +75,7 @@ async function runWithConcurrency(tasks, maxConcurrent = 3) {
  * @param {string} symbol
  * @returns {Promise<object>} Analysis object
  */
-export async function analyzeSymbol(symbol) {
+export async function analyzeSymbol(symbol, options = {}) {
   let candles1h, candles5m, candles4h, price;
 
   try {
@@ -101,7 +104,7 @@ export async function analyzeSymbol(symbol) {
   const sma = { ...smaShort, ...smaLong };
   const ema = calcEMAs(closes1h, [9, 21]);
   const bollingerBands = calcBollingerBands(closes1h, price);
-  const volume = calcVolume(candles1h);
+  const volume = calcVolume(candles1h, tradingConfig);
   const { support, resistance } = calcSupportResistance(candles1h, price);
   const trend = calcTrend({ rsi, macd, ema, sma, price });
   const atr = calcATR(candles1h);
@@ -122,7 +125,7 @@ export async function analyzeSymbol(symbol) {
     price,
   }) : null;
 
-  return {
+  const result = {
     symbol,
     price: price >= 1 ? Math.round(price * 100) / 100 : parseFloat(price.toPrecision(6)),
     rsi,
@@ -144,6 +147,13 @@ export async function analyzeSymbol(symbol) {
     trend4h,
     timestamp: new Date().toISOString(),
   };
+
+  // Optionally include raw candles for predictive analysis (reuses cache — no extra API calls)
+  if (options.includeCandles) {
+    result._candles1h = candles1h;
+  }
+
+  return result;
 }
 
 // ── Multi-symbol analysis ───────────────────────────────────

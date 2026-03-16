@@ -284,6 +284,14 @@ export async function runScanCycle(config) {
       signalCooldowns.delete(key);
     }
   }
+  // Hard cap: if cooldown map exceeds 500 entries, delete oldest until at 500
+  if (signalCooldowns.size > 500) {
+    const sorted = [...signalCooldowns.entries()].sort((a, b) => a[1] - b[1]);
+    const toDelete = sorted.slice(0, signalCooldowns.size - 500);
+    for (const [key] of toDelete) {
+      signalCooldowns.delete(key);
+    }
+  }
 
   // Batch-save all indicator snapshots in one INSERT
   if (allSnapshots.length > 0) {

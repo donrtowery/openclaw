@@ -11,7 +11,7 @@ const FEE_RATE = parseFloat(process.env.TRADING_FEE_RATE || _tradingConfig?.fees
  * Open a new position
  * @param {string} direction - 'LONG' (default) or 'SHORT'
  */
-export async function openPosition(symbol, tier, entryPrice, entrySize, entryCost, reasoning, confidence, decisionId, paperTrade = true, direction = 'LONG') {
+export async function openPosition(symbol, tier, entryPrice, entrySize, entryCost, reasoning, confidence, decisionId, paperTrade = true, direction = 'LONG', entryMode = 'REACTIVE', predictionId = null) {
   const entryFee = entryCost * FEE_RATE;
   const costWithFees = entryCost + entryFee;
 
@@ -25,28 +25,29 @@ export async function openPosition(symbol, tier, entryPrice, entrySize, entryCos
         entry_price, entry_time, entry_size, entry_cost,
         current_price, current_size, total_cost, avg_entry_price,
         entry_reasoning, entry_confidence, open_decision_id,
-        total_fees
-      ) VALUES ($1, 'OPEN', $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        total_fees, entry_mode, prediction_id
+      ) VALUES ($1, 'OPEN', $2, $3, $4, NOW(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       RETURNING id
     `, [
       symbol, tier, direction,
       entryPrice, entrySize, costWithFees,
       entryPrice, entrySize, costWithFees, entryPrice,
       reasoning, confidence, decisionId,
-      entryFee,
+      entryFee, entryMode, predictionId,
     ]);
 
     const positionId = result.rows[0].id;
 
     // Log entry trade
     await client.query(`
-      INSERT INTO trades (position_id, symbol, trade_type, direction, price, size, cost, reasoning, confidence, paper_trade)
-      VALUES ($1, $2, 'ENTRY', $3, $4, $5, $6, $7, $8, $9)
-    `, [positionId, symbol, direction, entryPrice, entrySize, costWithFees, reasoning, confidence, paperTrade]);
+      INSERT INTO trades (position_id, symbol, trade_type, direction, price, size, cost, reasoning, confidence, paper_trade, entry_mode)
+      VALUES ($1, $2, 'ENTRY', $3, $4, $5, $6, $7, $8, $9, $10)
+    `, [positionId, symbol, direction, entryPrice, entrySize, costWithFees, reasoning, confidence, paperTrade, entryMode]);
 
     await client.query('COMMIT');
     const dirLabel = direction === 'SHORT' ? 'SHORT ' : '';
-    logger.info(`[Position] Opened ${dirLabel}#${positionId} ${symbol} @ $${entryPrice.toFixed(2)} ($${entryCost.toFixed(2)} + $${entryFee.toFixed(2)} fee)`);
+    const modeLabel = entryMode !== 'REACTIVE' ? ` [${entryMode}]` : '';
+    logger.info(`[Position] Opened ${dirLabel}#${positionId} ${symbol}${modeLabel} @ $${entryPrice.toFixed(2)} ($${entryCost.toFixed(2)} + $${entryFee.toFixed(2)} fee)`);
     return positionId;
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {});
@@ -205,7 +206,7 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
         exit_percent, pnl, pnl_percent, reasoning, confidence, paper_trade
       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
     `, [positionId, pos.symbol, tradeType, direction, exitPrice, exitSize, netExitValue,
-        exitPercent, pnl, pnlPercent, reasoning, confidence, paperTrade]);
+        Math.round(exitPercent), pnl, pnlPercent, reasoning, confidence, paperTrade]);
 
     await client.query('COMMIT');
     return { pnl, pnlPercent, isFull };
@@ -360,7 +361,7 @@ export async function getPortfolioSummary(config, options = {}) {
     // Cap available capital at totalCapital - totalInvested to prevent over-leverage
     // (realized profits from closed trades do NOT expand the deployable capital pool)
     available_capital: Math.max(0, totalCapital - totalInvested),
-    total_portfolio_value: (totalCapital - totalInvested) + totalCurrentValue + realizedPnl + totalPartialProfitTaken,
+    total_portfolio_value: totalCapital + realizedPnl + totalPartialProfitTaken + (totalCurrentValue - totalInvested),
     unrealized_pnl: unrealizedPnl,
     unrealized_pnl_percent: totalInvested > 0 ? (unrealizedPnl / totalInvested * 100) : 0,
     realized_pnl: realizedPnl,

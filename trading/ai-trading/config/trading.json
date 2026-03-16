@@ -3,7 +3,7 @@
     "total_capital": 6000,
     "max_concurrent_positions": 7,
     "paper_trading": true,
-    "max_trades_per_day": 10,
+    "max_trades_per_day": 12,
     "max_positions_per_tier": {
       "tier_1": 4,
       "tier_2": 3,
@@ -121,7 +121,7 @@
       "oscillation_threshold": 3,
       "context_window_days": 30,
       "max_context_entries": 50,
-      "retention_days": 90,
+      "retention_days": 120,
       "note": "Tracks rule changes to prevent add/remove oscillation. Rules added+deactivated 3+ times in 14 days are blocked. Opus sees last 30 days of changes."
     },
     "note": "min_new_trades_for_update set to 0 to allow learning to update rules even with no new trades — prevents stale REJECT rules from locking the system."
@@ -155,5 +155,35 @@
     "tier_2_percent": -15,
     "check_interval_ms": 30000,
     "note": "Hard stop-loss bypass — no AI approval needed. Independent 30s price monitoring loop."
+  },
+  "predictive": {
+    "enabled": true,
+    "scan_interval_minutes": 30,
+    "max_concurrent_predictive_positions": 3,
+    "confidence_threshold": 0.70,
+    "btc_led_confidence_threshold": 0.75,
+    "position_sizing": {
+      "base_multiplier": 0.60,
+      "confidence_denominator": 0.80
+    },
+    "exit_rules": {
+      "min_hold_hours": 6,
+      "urgency_threshold": 50,
+      "stagnation_start_hours": 12
+    },
+    "leading_indicators": {
+      "obv_divergence_min_candles": 12,
+      "obv_divergence_persistence_hours": 3,
+      "obv_min_strength": 0.50,
+      "macd_acceleration_bars": 5
+    },
+    "btc_correlation": {
+      "window_hours": 24,
+      "high_beta_threshold": 1.5,
+      "min_r_squared": 0.30,
+      "max_btc_led_candidates": 3,
+      "update_interval_minutes": 60
+    },
+    "note": "Predictive positions are ADDITIONAL to reactive max (7+3=10). BTC-led candidates ranked by profit_score across all tiers."
   }
 }

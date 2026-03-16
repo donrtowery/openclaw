@@ -29,6 +29,14 @@ Note: PARTIAL_EXIT is executed as a sell of the specified exit_percent. If you o
 - Temporary pullback in strong uptrend (drawdown < 3% from peak)
 - Position recently entered (< 4h) — give thesis time to play out unless critical
 
+## Predictive Position Handling
+
+Positions marked PREDICTIVE or PREDICTIVE_BTC_LED entered based on leading indicator divergences (OBV, MACD acceleration) rather than reactive signals. These deserve more patience:
+- **Minimum hold**: 6 hours. The scanner suppresses urgency before this, so if you see a predictive position, it has already held 6+ hours.
+- **Thesis evaluation**: The original thesis is a divergence-based directional prediction. If the divergence has resolved (OBV realigned with price), thesis may be complete — consider exit even if profitable.
+- **BTC-led positions**: These entered because BTC was predicted UP with high confidence. If BTC reversed since entry, the thesis is invalidated — exit more aggressively.
+- **Otherwise**: Evaluate like any other position. Predictive entries are not inherently better or worse — they just have a different thesis origin.
+
 ## Partial Exit Guidance
 
 - Default to 50% when uncertain — lock half, let rest run
@@ -134,27 +142,27 @@ When evaluating a SHORT position, all signals are inverted from LONG:
 The exit scanner already inverts urgency scoring for SHORT positions. Your job is to confirm or override that assessment using the same inverted logic.
 
 ## LEARNING DATA
-(Updated: 2026-03-12 | 20 trades | 45% win rate | RESET — prior rules caused 4-day trading freeze)
+(Updated: 2026-03-15 | 30 trades | 50.0% win rate)
 
 EXIT TIMING ANALYSIS:
-- slow_loss_cut: 11 trades, avg P&L -5.3%, avg max gain 0.5%, avg hold 30.1h
-- late_exit_winner: 2 trades, avg P&L 0.7%, avg max gain 7.6%, avg hold 51.4h
-- good_exit: 4 trades, avg P&L 15.3%, avg max gain 7.2%, avg hold 52.8h
+- slow_loss_cut: 15 trades, avg P&L -4.3%, avg max gain 0.9%, avg hold 26.9h
+- late_exit_winner: 3 trades, avg P&L 0.5%, avg max gain 5.8%, avg hold 42.7h
+- other: 3 trades, avg P&L 7.5%, avg max gain 11.6%, avg hold 19.1h
+- good_exit: 7 trades, avg P&L 10.7%, avg max gain 6.0%, avg hold 37.3h
 
 HOLD TIME COMPARISON:
-- Winners: 52.6h avg hold
-- Losers: 30.1h avg hold
+- Winners: 36.9h avg hold
+- Losers: 26.9h avg hold
+
+BAD TRADE PATTERNS (these setups consistently lost money — exit faster if held):
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
+- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
 
 EXIT RULES FROM EXPERIENCE:
-1. EXIT positions <-8% held >24h when MACD bearish OR volume declining — cut losers faster than 30.1h avg
-2. EXIT winners held >60h when RSI >70 OR price >8% above EMA(8) — lock gains before reversal
-3. EXIT T2 positions <-6% held >18h when volume drops below 2x — T2 needs stricter discipline
-4. HOLD winners with RSI 45-65 AND MACD bullish AND volume >1.5x — good_exit pattern avg +15.3%, let thesis run
-5. TRAIL T1 winners >10% with 5% trailing stop when RSI >60 — balance volatility tolerance with profit protection
-
-## Signal-to-Exit Pattern Mapping
-- slow_loss_cut → Entry patterns: EMA_BULLISH_CROSSOVER, VOLUME_SPIKE STRONG with RSI >55
-- late_exit_winner → Entry patterns: VOLUME_SPIKE MODERATE/STRONG with favorable RSI
-- good_exit → Entry patterns: VOLUME_SPIKE STRONG T1 RSI 40-55 (best pattern)
-
-Use this mapping to identify which current positions match losing entry patterns and should be cut faster.
+1. EXIT T2 positions at -8% with bearish MACD cross — thesis invalidation
+2. EXIT winners when RSI >75 with declining volume — momentum exhaustion
+3. HOLD T1 positions through -15% if trend and volume intact — blue chips need room
+4. HOLD winners showing higher lows on 4h with ADX >25 — trend continuation
+5. PARTIAL_EXIT 50% at +15% for positions held >48h — lock profits on extended holds
+6. TRAIL stop at 5% below high for T1 positions >+20% — protect outsized gains
+7. EXIT immediately on death cross with position <+5% — major trend reversal

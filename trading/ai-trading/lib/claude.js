@@ -47,10 +47,14 @@ export function getApiCosts() {
 }
 
 export function resetApiCosts() {
-  Object.keys(apiCostTracker).forEach(k => {
-    if (typeof apiCostTracker[k] === 'number') apiCostTracker[k] = 0;
-    else if (typeof apiCostTracker[k] === 'object') Object.keys(apiCostTracker[k]).forEach(j => apiCostTracker[k][j] = 0);
-  });
+  apiCostTracker.haiku_input_tokens = 0;
+  apiCostTracker.haiku_output_tokens = 0;
+  apiCostTracker.sonnet_input_tokens = 0;
+  apiCostTracker.sonnet_output_tokens = 0;
+  apiCostTracker.haiku_cache_read_tokens = 0;
+  apiCostTracker.sonnet_cache_read_tokens = 0;
+  apiCostTracker.calls.haiku = 0;
+  apiCostTracker.calls.sonnet = 0;
   apiCostTracker.reset_time = Date.now();
 }
 
@@ -97,6 +101,7 @@ async function withRetry(fn, { maxAttempts = 3, label = 'API call' } = {}) {
 let haikuPromptCache = { text: null, mtime: 0 };
 let sonnetPromptCache = { text: null, mtime: 0 };
 let sonnetExitPromptCache = { text: null, mtime: 0 };
+let sonnetPredictionPromptCache = { text: null, mtime: 0 };
 
 function loadPrompt(path, cache) {
   try {
@@ -564,15 +569,28 @@ export async function callSonnetBatch(items, portfolioState, learningRules, conf
       }));
     }
 
-    // Match results to inputs and log each decision
+    // Match results to inputs by symbol name (not positional index)
     const results = [];
     for (let i = 0; i < items.length; i++) {
       const { haikuSignal, triggeredSignal } = items[i];
-      let parsed = parsedArray[i] || parsedArray.find(p => p.symbol === triggeredSignal.symbol);
+      const expectedSymbol = triggeredSignal.symbol;
+
+      // Always prefer symbol-name match over positional match
+      let parsed = parsedArray.find(p => p.symbol === expectedSymbol);
+      if (!parsed && parsedArray[i]) {
+        logger.warn(`[Sonnet] No symbol match for ${expectedSymbol} — using positional fallback (got ${parsedArray[i].symbol || 'unknown'})`);
+        parsed = parsedArray[i];
+      }
 
       if (!parsed) {
-        logger.warn(`[Sonnet] No batch result for ${triggeredSignal.symbol} — defaulting to PASS`);
-        parsed = { action: 'PASS', symbol: triggeredSignal.symbol, confidence: 0, reasoning: 'Missing from batch response' };
+        logger.warn(`[Sonnet] No batch result for ${expectedSymbol} — defaulting to PASS`);
+        parsed = { action: 'PASS', symbol: expectedSymbol, confidence: 0, reasoning: 'Missing from batch response' };
+      }
+
+      // Ensure symbol field matches expected (guard against Sonnet hallucinating symbols)
+      if (parsed.symbol && parsed.symbol !== expectedSymbol) {
+        logger.warn(`[Sonnet] Symbol mismatch in batch: expected ${expectedSymbol}, got ${parsed.symbol} — correcting`);
+        parsed.symbol = expectedSymbol;
       }
 
       if (parsed.action === 'PARTIAL_EXIT' && !parsed.position_details?.exit_percent) {
@@ -1103,4 +1121,94 @@ async function logDecision(signalId, sonnetResponse, promptSnapshot, tokensUsed)
   ]);
 
   return result.rows[0].id;
+}
+
+// ── Sonnet Prediction Call ──────────────────────────────────
+
+/**
+ * Call Sonnet for a directional prediction (not a trade decision).
+ * Uses prompts/sonnet-prediction.md.
+ *
+ * @param {string} symbol
+ * @param {object} analysis - From analyzeSymbol()
+ * @param {object} divergenceData - From detectLeadingSignals()
+ * @param {object|null} btcCorrelation - BTC correlation data for this symbol
+ * @param {object} portfolio - Portfolio state
+ * @param {object} config - Trading config
+ * @param {object[]} btcLedCandidates - High-beta altcoin candidates (only for BTCUSDT predictions)
+ * @returns {Promise<object>} Prediction result
+ */
+export async function callSonnetPrediction(symbol, analysis, divergenceData, btcCorrelation, portfolio, config, btcLedCandidates = []) {
+  const systemPrompt = loadPrompt('prompts/sonnet-prediction.md', sonnetPredictionPromptCache);
+
+  const userParts = [];
+
+  // Symbol + divergence data
+  userParts.push(`## Symbol: ${symbol}`);
+  userParts.push(`## Divergence Data\n${JSON.stringify(divergenceData, null, 2)}`);
+
+  // Technical analysis
+  userParts.push(`## Technical Analysis\n${formatForClaude(analysis)}`);
+
+  // BTC correlation
+  if (btcCorrelation) {
+    userParts.push(`## BTC Correlation\nPearson r: ${btcCorrelation.pearson_r}, Beta: ${btcCorrelation.beta}, R²: ${btcCorrelation.r_squared}`);
+  }
+
+  // Portfolio context (minimal)
+  userParts.push(`## Portfolio Context\nOpen positions: ${portfolio.open_count}/${portfolio.max_positions} | Available capital: $${portfolio.available_capital?.toFixed(0) || '?'} | Unrealized P&L: ${portfolio.unrealized_pnl_percent?.toFixed(1) || '?'}%`);
+
+  // BTC-led candidates (only for BTCUSDT)
+  if (btcLedCandidates.length > 0) {
+    const candidateLines = btcLedCandidates.map(c =>
+      `- ${c.symbol}: beta=${c.beta}, ATR=${c.atr_percent}%, vol=${c.volume_ratio}x, score=${c.profit_score}\n  ${formatForClaude(c.analysis)}`
+    ).join('\n');
+    userParts.push(`## High-Beta Altcoin Candidates for BTC-Led Entry\n${candidateLines}`);
+  }
+
+  const userMessage = userParts.join('\n\n');
+
+  const response = await withRetry(async () => {
+    return withTimeout(
+      anthropic.messages.create({
+        model: SONNET_MODEL,
+        max_tokens: 1024,
+        system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+      API_TIMEOUT_MS,
+      `Sonnet prediction (${symbol})`
+    );
+  }, { label: `Sonnet prediction (${symbol})` });
+
+  // Track costs
+  if (response.usage) {
+    apiCostTracker.sonnet_input_tokens += response.usage.input_tokens || 0;
+    apiCostTracker.sonnet_output_tokens += response.usage.output_tokens || 0;
+    apiCostTracker.sonnet_cache_read_tokens += response.usage.cache_read_input_tokens || 0;
+    apiCostTracker.calls.sonnet++;
+  }
+
+  const text = response.content?.[0]?.text || '';
+  try {
+    const parsed = extractJSON(text);
+    return {
+      prediction: parsed.prediction || 'UP',
+      confidence: parseFloat(parsed.confidence) || 0.5,
+      timeframe_hours: parseInt(parsed.timeframe_hours) || 24,
+      invalidation: parsed.invalidation || '',
+      reasoning: parsed.reasoning || '',
+      btc_led_candidates: Array.isArray(parsed.btc_led_candidates) ? parsed.btc_led_candidates : [],
+    };
+  } catch (parseErr) {
+    logger.error(`[Claude] Failed to parse Sonnet prediction for ${symbol}: ${parseErr.message}`);
+    return {
+      prediction: divergenceData.direction === 'BULLISH' ? 'UP' : 'DOWN',
+      confidence: 0.50,
+      timeframe_hours: 24,
+      invalidation: '',
+      reasoning: `Parse failure — fallback from divergence direction. Raw: ${text.substring(0, 200)}`,
+      btc_led_candidates: [],
+    };
+  }
 }

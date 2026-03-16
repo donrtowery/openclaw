@@ -8,6 +8,7 @@ import { queueEvent } from '../lib/events.js';
 import logger from '../lib/logger.js';
 import Anthropic from '@anthropic-ai/sdk';
 import { extractJSON } from '../lib/claude.js';
+import { evaluatePredictions } from '../lib/prediction-manager.js';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -18,7 +19,7 @@ const SONNET_MODEL = process.env.SONNET_MODEL || 'claude-sonnet-4-5-20250929';
 
 const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
 const SNAPSHOT_RETENTION_DAYS = config.learning?.snapshot_retention_days || 30;
-const MISSED_OPP_THRESHOLD = config.learning?.missed_opportunity_threshold_pct || 5.0;
+const MISSED_OPP_THRESHOLD = config.learning?.missed_opportunity_threshold_pct || 3.0;
 const SUSTAINED_CANDLES = config.learning?.sustained_candles_required || 6;
 const ESC_CONV_TARGET_MIN = config.learning?.escalation_conversion_target_min || 15;
 const ESC_CONV_TARGET_MAX = config.learning?.escalation_conversion_target_max || 30;
@@ -53,6 +54,25 @@ async function run() {
   // ── Step 1: Evaluate outcomes first (so stats reflect latest data) ──
 
   await updateOutcomes();
+
+  // ── Step 1b: Evaluate prediction outcomes ─────────────────
+  try {
+    const predResults = await evaluatePredictions();
+    if (predResults.evaluated > 0) {
+      logger.info(`[Learning] Prediction scoring: ${predResults.evaluated} evaluated (${predResults.correct} correct, ${predResults.wrong} wrong)`);
+    }
+  } catch (err) {
+    logger.error(`[Learning] Prediction scoring error: ${err.message}`);
+  }
+
+  // ── Step 1c: Fetch prediction accuracy for Opus context ───
+  let predictionAccuracyStats = [];
+  try {
+    const accResult = await query('SELECT * FROM prediction_accuracy ORDER BY total DESC LIMIT 20');
+    predictionAccuracyStats = accResult.rows;
+  } catch (err) {
+    logger.warn(`[Learning] Prediction accuracy query failed: ${err.message}`);
+  }
 
   // ── Step 2: Calculate statistics ──────────────────────────
 
@@ -119,7 +139,7 @@ async function run() {
 
   // ── Step 3: Call Opus for analysis (ONE call) ─────────────
 
-  const analysis = await callOpusForAnalysis(stats, defensiveMode, trajectoryRows);
+  const analysis = await callOpusForAnalysis(stats, defensiveMode, trajectoryRows, predictionAccuracyStats);
 
   // ── Step 3b: Validate Opus's generated rules ──────────────
   // Run validation BEFORE injecting corrective rules so the contradiction
@@ -650,7 +670,7 @@ async function calculateStats() {
 
 // ── Opus Analysis Call ──────────────────────────────────────
 
-async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows = []) {
+async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows = [], predictionAccuracyStats = []) {
   const hasTrades = stats.total_trades > 0;
 
   // Adapt prompt framing based on what data exists
@@ -893,6 +913,15 @@ async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows 
   prompt += `- Sonnet PASS accuracy: ${sonnetPassAccuracy}%\n`;
   prompt += `- MISSED_OPPORTUNITY means SONNET was wrong to pass, NOT that Haiku was wrong to escalate\n\n`;
 
+  // Prediction accuracy (predictive analysis system)
+  if (predictionAccuracyStats.length > 0) {
+    prompt += `PREDICTION ACCURACY (leading indicator divergences):\n`;
+    for (const row of predictionAccuracyStats) {
+      prompt += `${row.symbol} ${row.divergence_type}: ${row.total} predictions, ${row.hits} hits (${row.accuracy_pct || 0}% accuracy), avg correct move: ${parseFloat(row.avg_correct_move || 0).toFixed(2)}%\n`;
+    }
+    prompt += `\nUse this data to assess whether the predictive system is working for specific symbols/divergence types. If accuracy is consistently below 40% for a symbol, the system will auto-raise the confidence threshold.\n\n`;
+  }
+
   // Haiku escalation accuracy
   if (stats.escalation_accuracy.length > 0) {
     const totalEsc = stats.escalation_accuracy.reduce((sum, r) => sum + parseInt(r.total_escalated), 0);
@@ -1096,17 +1125,50 @@ async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows 
     logger.info(`[Learning] Opus analysis: ${message.usage.input_tokens}in/${message.usage.output_tokens}out tokens, stop_reason: ${message.stop_reason}`);
 
     if (message.stop_reason === 'max_tokens') {
-      logger.warn(`[Learning] Opus response truncated at max_tokens — skipping parse to prevent partial rule sets`);
-      return {
-        haiku_rules: [],
-        sonnet_rules: [],
-        haiku_escalation_calibration: [],
-        exit_rules: [],
-        haiku_few_shots: [],
-        sonnet_few_shots: [],
-        rule_changes: 'Truncated at max_tokens — no changes this cycle',
-        _parseFailure: true,
-      };
+      logger.error(`[Learning] Opus response truncated at max_tokens (${message.usage.output_tokens} tokens) — rules were LOST. Retrying with doubled max_tokens...`);
+
+      // Retry once with doubled max_tokens
+      try {
+        let retryTimer;
+        const retryCleanup = () => clearTimeout(retryTimer);
+        const retryMessage = await Promise.race([
+          anthropic.messages.create({
+            model: OPUS_MODEL,
+            max_tokens: 16384,
+            system: [{ type: 'text', text: 'You are a conservative trading performance analyst for a utility-focused crypto bot. Quality over quantity — never bias toward more trading. Losing trades matter as much as missed opportunities. Respond with valid JSON only. Be concise — short rule strings, no lengthy explanations.', cache_control: { type: 'ephemeral' } }],
+            messages: [{ role: 'user', content: prompt }],
+          }).then(r => { retryCleanup(); return r; }, err => { retryCleanup(); throw err; }),
+          new Promise((_, reject) => { retryTimer = setTimeout(() => reject(new Error('Opus retry timed out')), LEARNING_TIMEOUT_MS); }),
+        ]);
+        logger.info(`[Learning] Opus retry: ${retryMessage.usage.input_tokens}in/${retryMessage.usage.output_tokens}out tokens, stop_reason: ${retryMessage.stop_reason}`);
+        if (retryMessage.stop_reason === 'end_turn' && retryMessage.content?.[0]?.text) {
+          message = retryMessage; // Use the successful retry
+        } else {
+          logger.error(`[Learning] Opus retry still truncated (stop_reason: ${retryMessage.stop_reason}) — giving up`);
+          return {
+            haiku_rules: [],
+            sonnet_rules: [],
+            haiku_escalation_calibration: [],
+            exit_rules: [],
+            haiku_few_shots: [],
+            sonnet_few_shots: [],
+            rule_changes: 'Truncated at max_tokens even after retry — no changes this cycle',
+            _parseFailure: true,
+          };
+        }
+      } catch (retryErr) {
+        logger.error(`[Learning] Opus retry failed: ${retryErr.message} — skipping parse`);
+        return {
+          haiku_rules: [],
+          sonnet_rules: [],
+          haiku_escalation_calibration: [],
+          exit_rules: [],
+          haiku_few_shots: [],
+          sonnet_few_shots: [],
+          rule_changes: 'Truncated at max_tokens, retry failed — no changes this cycle',
+          _parseFailure: true,
+        };
+      }
     }
 
     let parsed;
@@ -1316,7 +1378,7 @@ function validateAnalysis(analysis, defensiveMode = false) {
 // ── Prompt File Updater ─────────────────────────────────────
 
 async function updatePromptFiles(stats, analysis, defensiveMode = false) {
-  const date = new Date().toISOString().split('T')[0];
+  const date = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local TZ (EST)
 
   // Shared performance header
   let perfHeader = `\n## LEARNING DATA\n`;
@@ -2229,7 +2291,7 @@ async function saveLearningRules(analysis, currentStats = null) {
 }
 
 async function saveLearningHistory(stats, analysis, promptsUpdated = true) {
-  const today = new Date().toISOString().split('T')[0];
+  const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local TZ (EST)
   await query(`
     INSERT INTO learning_history (
       analysis_start_date, analysis_end_date,

@@ -16,6 +16,9 @@ export class CoinbaseExchange extends ExchangeInterface {
     this.apiKey = config.api_key || process.env.COINBASE_API_KEY;
     this.privateKey = this._loadPrivateKey(config);
     this.paperTrading = config.paper_trading ?? (process.env.PAPER_TRADING === 'true');
+    if (!this.privateKey && !this.paperTrading) {
+      logger.warn('[coinbase] Private key not loaded — live trading will fail. Check COINBASE_PRIVATE_KEY_PATH or COINBASE_PRIVATE_KEY env vars.');
+    }
     this.productCache = null;
     this.productCacheExpiry = 0;
     this._lastRequestTime = 0;
@@ -61,7 +64,7 @@ export class CoinbaseExchange extends ExchangeInterface {
       sub: this.apiKey,
       iss: 'coinbase-cloud',
       nbf: now,
-      exp: now + 120,
+      exp: now + 300,
       aud: ['cdp_service'],
     };
 

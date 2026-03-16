@@ -147,29 +147,30 @@ Because volume is not pre-filtered by rigid thresholds, treat it as one input am
 
 
 ## LEARNING DATA
-(Updated: 2026-03-12 | 20 trades | 45% win rate | RESET — prior rules caused 4-day trading freeze)
+(Updated: 2026-03-15 | 30 trades | 50.0% win rate)
 
 PERFORMANCE:
-- 45% WR (9W/11L) | PF: 0.69
-- Avg win: +$34.34 | Avg loss: $-36.12
-- Hold: Winners 52.6h, Losers 30.1h
-- Best tier: T1 (57% WR), T2 (33% WR — smaller sample, needs more data)
+- 50.0% WR (15W/15L) | PF: 1.04
+- Avg win: +$29.36 | Avg loss: $-28.35
+- Hold: Winners 36.9h, Losers 26.9h
+- Best tier: T1 (60% WR)
 
-BAD TRADE PATTERNS (reduce confidence, don't blanket-reject):
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE STRONG: 3/3 lost, avg -$41.76 — reduce confidence 0.15, PASS unless other strong confirmations
-- VOLUME_SPIKE STRONG with RSI >60: late breakout chasing — reduce confidence 0.10
+BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
+- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69 (EXCEPTION: sub-pattern wins 63% on 8 trades — approve if RSI <55 and volume >3x)
 
 RULES FROM EXPERIENCE:
-1. APPROVE T1 signals with 2+ confirmations and volume >1.5x — T1 has 57% WR, give it room to work
-2. APPROVE T2 signals with 3+ confirmations and volume >2.5x and RSI 35-55 — T2 needs more confirmation but should not be blanket-rejected
-3. APPROVE VOLUME_SPIKE STRONG with RSI 40-55 on T1 — best pattern, 63% WR, avg +$45.30
-4. Use ATR-adjusted sizing: high ATR (>5%) = reduce position size, not auto-reject
-5. APPROVE SELL for positions <-8% held >24h with bearish MACD — cut losers faster than 30.1h avg
-6. APPROVE SELL for winners held >60h with RSI >70 — lock gains before reversal
-7. Do NOT cite "insufficient volume" as sole reason to PASS on T1 with volume >1.5x — this over-filtering blocked 98% of prior signals and caused complete trading freeze
-8. Evaluate each signal on its technical merits — pattern-based rejection should reduce confidence, not auto-PASS
+1. APPROVE signals with volume >2.5x when 2+ technical confirmations present
+2. APPROVE T1 VOLUME_SPIKE with RSI 40-60 range — sustainable momentum zone
+3. APPROVE high ADX (>30) setups with trend alignment — momentum plays need room
+4. APPROVE WEAK signals with 3+ confirmations — WEAK converted 72% vs STRONG 27%
+5. REJECT late MACD crossovers after 10%+ moves — momentum already spent
+6. REJECT signals when portfolio holds 3+ positions in same trend direction
+7. STOP citing insufficient volume as primary rejection when Haiku already filtered for 2x+
+8. START approving TAOUSDT and RENDERUSDT setups with ADX >25 — missed +16-19% gains
 
 EXAMPLES FROM ACTUAL TRADES:
-- VOLUME_SPIKE STRONG T1 RSI 40-55 — approve best pattern: Position +$45.30 (+13.2%) in 51h
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE — reduce confidence: Signal declined -6.1% over 48h
+- TAOUSDT with strong ADX and technical alignment - wrongly passed: CORRECT - price rose +19.6% within 24h, Sonnet was wrong to pass
+- EMA_BULLISH_CROSSOVER STRONG as sole signal - correctly passed: CORRECT - price moved <1%, pattern shows 91.7% PASS rate
+- WEAK signal with 3+ confirmations - should trade: CORRECT - WEAK signals with 3+ confirmations convert at 72%
 

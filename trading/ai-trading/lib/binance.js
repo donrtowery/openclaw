@@ -23,6 +23,7 @@ const exchanges = {};
 // Symbol → exchange ID mapping
 const symbolExchangeMap = {};
 let initialized = false;
+let initPromise = null;
 
 function getOrCreateExchange(exchangeId) {
   if (!exchanges[exchangeId]) {
@@ -40,25 +41,36 @@ getOrCreateExchange(primaryId);
 
 async function ensureInit() {
   if (initialized) return;
-  initialized = true;
-  try {
-    const result = await query('SELECT symbol, exchange FROM symbols WHERE is_active = true');
-    for (const row of result.rows) {
-      const exId = row.exchange || primaryId;
-      symbolExchangeMap[row.symbol] = exId;
-      getOrCreateExchange(exId);
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    try {
+      const result = await query('SELECT symbol, exchange FROM symbols WHERE is_active = true');
+      for (const row of result.rows) {
+        const exId = row.exchange || primaryId;
+        symbolExchangeMap[row.symbol] = exId;
+        getOrCreateExchange(exId);
+      }
+      const exIds = [...new Set(Object.values(symbolExchangeMap))];
+      if (exIds.length > 1) {
+        console.log(`[Exchange] Multi-exchange routing active: ${exIds.join(', ')} (${Object.keys(symbolExchangeMap).length} symbols)`);
+      }
+      initialized = true;
+    } catch (e) {
+      console.error('[Exchange] Failed to load symbol-exchange map, using primary only:', e.message);
+      initialized = true;
+    } finally {
+      initPromise = null;
     }
-    const exIds = [...new Set(Object.values(symbolExchangeMap))];
-    if (exIds.length > 1) {
-      console.log(`[Exchange] Multi-exchange routing active: ${exIds.join(', ')} (${Object.keys(symbolExchangeMap).length} symbols)`);
-    }
-  } catch (e) {
-    console.error('[Exchange] Failed to load symbol-exchange map, using primary only:', e.message);
-  }
+  })();
+  return initPromise;
 }
 
 function getExchangeForSymbol(symbol) {
-  return exchanges[symbolExchangeMap[symbol]] || exchanges[primaryId];
+  const exId = symbolExchangeMap[symbol];
+  if (!exId) {
+    console.warn(`[Exchange] No routing entry for ${symbol} — falling back to primary (${primaryId})`);
+  }
+  return exchanges[exId] || exchanges[primaryId];
 }
 
 // ── Exported Functions ─────────────────────────────────────
@@ -101,9 +113,18 @@ export async function testConnectivity() {
   await ensureInit();
   const results = {};
   for (const [id, ex] of Object.entries(exchanges)) {
-    results[id] = await ex.testConnectivity();
+    try {
+      results[id] = await ex.testConnectivity();
+    } catch (e) {
+      console.error(`[Exchange] Connectivity test failed for ${id}: ${e.message}`);
+      results[id] = false;
+    }
   }
-  return results;
+  const allOk = Object.values(results).every(v => v === true);
+  if (!allOk) {
+    console.error(`[Exchange] Connectivity results: ${JSON.stringify(results)}`);
+  }
+  return allOk;
 }
 
 export async function getAccountInfo() {

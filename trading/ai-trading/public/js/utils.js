@@ -27,14 +27,14 @@ function fmtPrice(val) {
 function fmtDate(val) {
   if (!val) return '--';
   const d = new Date(val);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' });
 }
 
 function fmtDateTime(val) {
   if (!val) return '--';
   const d = new Date(val);
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) +
-    ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/New_York' }) +
+    ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' });
 }
 
 function fmtDuration(entryTime) {
@@ -59,5 +59,5 @@ function pnlStatClass(val) {
 function shortDay(val) {
   if (!val) return '';
   const d = new Date(val);
-  return (d.getMonth() + 1) + '/' + d.getDate();
+  return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', timeZone: 'America/New_York' });
 }

@@ -115,35 +115,73 @@ Key SELL principles:
 
 
 ## LEARNING DATA
-(Updated: 2026-03-12 | 20 trades | 45% win rate | RESET — prior rules caused 4-day trading freeze)
+(Updated: 2026-03-15 | 30 trades | 50.0% win rate)
 
 PERFORMANCE:
-- 45% WR (9W/11L) | PF: 0.69
-- Avg win: +$34.34 | Avg loss: $-36.12
-- Hold: Winners 52.6h, Losers 30.1h
-- Best tier: T1 (57% WR)
+- 50.0% WR (15W/15L) | PF: 1.04
+- Avg win: +$29.36 | Avg loss: $-28.35
+- Hold: Winners 36.9h, Losers 26.9h
+- Best tier: T1 (60% WR)
 
 YOUR ESCALATION ACCURACY:
-- MODERATE: 64% converted — your best-calibrated label
-- STRONG: 27% converted — label too loosely applied. Reserve STRONG for 4+ aligned indicators + volume >3x + clear trend
-- When in doubt, use MODERATE over STRONG
+- Total: 734 escalated → 355 traded, 379 PASSed by Sonnet
+- MODERATE: 495 escalated, 57% converted
+- STRONG: 214 escalated, 27% converted
+- WEAK: 25 escalated, 72% converted
+Note: Conversion rate reflects Sonnet's filtering, not your accuracy. Low STRONG conversion means Sonnet applies additional filters. High WEAK conversion is survivorship bias (small sample of exceptional signals).
 
-BAD TRADE PATTERNS (reduce confidence, don't blanket-reject):
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE STRONG: 3/3 lost — reduce confidence by 0.15 if this exact combo
-- VOLUME_SPIKE STRONG with RSI >60: late breakout chasing — reduce confidence by 0.10
+SONNET PASS OUTCOMES:
+- CORRECT_PASS: 242 (Sonnet was right to pass)
+- MISSED_OPPORTUNITY: 82 (price moved favorably after pass)
+
+STOP ESCALATING (confirmed unprofitable — price didn't move after >70% of these):
+- MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) MODERATE: 92.0% confirmed unprofitable (25 evaluated)
+- EMA_BULLISH_CROSSOVER (BULLISH) STRONG: 91.7% confirmed unprofitable (12 evaluated)
+- VOLUME_SPIKE (BULLISH) STRONG: 78.1% confirmed unprofitable (73 evaluated)
+
+START ESCALATING (you filtered these out but price moved favorably):
+- VOLUME_SPIKE (BEARISH) WEAK: 8 missed, avg +13.3% gain
+- BB_LOWER_TOUCH (BULLISH) WEAK: 2 missed, avg +10.5% gain
+- MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) WEAK: 7 missed, avg +10.5% gain
+- MACD_BULLISH_CROSSOVER (SIDEWAYS) WEAK: 3 missed, avg +10.4% gain
+- VOLUME_SPIKE (BULLISH) WEAK: 14 missed, avg +10.3% gain
+
+SONNET WAS WRONG (these PASSed signals SHOULD have been escalated — Sonnet erred, not you):
+- TAOUSDT STRONG conf:0.780 → Sonnet passed → price rose +19.6% | Sonnet's reason: TAO shows impressive technical alignment (ADX 26.3, MACD bullish, Ichimoku stron
+- TAOUSDT MODERATE conf:0.620 → Sonnet passed → price rose +18.4% | Sonnet's reason: StochRSI bearish cross (K76.7<D87.5) + RSI 65 signals momentum exhaustion at res
+- TAOUSDT MODERATE conf:0.720 → Sonnet passed → price rose +17.9% | Sonnet's reason: StochRSI bullish cross from extreme oversold (K10.6→D8.4) is textbook early reve
+- RENDERUSDT STRONG conf:0.780 → Sonnet passed → price rose +16.2% | Sonnet's reason: RENDER shows strong bullish structure (ADX 26.44, golden cross, Ichimoku strong 
+- RENDERUSDT MODERATE conf:0.680 → Sonnet passed → price rose +16.2% | Sonnet's reason: RENDER shows strong trend confirmation (ADX 26.4, Ichimoku strong bullish, golde
+Keep escalating signals like these — Sonnet needs to see them.
+
+SONNET MISSED THESE SELL SIGNALS (you correctly escalated, but Sonnet chose PASS and price dropped):
+- NEARUSDT MODERATE conf:0.650 → Sonnet passed → price dropped -8.2% | Sonnet's reason: This is a tiny $11.66 position (+0.98%) that's been held for 40.5h — essentially
+- UNIUSDT MODERATE conf:0.680 → Sonnet passed → price dropped -5.7% | Sonnet's reason: This is a classic overanalysis of minor noise. Yes, RSI is 70 and we're at BB up
+Keep escalating SELL signals like these — Sonnet needs to see them.
+
+BAD TRADE PATTERNS (these setups consistently lost money — DO NOT escalate/approve):
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
+- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
 
 RULES FROM EXPERIENCE:
-1. ESCALATE signals with 2+ confirmations and confidence >=0.55. Both T1 and T2 are eligible.
-2. T1 signals: volume >1.5x with 2+ confirmations is sufficient for escalation
-3. T2 signals: require volume >2.5x with 2+ confirmations — higher bar but not impossible
-4. ESCALATE VOLUME_SPIKE STRONG with RSI 40-55 on T1 — best pattern, 63% WR
-5. ALWAYS escalate SELL/exit signals for existing positions — Sonnet must evaluate exits
-6. ESCALATE SELL for positions <-8% held >24h with bearish MACD — cut losers faster
-7. ESCALATE SELL for winners held >60h with RSI >70 — lock gains before reversal
-8. Reduce confidence by 0.10 for counter-trend trades (4h bearish + 1h bullish signal)
-9. Do NOT escalate signals on coins with open position P&L <-5% — avoid compounding losers
+1. STOP: Escalation conversion at 48.4% (target 15-30%). Be MORE selective — only escalate STRONG signals with 3+ confirmations.
+2. ESCALATE VOLUME_SPIKE STRONG with RSI 40-60 and ADX >25 — 5/8 wins at 63% WR
+3. ESCALATE BB_UPPER_TOUCH STRONG with volume >3x and MACD bullish — 2/3 wins at 67% WR
+4. ESCALATE T1 signals with 3+ aligned indicators (RSI/MACD/EMA/volume) — T1 60% WR vs T2 45%
+5. ESCALATE ICHIMOKU_BULLISH_CROSS with VWAP cross above — missed 3 signals avg +9.6%
+6. ESCALATE VOLUME_SPIKE WEAK/MODERATE when RSI 30-50 — missed 14 signals avg +10.3%
+7. ESCALATE BB_LOWER_TOUCH WEAK with oversold RSI <35 — missed 2 signals avg +10.5%
+8. START escalating SELL signals: VOLUME_SPIKE BEARISH WEAK — missed 8 signals avg +13.3%
+9. START escalating MACD_BULLISH_CROSSOVER WEAK with 2+ confirmations — missed 7 signals avg +10.5%
+10. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE STRONG without RSI 40-60 — 0/3 wins, avg -7.0%
+11. REJECT BB_SQUEEZE STRONG in low ADX <20 environments — 0/1 win, -10.7% loss
+12. REJECT signals with DCA trigger active unless T1 + price >5% below entry — 0/2 wins vs 54% without
+13. REDUCE STRONG threshold to 4+ indicators aligned — STRONG converts only 27% vs MODERATE 57%
+14. STOP escalating single-indicator MODERATE signals — require 2+ confirmations
+15. STOP escalating MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH MODERATE — 92% PASS rate indicates over-escalation
 
 EXAMPLES FROM ACTUAL TRADES:
-- VOLUME_SPIKE STRONG T1 RSI 40-55 — best pattern 63% WR: Sonnet approved, +$42.15 (+12.3%) in 48h
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE STRONG — proven loser: price -5.2% over 36h, correctly avoided
+- VOLUME_SPIKE STRONG with RSI in neutral zone - high win rate setup: CORRECT - similar setups 5/8 wins at 63% WR
+- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE without RSI confirmation - consistent loser: CORRECT - avoided consistent losing pattern
+- SELL signal with VOLUME_SPIKE BEARISH WEAK - profitable short opportunity: CORRECT - missed 8 similar signals avg +13.3% gain
 
