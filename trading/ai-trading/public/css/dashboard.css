@@ -82,6 +82,10 @@ header {
 .rule-list li.rule-approve { border-left-color: #3fb950; }
 .rule-list li.rule-exit { border-left-color: #f0883e; }
 .rule-list li.rule-hold { border-left-color: #58a6ff; }
+.rule-list li.rule-proven { background: #1a2332; border-left-width: 4px; }
+.badge-proven { background: #8957e5; color: #fff; padding: 1px 6px; border-radius: 3px; font-size: 0.75rem; font-weight: 600; vertical-align: middle; }
+.btn-proven-toggle { float: right; background: none; border: 1px solid #30363d; color: #8b949e; padding: 1px 8px; border-radius: 3px; font-size: 0.75rem; cursor: pointer; }
+.btn-proven-toggle:hover { border-color: #8957e5; color: #8957e5; }
 .learning-rule-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 1rem; }
 
 .separator { color: var(--border); }

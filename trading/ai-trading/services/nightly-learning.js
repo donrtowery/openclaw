@@ -1380,6 +1380,16 @@ function validateAnalysis(analysis, defensiveMode = false) {
 async function updatePromptFiles(stats, analysis, defensiveMode = false) {
   const date = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local TZ (EST)
 
+  // Fetch proven rules by type — these go first in prompts and are never overwritten
+  const provenResult = await query(
+    'SELECT rule_type, rule_text FROM learning_rules WHERE is_active = true AND is_proven = true ORDER BY created_at ASC'
+  );
+  const provenByType = {};
+  for (const r of provenResult.rows) {
+    if (!provenByType[r.rule_type]) provenByType[r.rule_type] = [];
+    provenByType[r.rule_type].push(r);
+  }
+
   // Shared performance header
   let perfHeader = `\n## LEARNING DATA\n`;
   perfHeader += `(Updated: ${date} | ${stats.total_trades} trades | ${stats.win_rate.toFixed(1)}% win rate)\n\n`;
@@ -1503,11 +1513,11 @@ async function updatePromptFiles(stats, analysis, defensiveMode = false) {
     haikuSection += '\n';
   }
 
-  // Haiku rules: combine haiku_rules + haiku_escalation_calibration, cap at 15
+  // Haiku rules: combine haiku_rules + haiku_escalation_calibration, cap at 20
   const haikuRules = deduplicateRules([
     ...toArray(analysis.haiku_rules),
     ...toArray(analysis.haiku_escalation_calibration),
-  ]).slice(0, 15);
+  ]).slice(0, 20);
   const sonnetRules = toArray(analysis.sonnet_rules);
 
   // ── Sonnet section with losing trade patterns ──
@@ -1538,11 +1548,12 @@ async function updatePromptFiles(stats, analysis, defensiveMode = false) {
     sonnetSection += '\n';
   }
 
-  // Write Haiku prompt
-  updatePromptFile('prompts/haiku-scanner.md', haikuSection, haikuRules, analysis.haiku_few_shots || []);
+  // Write Haiku prompt (proven haiku_escalation + haiku_calibration rules go first)
+  const provenHaiku = [...(provenByType['haiku_escalation'] || []), ...(provenByType['haiku_calibration'] || [])];
+  updatePromptFile('prompts/haiku-scanner.md', haikuSection, haikuRules, analysis.haiku_few_shots || [], provenHaiku);
 
-  // Write Sonnet prompt
-  updatePromptFile('prompts/sonnet-decision.md', sonnetSection, sonnetRules, analysis.sonnet_few_shots || []);
+  // Write Sonnet prompt (proven sonnet_decision rules go first)
+  updatePromptFile('prompts/sonnet-decision.md', sonnetSection, sonnetRules, analysis.sonnet_few_shots || [], provenByType['sonnet_decision'] || []);
 
   // ── Exit-eval prompt update ──
   let exitSection = `\n## LEARNING DATA\n`;
@@ -1578,8 +1589,18 @@ async function updatePromptFiles(stats, analysis, defensiveMode = false) {
     exitSection += '\n';
   }
 
-  // Exit rules from Sonnet analysis
-  const exitRules = toArray(analysis.exit_rules);
+  // Proven exit rules first (protected, never overwritten)
+  const provenExitRules = provenByType['sonnet_exit'] || [];
+  if (provenExitRules.length > 0) {
+    exitSection += `PROVEN EXIT RULES (validated over multiple trades — do NOT contradict these):\n`;
+    for (let i = 0; i < provenExitRules.length; i++) {
+      exitSection += `P${i + 1}. ${flattenRule(provenExitRules[i].rule_text)}\n`;
+    }
+    exitSection += '\n';
+  }
+
+  // Experimental exit rules from Sonnet analysis (cap: 20 total including proven)
+  const exitRules = toArray(analysis.exit_rules).slice(0, Math.max(0, 20 - provenExitRules.length));
   if (exitRules.length > 0) {
     exitSection += `EXIT RULES FROM EXPERIENCE:\n`;
     for (let i = 0; i < exitRules.length; i++) {
@@ -1641,7 +1662,7 @@ function deduplicateRules(rules) {
   return result;
 }
 
-function updatePromptFile(path, learningSection, rules, fewShots) {
+function updatePromptFile(path, learningSection, rules, fewShots, provenRules = []) {
   let content = readFileSync(path, 'utf8');
 
   // Extract existing learning section for diff logging
@@ -1656,16 +1677,26 @@ function updatePromptFile(path, learningSection, rules, fewShots) {
   // Build new section
   let section = '\n\n' + learningSection;
 
-  // Enforce max 15 rules as safety net
-  const cappedRules = rules.slice(0, 15);
+  // Proven rules go first (protected, never removed by nightly learning)
+  const provenTexts = provenRules.map(r => flattenRule(typeof r === 'string' ? r : r.rule_text || r));
+  if (provenTexts.length > 0) {
+    section += `PROVEN RULES (validated over multiple trades — do NOT contradict these):\n`;
+    for (let i = 0; i < provenTexts.length; i++) {
+      let ruleText = provenTexts[i];
+      ruleText = ruleText.replace(/\s*(?:during|in|under)\s+(?:DEFENSIVE|CAUTIOUS|STAGNATION(?:\s+OVERRIDE)?)\s+MODE/gi, '');
+      ruleText = ruleText.replace(/\s*\((?:DEFENSIVE|CAUTIOUS)\s+MODE(?:\s+active)?\)/gi, '');
+      section += `P${i + 1}. ${ruleText}\n`;
+    }
+    section += '\n';
+  }
+
+  // Experimental rules fill remaining slots (cap: 20 total including proven)
+  const maxExperimental = Math.max(0, 20 - provenTexts.length);
+  const cappedRules = rules.slice(0, maxExperimental);
   if (cappedRules.length > 0) {
     section += `RULES FROM EXPERIENCE:\n`;
     for (let i = 0; i < cappedRules.length; i++) {
-      // Fix stale mode references: rule #1 (master mode rule) already sets
-      // the current mode policy, so remove mode qualifiers from other rules
-      // that were generated under a previous mode (e.g., "during DEFENSIVE MODE").
       let ruleText = flattenRule(cappedRules[i]);
-      // Strip stale mode qualifiers — rule #1 (master mode rule) already declares current mode
       ruleText = ruleText.replace(/\s*(?:during|in|under)\s+(?:DEFENSIVE|CAUTIOUS|STAGNATION(?:\s+OVERRIDE)?)\s+MODE/gi, '');
       ruleText = ruleText.replace(/\s*\((?:DEFENSIVE|CAUTIOUS)\s+MODE(?:\s+active)?\)/gi, '');
       section += `${i + 1}. ${ruleText}\n`;
@@ -2175,16 +2206,16 @@ async function saveLearningRules(analysis, currentStats = null) {
   try {
     await client.query('BEGIN');
 
-    // Fetch rules about to be deactivated (for changelog logging)
+    // Fetch non-proven rules about to be deactivated (>14 days). Proven rules never expire.
     const oldRulesResult = await client.query(`
       SELECT id, rule_type, rule_text FROM learning_rules
-      WHERE is_active = true AND created_at < NOW() - INTERVAL '7 days'
+      WHERE is_active = true AND is_proven = false AND created_at < NOW() - INTERVAL '14 days'
     `);
 
-    // Deactivate old rules (>7 days)
+    // Deactivate expired non-proven rules (>14 days)
     await client.query(`
       UPDATE learning_rules SET is_active = false, deactivated_at = NOW()
-      WHERE is_active = true AND created_at < NOW() - INTERVAL '7 days'
+      WHERE is_active = true AND is_proven = false AND created_at < NOW() - INTERVAL '14 days'
     `);
 
     // Log expired deactivations to changelog
@@ -2193,7 +2224,7 @@ async function saveLearningRules(analysis, currentStats = null) {
         changeType: 'EXPIRED',
         ruleType: old.rule_type,
         ruleText: old.rule_text,
-        reason: 'Rule expired after 7 days',
+        reason: 'Rule expired after 14 days (non-proven)',
         stats: currentStats,
         fingerprint: generateRuleFingerprint(old.rule_type, old.rule_text),
       });
@@ -2207,17 +2238,17 @@ async function saveLearningRules(analysis, currentStats = null) {
     if (toArray(analysis.exit_rules).length > 0) typesToReplace.push('sonnet_exit');
 
     if (typesToReplace.length > 0) {
-      // Fetch rules about to be replaced (for changelog)
+      // Fetch non-proven rules about to be replaced (for changelog). Proven rules are protected.
       const replacedResult = await client.query(`
         SELECT id, rule_type, rule_text FROM learning_rules
-        WHERE is_active = true
+        WHERE is_active = true AND is_proven = false
           AND rule_type = ANY($1)
           AND created_at < NOW() - INTERVAL '48 hours'
       `, [typesToReplace]);
 
       const deactivated = await client.query(`
         UPDATE learning_rules SET is_active = false, deactivated_at = NOW()
-        WHERE is_active = true
+        WHERE is_active = true AND is_proven = false
           AND rule_type = ANY($1)
           AND created_at < NOW() - INTERVAL '48 hours'
       `, [typesToReplace]);

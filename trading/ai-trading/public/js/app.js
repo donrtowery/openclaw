@@ -281,7 +281,7 @@ function _ruleClass(text) {
 
 async function loadLearning() {
   const result = await apiCall('get_learning_report');
-  const { sessions, changelog } = result.data;
+  const { sessions, changelog, rules: dbRules } = result.data;
   const container = document.getElementById('learning-container');
 
   if (!sessions || sessions.length === 0) {
@@ -289,7 +289,35 @@ async function loadLearning() {
     return;
   }
 
-  container.innerHTML = sessions.map((session, idx) => {
+  // Build active rules section with proven toggle buttons
+  let activeRulesHtml = '';
+  if (dbRules && dbRules.length > 0) {
+    const groups = {};
+    for (const r of dbRules) {
+      const type = r.rule_type || 'other';
+      if (!groups[type]) groups[type] = [];
+      groups[type].push(r);
+    }
+    activeRulesHtml = `
+      <div class="learning-session">
+        <h2 class="learning-date">Active Rules (${dbRules.length} total, ${dbRules.filter(r => r.is_proven).length} proven)</h2>
+        <div class="learning-rule-groups">${Object.entries(groups).map(([type, items]) => `
+          <div class="rule-group">
+            <h4>${_typeLabels[type] || type}</h4>
+            <ul class="rule-list">
+              ${items.map(r => {
+                const cls = _ruleClass(r.rule_text);
+                const provenCls = r.is_proven ? ' rule-proven' : '';
+                const provenBadge = r.is_proven ? '<span class="badge badge-proven">PROVEN</span> ' : '';
+                const toggleBtn = `<button class="btn-proven-toggle" data-rule-id="${r.id}" data-proven="${r.is_proven}">${r.is_proven ? 'unpin' : 'pin'}</button>`;
+                return `<li class="${cls}${provenCls}">${provenBadge}${r.rule_text} ${toggleBtn}</li>`;
+              }).join('')}
+            </ul>
+          </div>`).join('')}</div>
+      </div>`;
+  }
+
+  container.innerHTML = activeRulesHtml + sessions.map((session, idx) => {
     const sessionDate = new Date(session.created_est);
     const dateStr = fmtDateTime(session.created_est);
     const pnl = parseFloat(session.total_pnl) || 0;
@@ -387,6 +415,17 @@ async function loadLearning() {
       </div>
     `;
   }).join('');
+
+  // Attach proven toggle click handlers
+  container.querySelectorAll('.btn-proven-toggle').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const ruleId = parseInt(btn.dataset.ruleId);
+      const currentlyProven = btn.dataset.proven === 'true';
+      await apiCall('toggle_proven_rule', { rule_id: ruleId, proven: !currentlyProven });
+      loadLearning(); // Refresh
+    });
+  });
 }
 
 // ── Recent Signals Table ───────────────────────────────────

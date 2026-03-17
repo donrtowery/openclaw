@@ -292,12 +292,12 @@ async function handleAction(action, params) {
         FROM learning_history ORDER BY created_at DESC LIMIT 2
       `);
 
-      // Active rules grouped by type
+      // Active rules grouped by type, proven first
       const rules = await query(`
-        SELECT id, rule_type, rule_text, is_active,
+        SELECT id, rule_type, rule_text, is_active, is_proven,
           created_at AT TIME ZONE 'America/New_York' as created_est
         FROM learning_rules WHERE is_active = true
-        ORDER BY rule_type, created_at DESC
+        ORDER BY is_proven DESC, rule_type, created_at DESC
       `);
 
       // Changelog from last 2 sessions
@@ -319,6 +319,14 @@ async function handleAction(action, params) {
           changelog: changelog.rows,
         },
       };
+    }
+
+    case 'toggle_proven_rule': {
+      const ruleId = params.rule_id;
+      const proven = params.proven;
+      if (!ruleId) return { error: 'rule_id required' };
+      await query('UPDATE learning_rules SET is_proven = $1 WHERE id = $2', [!!proven, ruleId]);
+      return { success: true, rule_id: ruleId, is_proven: !!proven };
     }
 
     // ── Engine Status & Recent Actions ────────────────────────
