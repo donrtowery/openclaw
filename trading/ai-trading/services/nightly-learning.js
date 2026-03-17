@@ -217,6 +217,21 @@ async function run() {
   } else {
     await updatePromptFiles(stats, analysis, defensiveMode);
     await saveLearningRules(analysis, stats);
+
+    // Update proven status based on Opus evaluation
+    const provenIds = toArray(analysis.proven_rule_ids).filter(id => Number.isInteger(id) && id > 0);
+    if (provenIds.length > 0) {
+      // Demote all currently proven rules, then promote only the ones Opus selected
+      await query('UPDATE learning_rules SET is_proven = false WHERE is_active = true AND is_proven = true');
+      const promoted = await query(
+        'UPDATE learning_rules SET is_proven = true WHERE id = ANY($1) AND is_active = true RETURNING id',
+        [provenIds]
+      );
+      logger.info(`[Learning] Proven rules updated: ${promoted.rowCount} promoted (Opus selected ${provenIds.length} IDs)`);
+    } else {
+      logger.info('[Learning] Opus did not select any proven rules this session');
+    }
+
     promptsUpdated = true;
   }
 
@@ -1017,7 +1032,28 @@ async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows 
     prompt += '\n';
   }
 
-  prompt += `Generate JSON with: haiku_rules (string array — what to escalate/skip), sonnet_rules (string array — what to prioritize), exit_rules (string array — exit timing rules for the exit evaluator), haiku_few_shots (array of {description, input, output, outcome}), sonnet_few_shots (array of {description, signal, decision, outcome}), haiku_escalation_calibration (string array of pattern-level rules like "STOP escalating X" / "START escalating Y"), rule_changes (what changed and why). All rules must be plain strings, not objects.\n\n`;
+  // Active rules with IDs — Opus evaluates which should be "proven" (protected from deactivation)
+  const activeRulesForEval = await query(
+    'SELECT id, rule_type, rule_text, is_proven, created_at FROM learning_rules WHERE is_active = true ORDER BY is_proven DESC, rule_type, created_at'
+  );
+  if (activeRulesForEval.rows.length > 0) {
+    prompt += `═══ ACTIVE RULES — EVALUATE FOR PROVEN STATUS ═══\n\n`;
+    prompt += `Below are the currently active rules. Review each against the performance data above. A rule should be marked PROVEN if:\n`;
+    prompt += `- The pattern it describes has been validated by 5+ trades with positive outcomes\n`;
+    prompt += `- It addresses a consistently observed market behavior (not a one-time event)\n`;
+    prompt += `- Removing it would likely cause the system to repeat past mistakes\n`;
+    prompt += `Rules marked PROVEN are protected from automatic deactivation and go first in prompts.\n`;
+    prompt += `Include "proven_rule_ids" in your JSON response: an array of rule IDs that should be proven.\n`;
+    prompt += `If a currently-proven rule is no longer supported by data, OMIT its ID to demote it.\n\n`;
+    for (const r of activeRulesForEval.rows) {
+      const provenTag = r.is_proven ? ' [PROVEN]' : '';
+      const age = Math.round((Date.now() - new Date(r.created_at).getTime()) / 3600000);
+      prompt += `[ID:${r.id}] [${r.rule_type}]${provenTag} (${age}h old): ${r.rule_text}\n`;
+    }
+    prompt += '\n';
+  }
+
+  prompt += `Generate JSON with: haiku_rules (string array — what to escalate/skip), sonnet_rules (string array — what to prioritize), exit_rules (string array — exit timing rules for the exit evaluator), haiku_few_shots (array of {description, input, output, outcome}), sonnet_few_shots (array of {description, signal, decision, outcome}), haiku_escalation_calibration (string array of pattern-level rules like "STOP escalating X" / "START escalating Y"), rule_changes (what changed and why), proven_rule_ids (integer array — IDs of active rules that should be marked as proven based on performance evidence). All rules must be plain strings, not objects.\n\n`;
 
   // ── RULE QUALITY SPEC ──
   // These constraints prevent common failure modes in rule generation.
