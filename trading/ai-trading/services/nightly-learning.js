@@ -217,11 +217,13 @@ async function run() {
   } else {
     await updatePromptFiles(stats, analysis, defensiveMode);
     await saveLearningRules(analysis, stats);
+    promptsUpdated = true;
+  }
 
-    // Update proven status based on Opus evaluation
+  // Update proven status based on Opus evaluation (always, even when prompts skipped)
+  if (analysis && !analysis._parseFailure) {
     const provenIds = toArray(analysis.proven_rule_ids).filter(id => Number.isInteger(id) && id > 0);
     if (provenIds.length > 0) {
-      // Demote all currently proven rules, then promote only the ones Opus selected
       await query('UPDATE learning_rules SET is_proven = false WHERE is_active = true AND is_proven = true');
       const promoted = await query(
         'UPDATE learning_rules SET is_proven = true WHERE id = ANY($1) AND is_active = true RETURNING id',
@@ -231,8 +233,6 @@ async function run() {
     } else {
       logger.info('[Learning] Opus did not select any proven rules this session');
     }
-
-    promptsUpdated = true;
   }
 
   // ── Step 5: Save history (always, even on parse failure for diagnostics) ──
