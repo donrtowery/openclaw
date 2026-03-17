@@ -115,24 +115,24 @@ Key SELL principles:
 
 
 ## LEARNING DATA
-(Updated: 2026-03-15 | 30 trades | 50.0% win rate)
+(Updated: 2026-03-16 | 32 trades | 53.1% win rate)
 
 PERFORMANCE:
-- 50.0% WR (15W/15L) | PF: 1.04
-- Avg win: +$29.36 | Avg loss: $-28.35
-- Hold: Winners 36.9h, Losers 26.9h
-- Best tier: T1 (60% WR)
+- 53.1% WR (17W/15L) | PF: 1.24
+- Avg win: +$31.06 | Avg loss: $-28.35
+- Hold: Winners 36.4h, Losers 26.9h
+- Best tier: T1 (64% WR)
 
 YOUR ESCALATION ACCURACY:
-- Total: 734 escalated → 355 traded, 379 PASSed by Sonnet
-- MODERATE: 495 escalated, 57% converted
-- STRONG: 214 escalated, 27% converted
+- Total: 838 escalated → 457 traded, 381 PASSed by Sonnet
+- MODERATE: 596 escalated, 64% converted
+- STRONG: 217 escalated, 27% converted
 - WEAK: 25 escalated, 72% converted
 Note: Conversion rate reflects Sonnet's filtering, not your accuracy. Low STRONG conversion means Sonnet applies additional filters. High WEAK conversion is survivorship bias (small sample of exceptional signals).
 
 SONNET PASS OUTCOMES:
-- CORRECT_PASS: 242 (Sonnet was right to pass)
-- MISSED_OPPORTUNITY: 82 (price moved favorably after pass)
+- CORRECT_PASS: 273 (Sonnet was right to pass)
+- MISSED_OPPORTUNITY: 106 (price moved favorably after pass)
 
 STOP ESCALATING (confirmed unprofitable — price didn't move after >70% of these):
 - MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH (BULLISH) MODERATE: 92.0% confirmed unprofitable (25 evaluated)
@@ -150,8 +150,8 @@ SONNET WAS WRONG (these PASSed signals SHOULD have been escalated — Sonnet err
 - TAOUSDT STRONG conf:0.780 → Sonnet passed → price rose +19.6% | Sonnet's reason: TAO shows impressive technical alignment (ADX 26.3, MACD bullish, Ichimoku stron
 - TAOUSDT MODERATE conf:0.620 → Sonnet passed → price rose +18.4% | Sonnet's reason: StochRSI bearish cross (K76.7<D87.5) + RSI 65 signals momentum exhaustion at res
 - TAOUSDT MODERATE conf:0.720 → Sonnet passed → price rose +17.9% | Sonnet's reason: StochRSI bullish cross from extreme oversold (K10.6→D8.4) is textbook early reve
-- RENDERUSDT STRONG conf:0.780 → Sonnet passed → price rose +16.2% | Sonnet's reason: RENDER shows strong bullish structure (ADX 26.44, golden cross, Ichimoku strong 
 - RENDERUSDT MODERATE conf:0.680 → Sonnet passed → price rose +16.2% | Sonnet's reason: RENDER shows strong trend confirmation (ADX 26.4, Ichimoku strong bullish, golde
+- RENDERUSDT STRONG conf:0.780 → Sonnet passed → price rose +16.2% | Sonnet's reason: RENDER shows strong bullish structure (ADX 26.44, golden cross, Ichimoku strong 
 Keep escalating signals like these — Sonnet needs to see them.
 
 SONNET MISSED THESE SELL SIGNALS (you correctly escalated, but Sonnet chose PASS and price dropped):
@@ -164,24 +164,24 @@ BAD TRADE PATTERNS (these setups consistently lost money — DO NOT escalate/app
 - VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
 
 RULES FROM EXPERIENCE:
-1. STOP: Escalation conversion at 48.4% (target 15-30%). Be MORE selective — only escalate STRONG signals with 3+ confirmations.
-2. ESCALATE VOLUME_SPIKE STRONG with RSI 40-60 and ADX >25 — 5/8 wins at 63% WR
+1. STOP: Escalation conversion at 54.5% (target 15-30%). Be MORE selective — only escalate STRONG signals with 3+ confirmations.
+2. ESCALATE VOLUME_SPIKE STRONG T1 with RSI 40-60 and ADX >25 — 5/8 wins at 63% WR
 3. ESCALATE BB_UPPER_TOUCH STRONG with volume >3x and MACD bullish — 2/3 wins at 67% WR
-4. ESCALATE T1 signals with 3+ aligned indicators (RSI/MACD/EMA/volume) — T1 60% WR vs T2 45%
-5. ESCALATE ICHIMOKU_BULLISH_CROSS with VWAP cross above — missed 3 signals avg +9.6%
-6. ESCALATE VOLUME_SPIKE WEAK/MODERATE when RSI 30-50 — missed 14 signals avg +10.3%
-7. ESCALATE BB_LOWER_TOUCH WEAK with oversold RSI <35 — missed 2 signals avg +10.5%
-8. START escalating SELL signals: VOLUME_SPIKE BEARISH WEAK — missed 8 signals avg +13.3%
-9. START escalating MACD_BULLISH_CROSSOVER WEAK with 2+ confirmations — missed 7 signals avg +10.5%
-10. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE STRONG without RSI 40-60 — 0/3 wins, avg -7.0%
-11. REJECT BB_SQUEEZE STRONG in low ADX <20 environments — 0/1 win, -10.7% loss
-12. REJECT signals with DCA trigger active unless T1 + price >5% below entry — 0/2 wins vs 54% without
-13. REDUCE STRONG threshold to 4+ indicators aligned — STRONG converts only 27% vs MODERATE 57%
-14. STOP escalating single-indicator MODERATE signals — require 2+ confirmations
-15. STOP escalating MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH MODERATE — 92% PASS rate indicates over-escalation
+4. ESCALATE ICHIMOKU_BULLISH_CROSS with VWAP cross above and ADX >20 — missed 3 signals avg +9.6%
+5. ESCALATE VOLUME_SPIKE WEAK/MODERATE when RSI 30-50 near support — missed 14 signals avg +10.3%
+6. ESCALATE BB_LOWER_TOUCH WEAK with RSI <35 — reversal setup missed 2 signals avg +10.5%
+7. REJECT EMA_BULLISH_CROSSOVER+VOLUME_SPIKE STRONG without RSI 40-60 — 0/3 wins, avg -7.0%
+8. REJECT BB_SQUEEZE STRONG with ADX <20 — 0/1 win at -10.7% loss
+9. REJECT any signal with DCA trigger unless T1 and price >5% below entry — 0/2 wins
+10. REDUCE STRONG classification — require 4+ aligned indicators not 3+ — only 27% convert vs 57% MODERATE
+11. STOP escalating single-indicator MODERATE signals — require 2+ confirmations
+12. STOP escalating MACD_BULLISH_CROSSOVER+TREND_TURNED_BULLISH MODERATE — 92% PASS rate
+13. STOP escalating EMA_BULLISH_CROSSOVER STRONG as sole signal — 91.7% PASS rate
+14. START escalating BB_UPPER_TOUCH MODERATE with volume >2.5x — missed 13 signals avg +7.4%
+15. STOP escalating VOLUME_SPIKE STRONG above current 34% rate — already well-represented
 
 EXAMPLES FROM ACTUAL TRADES:
-- VOLUME_SPIKE STRONG with RSI in neutral zone - high win rate setup: CORRECT - similar setups 5/8 wins at 63% WR
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE without RSI confirmation - consistent loser: CORRECT - avoided consistent losing pattern
-- SELL signal with VOLUME_SPIKE BEARISH WEAK - profitable short opportunity: CORRECT - missed 8 similar signals avg +13.3% gain
+- T1 volume spike with neutral RSI: Trade executed, +3.2% profit in 28h
+- EMA crossover + volume spike without RSI confirmation: Price dropped -4.2% within 12h
+- BB lower touch with oversold RSI: Bounced +8.3% within 24h
 
