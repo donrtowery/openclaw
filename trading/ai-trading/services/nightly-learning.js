@@ -1038,13 +1038,22 @@ async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows 
   );
   if (activeRulesForEval.rows.length > 0) {
     prompt += `═══ ACTIVE RULES — EVALUATE FOR PROVEN STATUS ═══\n\n`;
-    prompt += `Below are the currently active rules. Review each against the performance data above. A rule should be marked PROVEN if:\n`;
-    prompt += `- The pattern it describes has been validated by 5+ trades with positive outcomes\n`;
-    prompt += `- It addresses a consistently observed market behavior (not a one-time event)\n`;
-    prompt += `- Removing it would likely cause the system to repeat past mistakes\n`;
+    prompt += `Below are the currently active rules. Review each against the performance data above. A rule should be marked PROVEN if it meets ANY of these criteria:\n\n`;
+    prompt += `FOR ESCALATE/APPROVE/START RULES (offensive):\n`;
+    prompt += `- The pattern has been validated by 5+ trades with positive outcomes\n`;
+    prompt += `- It addresses a consistently observed market behavior (not a one-time event)\n\n`;
+    prompt += `FOR REJECT/STOP/REDUCE RULES (defensive):\n`;
+    prompt += `- The pattern it blocks has a documented loss record (e.g., 0/3 wins, negative avg P&L)\n`;
+    prompt += `- A STOP rule backed by 80%+ PASS rate on 10+ samples is proven — Sonnet consistently rejects these\n`;
+    prompt += `- A REJECT rule citing specific losing patterns with 3+ data points is proven\n`;
+    prompt += `- Defensive rules are AS IMPORTANT as offensive rules — preventing losses is equal to capturing gains\n\n`;
+    prompt += `FOR EXIT/HOLD/TRAIL RULES:\n`;
+    prompt += `- Exit timing rules validated by hold time analysis (losers held longer than winners = proven)\n`;
+    prompt += `- Rules matching the documented exit timing patterns in the performance data\n\n`;
     prompt += `Rules marked PROVEN are protected from automatic deactivation and go first in prompts.\n`;
     prompt += `Include "proven_rule_ids" in your JSON response: an array of rule IDs that should be proven.\n`;
-    prompt += `If a currently-proven rule is no longer supported by data, OMIT its ID to demote it.\n\n`;
+    prompt += `If a currently-proven rule is no longer supported by data, OMIT its ID to demote it.\n`;
+    prompt += `AIM FOR BALANCE: a healthy proven set includes both offensive AND defensive rules.\n\n`;
     for (const r of activeRulesForEval.rows) {
       const provenTag = r.is_proven ? ' [PROVEN]' : '';
       const age = Math.round((Date.now() - new Date(r.created_at).getTime()) / 3600000);
@@ -2313,7 +2322,23 @@ async function saveLearningRules(analysis, currentStats = null) {
       ...toArray(analysis.exit_rules).map(r => ({ type: 'sonnet_exit', text: typeof r === 'string' ? r : JSON.stringify(r) })),
     ];
 
+    // Build fingerprint set of existing active rules for cross-session dedup
+    const existingFpResult = await client.query(
+      'SELECT id, rule_type, rule_text FROM learning_rules WHERE is_active = true'
+    );
+    const existingFingerprints = new Set(
+      existingFpResult.rows.map(r => generateRuleFingerprint(r.rule_type, r.rule_text))
+    );
+    let dedupCount = 0;
+
     for (const rule of allRules) {
+      // Cross-session dedup: skip if a semantically identical rule is already active
+      const fp = generateRuleFingerprint(rule.type, rule.text);
+      if (existingFingerprints.has(fp)) {
+        dedupCount++;
+        continue;
+      }
+
       // Check for oscillation before inserting
       const { isOscillating, count, history } = await detectOscillation(client, rule.type, rule.text);
       if (isOscillating) {
@@ -2334,6 +2359,7 @@ async function saveLearningRules(analysis, currentStats = null) {
         INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at, sample_size, win_rate, avg_pnl, confidence_score)
         VALUES ($1, $2, true, NOW(), $3, $4, $5, $6)
       `, [rule.type, rule.text, metrics.sample_size, metrics.win_rate, metrics.avg_pnl, metrics.confidence_score]);
+      existingFingerprints.add(fp); // Prevent duplication within this batch too
       savedCount++;
 
       // Log the addition to changelog
@@ -2344,6 +2370,9 @@ async function saveLearningRules(analysis, currentStats = null) {
         reason: analysis.rule_changes || 'Nightly learning update',
         stats: currentStats,
       });
+    }
+    if (dedupCount > 0) {
+      logger.info(`[Learning] Cross-session dedup: skipped ${dedupCount} rules already active`);
     }
 
     await client.query('COMMIT');
