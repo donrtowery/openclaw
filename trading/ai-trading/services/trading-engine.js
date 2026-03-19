@@ -398,7 +398,9 @@ async function runCycle() {
       const { rollingTotal, rollingEscalated } = escalationRateCache;
       const rollingEscRate = rollingTotal > 20 ? (rollingEscalated / rollingTotal * 100) : 0;
 
-      if (rollingEscRate > 35) {
+      // Skip throttle during stagnation — don't tighten when we're already not trading
+      const isStagnating = escConfFloorCache.stats?.stagnation === true;
+      if (rollingEscRate > 35 && !isStagnating) {
         const minConf = 0.75;
         const beforeCount = toEscalate.length;
         toEscalate = toEscalate.filter(s => s.haikuResult.confidence >= minConf);
@@ -1784,6 +1786,20 @@ async function getEscalationConfidenceFloor() {
   const targetMax = tradingConfig.learning?.escalation_conversion_target_max || 30;
 
   try {
+    // Stagnation detection: if no entries in the last 12 hours, force floor to baseline.
+    // This breaks the death spiral where high conversion → high floor → no trades → conversion stays high.
+    const recentEntries = await query(`
+      SELECT COUNT(*) as cnt FROM trades
+      WHERE trade_type IN ('ENTRY', 'DCA') AND executed_at > NOW() - INTERVAL '12 hours'
+    `);
+    const entriesLast12h = parseInt(recentEntries.rows[0].cnt) || 0;
+
+    if (entriesLast12h === 0) {
+      logger.info(`[Engine] Escalation floor RESET to baseline ${baseFloor} — stagnation detected (0 entries in 12h)`);
+      escConfFloorCache = { floor: baseFloor, stats: { convRate: 0, totalNum: 0, tradedNum: 0, elevated: false, stagnation: true }, expiry: Date.now() + 30 * 60 * 1000 };
+      return escConfFloorCache;
+    }
+
     // Exclude exit scanner HOLDs from denominator — they aren't entry escalations
     const result = await query(`
       SELECT
@@ -1800,8 +1816,8 @@ async function getEscalationConfidenceFloor() {
     const totalNum = parseInt(total) || 0;
     const tradedNum = parseInt(traded) || 0;
 
-    if (totalNum < 3) {
-      // Not enough data to compute meaningful rate
+    if (totalNum < 5) {
+      // Not enough data to compute meaningful rate — use baseline (raised from 3 to 5 for better signal)
       escConfFloorCache = { floor: baseFloor, stats: { convRate: 0, totalNum, tradedNum, elevated: false }, expiry: Date.now() + 60 * 60 * 1000 };
       return escConfFloorCache;
     }
@@ -1812,7 +1828,7 @@ async function getEscalationConfidenceFloor() {
     let elevated = false;
     if (convRate > targetMax) {
       const overshootRatio = (convRate - targetMax) / targetMax;
-      const boost = Math.min(overshootRatio * 0.30, 0.15); // Max +0.15 boost (was 0.25 — caused 0.80 floor that blocked all signals)
+      const boost = Math.min(overshootRatio * 0.30, 0.15);
       floor = baseFloor + boost;
       elevated = true;
       logger.info(`[Engine] Escalation confidence floor ELEVATED: ${floor.toFixed(2)} (conversion ${convRate.toFixed(1)}% > ${targetMax}% target, boost +${boost.toFixed(2)})`);
