@@ -1812,7 +1812,7 @@ async function getEscalationConfidenceFloor() {
     let elevated = false;
     if (convRate > targetMax) {
       const overshootRatio = (convRate - targetMax) / targetMax;
-      const boost = Math.min(overshootRatio * 0.30, 0.25);
+      const boost = Math.min(overshootRatio * 0.30, 0.15); // Max +0.15 boost (was 0.25 — caused 0.80 floor that blocked all signals)
       floor = baseFloor + boost;
       elevated = true;
       logger.info(`[Engine] Escalation confidence floor ELEVATED: ${floor.toFixed(2)} (conversion ${convRate.toFixed(1)}% > ${targetMax}% target, boost +${boost.toFixed(2)})`);
