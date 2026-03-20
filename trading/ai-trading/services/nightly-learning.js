@@ -224,12 +224,56 @@ async function run() {
   if (analysis && !analysis._parseFailure) {
     const provenIds = toArray(analysis.proven_rule_ids).filter(id => Number.isInteger(id) && id > 0);
     if (provenIds.length > 0) {
-      await query('UPDATE learning_rules SET is_proven = false WHERE is_active = true AND is_proven = true');
-      const promoted = await query(
-        'UPDATE learning_rules SET is_proven = true WHERE id = ANY($1) AND is_active = true RETURNING id',
+      // Hard sample size gates — Opus can't override these minimums
+      const MIN_SAMPLES = { offensive: 5, defensive: 10, exit: 5 };
+      const candidateRules = await query(
+        'SELECT id, rule_type, rule_text, sample_size FROM learning_rules WHERE id = ANY($1) AND is_active = true',
         [provenIds]
       );
-      logger.info(`[Learning] Proven rules updated: ${promoted.rowCount} promoted (Opus selected ${provenIds.length} IDs)`);
+      const validatedIds = [];
+      const rejectedIds = [];
+      for (const rule of candidateRules.rows) {
+        const text = (rule.rule_text || '').toUpperCase();
+        const isDefensive = text.startsWith('REJECT') || text.startsWith('STOP') || text.startsWith('REDUCE');
+        const isExit = text.startsWith('EXIT') || text.startsWith('HOLD') || text.startsWith('TRAIL') || text.startsWith('PARTIAL_EXIT');
+        const minSamples = isDefensive ? MIN_SAMPLES.defensive : isExit ? MIN_SAMPLES.exit : MIN_SAMPLES.offensive;
+
+        // Extract sample size from rule text if DB column is null
+        const sampleSize = rule.sample_size || extractRuleMetrics(rule.rule_text).sample_size || 0;
+
+        // For defensive rules, also accept high PASS rate references (e.g., "92% PASS rate")
+        const passRateMatch = rule.rule_text.match(/(\d+(?:\.\d+)?)\s*%\s*PASS\s*rate/i);
+        const hasPassRate = passRateMatch && parseFloat(passRateMatch[1]) >= 80;
+
+        if (sampleSize >= minSamples || hasPassRate) {
+          validatedIds.push(rule.id);
+        } else {
+          rejectedIds.push({ id: rule.id, sampleSize, minSamples, text: rule.rule_text.substring(0, 60) });
+        }
+      }
+
+      if (rejectedIds.length > 0) {
+        logger.info(`[Learning] Sample size gate rejected ${rejectedIds.length} proven candidates: ${rejectedIds.map(r => `#${r.id}(${r.sampleSize}/${r.minSamples})`).join(', ')}`);
+      }
+
+      // Confidence decay: demote proven rules not re-selected for 30+ days
+      // (proven_at tracks when rule was last promoted)
+      await query(`
+        UPDATE learning_rules SET is_proven = false, proven_at = NULL
+        WHERE is_active = true AND is_proven = true AND proven_at < NOW() - INTERVAL '30 days'
+      `);
+
+      // Reset all proven flags, then promote validated rules
+      await query('UPDATE learning_rules SET is_proven = false WHERE is_active = true AND is_proven = true');
+      if (validatedIds.length > 0) {
+        const promoted = await query(
+          'UPDATE learning_rules SET is_proven = true, proven_at = NOW() WHERE id = ANY($1) AND is_active = true RETURNING id',
+          [validatedIds]
+        );
+        logger.info(`[Learning] Proven rules updated: ${promoted.rowCount} promoted (Opus selected ${provenIds.length}, ${provenIds.length - validatedIds.length} rejected by sample gates)`);
+      } else {
+        logger.info(`[Learning] No rules passed sample size gates (Opus selected ${provenIds.length})`);
+      }
     } else {
       logger.info('[Learning] Opus did not select any proven rules this session');
     }
@@ -612,7 +656,9 @@ async function calculateStats() {
       COUNT(*) as total,
       COUNT(CASE WHEN p.realized_pnl > 0 THEN 1 END) as wins,
       COALESCE(AVG(p.realized_pnl_percent), 0) as avg_pnl_pct,
-      COALESCE(SUM(p.realized_pnl), 0) as total_pnl
+      COALESCE(SUM(p.realized_pnl), 0) as total_pnl,
+      COALESCE(AVG(CASE WHEN p.realized_pnl > 0 THEN p.realized_pnl END), 0) as avg_win_usd,
+      COALESCE(AVG(CASE WHEN p.realized_pnl < 0 THEN p.realized_pnl END), 0) as avg_loss_usd
     FROM signals s
     JOIN decisions d ON d.signal_id = s.id
     JOIN positions p ON p.open_decision_id = d.id AND p.status = 'CLOSED' AND p.exit_time > NOW() - INTERVAL '30 days'
@@ -782,12 +828,15 @@ async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows 
   }
 
   if (stats.signal_combo_stats.length > 0) {
-    prompt += `WIN RATE BY SIGNAL COMBO:\n`;
+    prompt += `WIN RATE BY SIGNAL COMBO (includes risk/reward ratio — use R:R alongside WR to judge quality):\n`;
     for (const s of stats.signal_combo_stats) {
       const wr = parseInt(s.total) > 0 ? (parseInt(s.wins) / parseInt(s.total) * 100).toFixed(0) : 0;
-      prompt += `${s.signal_combo} ${s.strength}: ${s.total} trades, ${wr}% WR, avg ${parseFloat(s.avg_pnl_pct).toFixed(1)}%, total $${parseFloat(s.total_pnl).toFixed(2)}\n`;
+      const avgWin = parseFloat(s.avg_win_usd) || 0;
+      const avgLoss = Math.abs(parseFloat(s.avg_loss_usd)) || 0;
+      const rr = avgLoss > 0 ? (avgWin / avgLoss).toFixed(1) : '∞';
+      prompt += `${s.signal_combo} ${s.strength}: ${s.total} trades, ${wr}% WR, R:R ${rr}:1, avg win $${avgWin.toFixed(2)}, avg loss $${avgLoss.toFixed(2)}\n`;
     }
-    prompt += '\n';
+    prompt += `\nKEY: A pattern with 40% WR but 3:1 R:R is PROFITABLE (expected value positive). A pattern with 60% WR but 0.3:1 R:R is a LOSER. Evaluate BOTH metrics.\n\n`;
   }
 
   if (stats.confidence_stats.length > 0) {
