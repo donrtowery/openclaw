@@ -239,13 +239,14 @@ async function run() {
         const minSamples = isDefensive ? MIN_SAMPLES.defensive : isExit ? MIN_SAMPLES.exit : MIN_SAMPLES.offensive;
 
         // Extract sample size from rule text if DB column is null
-        const sampleSize = rule.sample_size || extractRuleMetrics(rule.rule_text).sample_size || 0;
+        const sampleSize = rule.sample_size || extractRuleMetrics(rule.rule_text).sample_size || null;
 
         // For defensive rules, also accept high PASS rate references (e.g., "92% PASS rate")
         const passRateMatch = rule.rule_text.match(/(\d+(?:\.\d+)?)\s*%\s*PASS\s*rate/i);
         const hasPassRate = passRateMatch && parseFloat(passRateMatch[1]) >= 80;
 
-        if (sampleSize >= minSamples || hasPassRate) {
+        // If sample size is unknown (null), trust Opus's judgment — only block when we KNOW it's too low
+        if (sampleSize === null || sampleSize >= minSamples || hasPassRate) {
           validatedIds.push(rule.id);
         } else {
           rejectedIds.push({ id: rule.id, sampleSize, minSamples, text: rule.rule_text.substring(0, 60) });
