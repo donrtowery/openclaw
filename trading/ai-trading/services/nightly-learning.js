@@ -1776,6 +1776,7 @@ function updatePromptFile(path, learningSection, rules, fewShots, provenRules = 
   const provenTexts = provenRules.map(r => flattenRule(typeof r === 'string' ? r : r.rule_text || r));
   if (provenTexts.length > 0) {
     section += `PROVEN RULES (validated over multiple trades — do NOT contradict these):\n`;
+    section += `NOTE: Rules referencing T1 apply ONLY to T1 symbols. Do NOT extrapolate T1 rules to T2 — T2 has lower liquidity, tighter thresholds, and different risk tolerance.\n`;
     for (let i = 0; i < provenTexts.length; i++) {
       let ruleText = provenTexts[i];
       ruleText = ruleText.replace(/\s*(?:during|in|under)\s+(?:DEFENSIVE|CAUTIOUS|STAGNATION(?:\s+OVERRIDE)?)\s+MODE/gi, '');
