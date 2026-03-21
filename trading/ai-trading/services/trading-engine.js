@@ -661,6 +661,26 @@ async function executeBuy(decision, triggered) {
     return { escalated: true, executed: false, reason };
   }
 
+  // Hard overbought gate: reject T2 buys when StochRSI K > 85 (T1 threshold: K > 92)
+  // This is a code-level guard — Sonnet's prompt says the same but can rationalize around it
+  try {
+    const snapResult = await query(
+      'SELECT stoch_rsi_k FROM indicator_snapshots WHERE symbol = $1 ORDER BY created_at DESC LIMIT 1',
+      [symbol]
+    );
+    const stochK = snapResult.rows[0] ? parseFloat(snapResult.rows[0].stoch_rsi_k) : null;
+    if (stochK !== null) {
+      const stochLimit = tier >= 2 ? 85 : 92;
+      if (stochK > stochLimit) {
+        const reason = `BUY rejected — StochRSI K ${stochK.toFixed(1)} > ${stochLimit} (T${tier} overbought gate)`;
+        logger.warn(`[Engine] ${symbol}: ${reason}`);
+        return { escalated: true, executed: false, reason };
+      }
+    }
+  } catch (err) {
+    logger.warn(`[Engine] ${symbol}: StochRSI gate check failed: ${err.message} — allowing trade`);
+  }
+
   // Determine position size — use Sonnet's recommendation or tier default
   const tierKey = `tier_${tier}`;
   const tierConfig = tradingConfig.position_sizing[tierKey];
