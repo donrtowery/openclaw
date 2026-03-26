@@ -1,8 +1,12 @@
 import { query } from '../db/connection.js';
 import { analyzeSymbol, analyzeAll } from './technical-analysis.js';
 import logger from './logger.js';
-import { readFileSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const SCANNER_STATE_PATH = join(__dirname, '..', 'logs', 'scanner-state.json');
 const config = JSON.parse(readFileSync('config/trading.json', 'utf8'));
 
 // Track previous indicator values to detect threshold CROSSINGS (not states)
@@ -14,6 +18,44 @@ const signalCooldowns = new Map();
 
 // First cycle after startup is calibration — populate previousIndicators without firing signals
 let isCalibrationCycle = true;
+
+/**
+ * Save scanner state (cooldowns) to disk for persistence across restarts.
+ */
+export function saveScannerState() {
+  try {
+    const state = {
+      cooldowns: Object.fromEntries(signalCooldowns),
+      savedAt: Date.now(),
+    };
+    writeFileSync(SCANNER_STATE_PATH, JSON.stringify(state));
+  } catch (err) {
+    logger.warn(`[Scanner] Failed to save state: ${err.message}`);
+  }
+}
+
+/**
+ * Load scanner state from disk on startup. Restores cooldowns if file is fresh (<30 min).
+ */
+export function loadScannerState() {
+  try {
+    if (!existsSync(SCANNER_STATE_PATH)) return;
+    const state = JSON.parse(readFileSync(SCANNER_STATE_PATH, 'utf8'));
+    const age = Date.now() - (state.savedAt || 0);
+    if (age > 30 * 60 * 1000) {
+      logger.info('[Scanner] State file too old (>30min), ignoring');
+      return;
+    }
+    if (state.cooldowns) {
+      for (const [key, ts] of Object.entries(state.cooldowns)) {
+        signalCooldowns.set(key, ts);
+      }
+      logger.info(`[Scanner] Restored ${Object.keys(state.cooldowns).length} cooldowns from state file`);
+    }
+  } catch (err) {
+    logger.warn(`[Scanner] Failed to load state: ${err.message}`);
+  }
+}
 
 // Cached symbol list (refreshed hourly, not every cycle)
 let cachedSymbols = null;
@@ -34,6 +76,7 @@ export async function initScanner() {
   cachedSymbols = result.rows;
   symbolsCacheTime = now;
   logger.info(`[Scanner] Loaded ${cachedSymbols.length} active symbols`);
+  loadScannerState();
   return cachedSymbols;
 }
 

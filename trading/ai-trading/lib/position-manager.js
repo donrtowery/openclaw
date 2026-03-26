@@ -3,16 +3,34 @@ import { query, getClient } from '../db/connection.js';
 import logger from './logger.js';
 import { getCurrentPrice, getAllPrices } from './binance.js';
 
-// Trading fee rate (Binance standard: 0.1% per side) — config > env > default
+// Trading fee rates per exchange — config > env > default
 const _tradingConfig = (() => { try { return JSON.parse(readFileSync('config/trading.json', 'utf8')); } catch { return {}; } })();
-const FEE_RATE = parseFloat(process.env.TRADING_FEE_RATE || _tradingConfig?.fees?.rate || '0.001');
+const FEE_RATES = {
+  binance_us: parseFloat(process.env.TRADING_FEE_RATE || _tradingConfig?.fees?.rate || '0.001'),
+  coinbase: parseFloat(process.env.COINBASE_FEE_RATE || _tradingConfig?.fees?.coinbase_rate || '0.006'),
+};
+const DEFAULT_FEE_RATE = FEE_RATES.binance_us;
+
+// Cache symbol -> exchange mapping
+let symbolExchangeMap = null;
+async function getFeeRate(symbol) {
+  if (!symbolExchangeMap) {
+    try {
+      const result = await query('SELECT symbol, exchange FROM symbols WHERE active = true');
+      symbolExchangeMap = new Map(result.rows.map(r => [r.symbol, r.exchange]));
+    } catch { return DEFAULT_FEE_RATE; }
+  }
+  const exchange = symbolExchangeMap.get(symbol);
+  return FEE_RATES[exchange] || DEFAULT_FEE_RATE;
+}
 
 /**
  * Open a new position
  * @param {string} direction - 'LONG' (default) or 'SHORT'
  */
 export async function openPosition(symbol, tier, entryPrice, entrySize, entryCost, reasoning, confidence, decisionId, paperTrade = true, direction = 'LONG', entryMode = 'REACTIVE', predictionId = null) {
-  const entryFee = entryCost * FEE_RATE;
+  const feeRate = await getFeeRate(symbol);
+  const entryFee = entryCost * feeRate;
   const costWithFees = entryCost + entryFee;
 
   const client = await getClient();
@@ -60,8 +78,10 @@ export async function openPosition(symbol, tier, entryPrice, entrySize, entryCos
 /**
  * Add to existing position (DCA)
  */
-export async function addToPosition(positionId, dcaPrice, dcaSize, dcaCost, reasoning, confidence, paperTrade = true) {
-  const dcaFee = dcaCost * FEE_RATE;
+export async function addToPosition(positionId, dcaPrice, dcaSize, dcaCost, reasoning, confidence, paperTrade = true, symbol = null) {
+  // Look up exchange-aware fee rate (symbol passed for fee lookup, falls back to default)
+  const feeRate = symbol ? await getFeeRate(symbol) : DEFAULT_FEE_RATE;
+  const dcaFee = dcaCost * feeRate;
   const dcaCostWithFees = dcaCost + dcaFee;
 
   const client = await getClient();
@@ -135,7 +155,8 @@ export async function closePosition(positionId, exitPrice, exitPercent, reasonin
     const direction = pos.direction || 'LONG';
     const exitSize = currentSize * (exitPercent / 100);
     const exitValue = exitSize * exitPrice;
-    const exitFee = exitValue * FEE_RATE;
+    const feeRate = await getFeeRate(pos.symbol);
+    const exitFee = exitValue * feeRate;
     const netExitValue = exitValue - exitFee;
     // Use total_cost / current_size for all-in cost (includes entry fees) instead of raw avg_entry_price
     const allInCostPerUnit = parseFloat(pos.total_cost) / currentSize;

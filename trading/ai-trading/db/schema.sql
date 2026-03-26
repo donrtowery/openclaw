@@ -75,6 +75,10 @@ CREATE TABLE positions (
     total_fees DECIMAL(20,8) DEFAULT 0,
     dca_count INTEGER DEFAULT 0,
 
+    -- Entry mode and prediction link
+    entry_mode VARCHAR(20) DEFAULT 'REACTIVE' CHECK (entry_mode IN ('REACTIVE', 'PREDICTIVE', 'PREDICTIVE_BTC_LED')),
+    prediction_id INTEGER,
+
     -- Metadata
     hold_hours DECIMAL(10,2),
     max_unrealized_gain_percent DECIMAL(10,4),
@@ -110,9 +114,10 @@ CREATE TABLE trades (
     reasoning TEXT,
     confidence DECIMAL(4,3),
 
-    -- Binance
+    -- Exchange
     binance_order_id VARCHAR(100),
     paper_trade BOOLEAN DEFAULT true,
+    entry_mode VARCHAR(20) DEFAULT 'REACTIVE',
 
     executed_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -270,7 +275,7 @@ CREATE INDEX idx_snapshots_symbol_time_price ON indicator_snapshots(symbol, crea
 -- 7. LEARNING_RULES - Active rules from nightly analysis
 CREATE TABLE learning_rules (
     id SERIAL PRIMARY KEY,
-    rule_type VARCHAR(50) NOT NULL,  -- 'haiku_escalation', 'sonnet_decision', 'pattern'
+    rule_type VARCHAR(50) NOT NULL,  -- 'haiku_escalation', 'sonnet_decision', 'haiku_calibration', 'sonnet_exit'
     rule_text TEXT NOT NULL,
 
     -- Supporting evidence
@@ -279,6 +284,13 @@ CREATE TABLE learning_rules (
     avg_pnl DECIMAL(20,8),
     confidence_score DECIMAL(4,3),
 
+    -- Proven status (cumulative, 30-day decay if not re-confirmed)
+    is_proven BOOLEAN DEFAULT false,
+    proven_at TIMESTAMPTZ,
+
+    -- Tier targeting (NULL = applies to all tiers, 1 = T1 only, 2 = T2 only)
+    tier INTEGER DEFAULT NULL,
+
     is_active BOOLEAN DEFAULT true,
     deactivated_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -286,6 +298,7 @@ CREATE TABLE learning_rules (
 );
 
 CREATE INDEX idx_learning_rules_active ON learning_rules(is_active, rule_type);
+CREATE INDEX idx_learning_rules_tier ON learning_rules(tier) WHERE is_active = true;
 
 -- 8. LEARNING_HISTORY - Nightly analysis results
 CREATE TABLE learning_history (
@@ -386,7 +399,60 @@ CREATE INDEX idx_changelog_created ON learning_changelog(created_at);
 
 COMMENT ON TABLE learning_changelog IS 'Tracks all learning rule changes to prevent oscillation and give Opus historical context';
 
--- 12. BACKTEST_RUNS - Historical backtest results
+-- 12. PREDICTIONS - Directional predictions from leading indicator divergences
+CREATE TABLE predictions (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    tier INTEGER NOT NULL,
+    direction VARCHAR(5) NOT NULL CHECK (direction IN ('UP', 'DOWN')),
+    confidence DECIMAL(4,3) NOT NULL,
+    timeframe_hours INTEGER NOT NULL,
+    invalidation_criteria TEXT,
+    divergence_type VARCHAR(50) NOT NULL,  -- OBV_DIVERGENCE, MACD_ACCELERATION, COMBINED
+    divergence_details JSONB,
+    reasoning TEXT NOT NULL,
+    outcome VARCHAR(30) DEFAULT 'PENDING'
+        CHECK (outcome IN ('CORRECT','PARTIALLY_CORRECT','WRONG','INVALIDATED','PENDING','EXPIRED')),
+    actual_move_percent DECIMAL(10,4),
+    outcome_evaluated_at TIMESTAMPTZ,
+    position_id INTEGER REFERENCES positions(id),
+    signal_id INTEGER REFERENCES signals(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_predictions_symbol ON predictions(symbol, created_at);
+CREATE INDEX idx_predictions_pending ON predictions(outcome, created_at) WHERE outcome = 'PENDING';
+
+-- 13. BTC_CORRELATIONS - Rolling BTC correlation and beta per symbol
+CREATE TABLE btc_correlations (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    pearson_r DECIMAL(6,4) NOT NULL,
+    beta DECIMAL(6,3) NOT NULL,
+    r_squared DECIMAL(6,4),
+    window_hours INTEGER NOT NULL DEFAULT 24,
+    candle_count INTEGER NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_btc_corr_symbol ON btc_correlations(symbol, created_at DESC);
+
+-- 14. PREDICTION_ACCURACY VIEW
+CREATE OR REPLACE VIEW prediction_accuracy AS
+SELECT
+    symbol, divergence_type,
+    COUNT(*) as total,
+    COUNT(*) FILTER (WHERE outcome IN ('CORRECT','PARTIALLY_CORRECT')) as hits,
+    ROUND(
+        (COUNT(*) FILTER (WHERE outcome IN ('CORRECT','PARTIALLY_CORRECT'))::numeric /
+         NULLIF(COUNT(*) FILTER (WHERE outcome NOT IN ('PENDING','EXPIRED')), 0)) * 100, 1
+    ) as accuracy_pct,
+    AVG(actual_move_percent) FILTER (WHERE outcome = 'CORRECT') as avg_correct_move
+FROM predictions
+WHERE outcome != 'PENDING'
+GROUP BY symbol, divergence_type;
+
+-- 15. BACKTEST_RUNS - Historical backtest results
 CREATE TABLE backtest_runs (
     id SERIAL PRIMARY KEY,
     start_date DATE NOT NULL,

@@ -4,7 +4,7 @@ dotenv.config();
 import { readFileSync } from 'fs';
 import { query, endPool, testConnection } from '../db/connection.js';
 import { testConnectivity, placeOrder, getCurrentPrice, getAllPrices } from '../lib/binance.js';
-import { initScanner, runScanCycle } from '../lib/scanner.js';
+import { initScanner, runScanCycle, saveScannerState } from '../lib/scanner.js';
 import { callHaikuBatch, callSonnet, callSonnetBatch, callSonnetExitEval, callSonnetPrediction, resetApiCosts } from '../lib/claude.js';
 import { runExitScan, recordExitCooldown } from '../lib/exit-scanner.js';
 import { getNewsContext } from '../lib/brave-search.js';
@@ -829,18 +829,37 @@ async function executeShort(decision, triggered) {
   const tierConfig = tradingConfig.position_sizing[tierKey];
   let positionSizeUsd = decision.position_details?.position_size_usd ?? tierConfig?.base_position_usd ?? 600;
 
+  // Cap position size at 1.5x tier base to prevent Sonnet over-sizing (same as BUY)
+  if (decision.position_details?.position_size_usd && tierConfig?.base_position_usd &&
+      decision.position_details.position_size_usd > tierConfig.base_position_usd * 1.5) {
+    const cappedSize = Math.round(tierConfig.base_position_usd * 1.5);
+    logger.warn(`[Engine] ${symbol}: Sonnet suggested $${decision.position_details.position_size_usd} SHORT but T${tier} base is $${tierConfig.base_position_usd} — capping at $${cappedSize}`);
+    positionSizeUsd = cappedSize;
+  }
+
   // Cap at tier max
   if (tierConfig?.max_position_usd && positionSizeUsd > tierConfig.max_position_usd) {
     positionSizeUsd = tierConfig.max_position_usd;
   }
 
-  // Confidence scaling
+  // Confidence scaling (quadratic, same as BUY)
   if (decision.confidence < 0.85) {
     const scaleFactor = Math.min(Math.pow(decision.confidence / 0.85, 2), 1.0);
     positionSizeUsd = Math.round(positionSizeUsd * scaleFactor);
   }
 
+  // Portfolio drawdown-aware sizing (same as BUY)
   const shortPortfolio = await getCachedPortfolio();
+  const shortPnlPct = shortPortfolio.total_pnl_percent || 0;
+  const drawdownSevereThreshold = tradingConfig.position_sizing?.drawdown_severe_threshold || -7;
+  const drawdownReduceThreshold = tradingConfig.position_sizing?.drawdown_reduce_threshold || -5;
+  if (shortPnlPct < drawdownSevereThreshold) {
+    positionSizeUsd = Math.round(positionSizeUsd * 0.5);
+    logger.warn(`[Engine] ${symbol}: SHORT drawdown sizing: 50% reduction (portfolio ${shortPnlPct.toFixed(1)}%)`);
+  } else if (shortPnlPct < drawdownReduceThreshold) {
+    positionSizeUsd = Math.round(positionSizeUsd * 0.8);
+    logger.warn(`[Engine] ${symbol}: SHORT drawdown sizing: 20% reduction (portfolio ${shortPnlPct.toFixed(1)}%)`);
+  }
   if (positionSizeUsd < 10) {
     const reason = `SHORT rejected — position size too small ($${positionSizeUsd.toFixed(2)})`;
     logger.warn(`[Engine] ${symbol}: ${reason}`);
@@ -1680,11 +1699,12 @@ async function checkCircuitBreaker() {
 
   // Auto-deactivate if cooldown expired
   if (cb.is_active && cb.reactivates_at && new Date(cb.reactivates_at) <= new Date()) {
+    // Reset counter to 2 (still cautious, but won't immediately re-trigger on next single loss)
     await query(`
-      UPDATE circuit_breaker SET is_active = false, updated_at = NOW() WHERE id = $1
+      UPDATE circuit_breaker SET is_active = false, consecutive_losses = 2, updated_at = NOW() WHERE id = $1
     `, [cb.id]);
-    logger.info('[Engine] Circuit breaker auto-deactivated (cooldown expired)');
-    return { is_active: false, consecutive_losses: cb.consecutive_losses, reactivates_at: null };
+    logger.info('[Engine] Circuit breaker auto-deactivated (cooldown expired, counter reset to 2)');
+    return { is_active: false, consecutive_losses: 2, reactivates_at: null };
   }
 
   return {
@@ -2140,6 +2160,9 @@ async function shutdown() {
       logger.warn('[Engine] Cycle did not complete within 60s — forcing shutdown');
     }
   }
+
+  // Save scanner state for restart recovery
+  saveScannerState();
 
   try {
     await queueEvent('ENGINE_STOP', null, { cycle_count: cycleCount });
