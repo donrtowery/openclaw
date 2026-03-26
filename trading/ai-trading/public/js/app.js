@@ -284,12 +284,7 @@ async function loadLearning() {
   const { sessions, changelog, rules: dbRules } = result.data;
   const container = document.getElementById('learning-container');
 
-  if (!sessions || sessions.length === 0) {
-    container.innerHTML = '<p class="empty-msg">No learning sessions found</p>';
-    return;
-  }
-
-  // Build active rules section with proven toggle buttons
+  // Build active rules section with proven toggle buttons (always, even without sessions)
   let activeRulesHtml = '';
   if (dbRules && dbRules.length > 0) {
     const groups = {};
@@ -317,7 +312,9 @@ async function loadLearning() {
       </div>`;
   }
 
-  container.innerHTML = activeRulesHtml + sessions.map((session, idx) => {
+  const sessionsHtml = (!sessions || sessions.length === 0)
+    ? '<p class="empty-msg">No learning sessions yet — first run at midnight</p>'
+    : sessions.map((session, idx) => {
     const sessionDate = new Date(session.created_est);
     const dateStr = fmtDateTime(session.created_est);
     const pnl = parseFloat(session.total_pnl) || 0;
@@ -415,6 +412,8 @@ async function loadLearning() {
       </div>
     `;
   }).join('');
+
+  container.innerHTML = activeRulesHtml + sessionsHtml;
 
   // Attach proven toggle click handlers
   container.querySelectorAll('.btn-proven-toggle').forEach(btn => {
