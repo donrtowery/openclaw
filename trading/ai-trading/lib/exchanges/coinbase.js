@@ -158,13 +158,13 @@ export class CoinbaseExchange extends ExchangeInterface {
   async getCandles(symbol, interval = '5m', limit = 100) {
     const intervalMap = {
       '1m': 'ONE_MINUTE', '5m': 'FIVE_MINUTE', '15m': 'FIFTEEN_MINUTE',
-      '1h': 'ONE_HOUR', '6h': 'SIX_HOUR', '1d': 'ONE_DAY',
+      '1h': 'ONE_HOUR', '4h': 'SIX_HOUR', '6h': 'SIX_HOUR', '1d': 'ONE_DAY',
     };
     const granularity = intervalMap[interval] || 'FIVE_MINUTE';
     const productId = this.normalizeSymbol(symbol);
 
     const end = Math.floor(Date.now() / 1000);
-    const seconds = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '6h': 21600, '1d': 86400 };
+    const seconds = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '6h': 21600, '1d': 86400 };
     const start = end - (seconds[interval] || 300) * limit;
 
     const path = `/api/v3/brokerage/market/products/${productId}/candles?start=${start}&end=${end}&granularity=${granularity}`;

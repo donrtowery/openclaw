@@ -1865,31 +1865,35 @@ async function getEscalationConfidenceFloor() {
 
 // ── Learning Rules (cached 1hr — only changes nightly) ──────
 
-let learningRulesCache = { data: null, expiry: 0 };
+const learningRulesCache = new Map(); // tier -> { data, expiry }
 
-async function getLearningRules() {
-  if (learningRulesCache.data && Date.now() < learningRulesCache.expiry) {
-    return learningRulesCache.data;
+async function getLearningRules(tier = null) {
+  const cacheKey = tier ?? 'all';
+  const cached = learningRulesCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiry) {
+    return cached.data;
   }
   // Fetch APPROVE and REJECT rules separately to ensure both types are represented
+  // Filter by tier when provided (NULL tier rules apply to all tiers)
+  const tierFilter = tier ? `AND (tier IS NULL OR tier = ${tier})` : '';
   const [approveResult, rejectResult] = await Promise.all([
     query(`
       SELECT * FROM learning_rules
       WHERE is_active = true AND rule_type = 'sonnet_decision'
-        AND rule_text ~* '^(APPROVE|START)'
+        AND rule_text ~* '^(APPROVE|START)' ${tierFilter}
       ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
       LIMIT 4
     `),
     query(`
       SELECT * FROM learning_rules
       WHERE is_active = true AND rule_type = 'sonnet_decision'
-        AND rule_text ~* '^(REJECT|STOP|REDUCE)'
+        AND rule_text ~* '^(REJECT|STOP|REDUCE)' ${tierFilter}
       ORDER BY sample_size DESC NULLS LAST, created_at DESC
       LIMIT 4
     `),
   ]);
   const combined = [...approveResult.rows, ...rejectResult.rows].slice(0, 8);
-  learningRulesCache = { data: combined, expiry: Date.now() + 60 * 60 * 1000 };
+  learningRulesCache.set(cacheKey, { data: combined, expiry: Date.now() + 60 * 60 * 1000 });
   return combined;
 }
 

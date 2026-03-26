@@ -129,7 +129,7 @@ export function detectThresholdCrossings(symbol, current, previous, thresholds) 
     if (previous.adx.value < 25 && current.adx.value >= 25) {
       crossed.push('ADX_TREND_STRENGTHENING');
     }
-    if (previous.adx.value >= 25 && current.adx.value < 15) {
+    if (previous.adx.value >= 25 && current.adx.value < 20) {
       crossed.push('ADX_TREND_WEAKENING');
     }
   }

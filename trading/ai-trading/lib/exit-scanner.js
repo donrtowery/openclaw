@@ -150,6 +150,19 @@ export function computeExitUrgency(position, analysis, currentPrice, currentTime
     }
   }
 
+  // ── Auto-partial-exit: protect profits proactively ──
+  // Partial exits have 100% WR historically — trigger earlier for profit protection
+  const partialExits = parseInt(position.partial_exits) || 0;
+  if (partialExits === 0 && pnlPercent >= 5 && score >= 20 && score < 40) {
+    score = Math.max(score, 35);
+    factors.push(`Auto-partial trigger: +${pnlPercent.toFixed(1)}% profit with moderate urgency — lock partial gains`);
+  }
+  // T2: more aggressive partial threshold (T2 reversals are sharper)
+  if (!isT1 && partialExits === 0 && pnlPercent >= 3 && score >= 15) {
+    score = Math.max(score, 35);
+    factors.push(`T2 auto-partial: +${pnlPercent.toFixed(1)}% profit — T2 needs faster profit locking`);
+  }
+
   // Hold time — tier-adjusted (predictive overrides use longer stagnation thresholds)
   const effectiveHoldThreshold = exitOverrides?.stagnationStartHours || holdTimeThreshold;
   const effectiveHoldMedium = exitOverrides?.stagnationStartHours

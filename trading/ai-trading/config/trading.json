@@ -105,7 +105,7 @@
     "note": "Lowered urgency_threshold from 40 to 30 to cut losers faster. Critical bypasses cooldown."
   },
   "learning": {
-    "snapshot_retention_days": 30,
+    "snapshot_retention_days": 14,
     "missed_opportunity_threshold_pct": 3.0,
     "sustained_candles_required": 12,
     "escalation_conversion_target_min": 15,

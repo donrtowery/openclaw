@@ -245,8 +245,9 @@ async function run() {
         const passRateMatch = rule.rule_text.match(/(\d+(?:\.\d+)?)\s*%\s*PASS\s*rate/i);
         const hasPassRate = passRateMatch && parseFloat(passRateMatch[1]) >= 80;
 
-        // If sample size is unknown (null), trust Opus's judgment — only block when we KNOW it's too low
-        if (sampleSize === null || sampleSize >= minSamples || hasPassRate) {
+        // Require affirmative evidence: sample count meets minimum OR 80%+ PASS rate.
+        // NULL sample_size no longer auto-passes — unknown evidence = not proven.
+        if ((sampleSize !== null && sampleSize >= minSamples) || hasPassRate) {
           validatedIds.push(rule.id);
         } else {
           rejectedIds.push({ id: rule.id, sampleSize, minSamples, text: rule.rule_text.substring(0, 60) });
@@ -264,8 +265,7 @@ async function run() {
         WHERE is_active = true AND is_proven = true AND proven_at < NOW() - INTERVAL '30 days'
       `);
 
-      // Reset all proven flags, then promote validated rules
-      await query('UPDATE learning_rules SET is_proven = false WHERE is_active = true AND is_proven = true');
+      // Promote validated rules (cumulative — no blanket reset, 30-day decay above handles stale rules)
       if (validatedIds.length > 0) {
         const promoted = await query(
           'UPDATE learning_rules SET is_proven = true, proven_at = NOW() WHERE id = ANY($1) AND is_active = true RETURNING id',
@@ -1427,6 +1427,7 @@ function validateAnalysis(analysis, defensiveMode = false) {
   // Generic strength terms (STRONG/MODERATE/WEAK) are excluded — they appear in
   // nearly every rule and don't indicate a true contradiction.
   const SPECIFIC_KEYWORDS = /\b(T[12]|RSI|MACD|BB|VOLUME|EMA|SMA200|GOLDEN.CROSS|DEATH.CROSS|SUPPORT|RESISTANCE|ADX|STOCHRSI|ATR)\b/gi;
+  const PRIMARY_INDICATORS = /\b(VOLUME_SPIKE|RSI|MACD|EMA|BB|ADX|STOCHRSI|ICHIMOKU|VWAP|OBV)\b/i;
 
   for (const approve of approveRules) {
     for (const reject of rejectRules) {
@@ -1436,16 +1437,20 @@ function validateAnalysis(analysis, defensiveMode = false) {
 
       if (approveKeywords.length >= 2 && rejectKeywords.length >= 2) {
         const overlap = approveKeywords.filter(k => rejectKeywords.includes(k));
-        // Require 4+ specific indicator overlaps AND matching tier/strength for a true contradiction.
-        // Without tier/strength matching, rules targeting different contexts are falsely flagged.
+        // Lower threshold to 2+ overlaps when both rules target the same primary indicator.
+        // Otherwise require 4+ for broader cross-indicator contradictions.
         const approveUpper = approve.text.toUpperCase();
         const rejectUpper = reject.text.toUpperCase();
+        const approvePrimary = (approve.text.match(PRIMARY_INDICATORS) || [])[0]?.toUpperCase();
+        const rejectPrimary = (reject.text.match(PRIMARY_INDICATORS) || [])[0]?.toUpperCase();
+        const sameIndicator = approvePrimary && approvePrimary === rejectPrimary;
+        const requiredOverlap = sameIndicator ? 2 : 4;
         const sameTier = (approveUpper.includes('T1') && rejectUpper.includes('T1')) ||
                          (approveUpper.includes('T2') && rejectUpper.includes('T2')) ||
                          (!approveUpper.match(/\bT[12]\b/) && !rejectUpper.match(/\bT[12]\b/));
         const sameStrength = ['STRONG', 'MODERATE', 'WEAK'].some(s =>
           approveUpper.includes(s) && rejectUpper.includes(s));
-        if (overlap.length >= 4 && sameTier && sameStrength) {
+        if (overlap.length >= requiredOverlap && sameTier && sameStrength) {
           if (defensiveMode) {
             // Defensive mode: preserve REJECT, remove APPROVE — bias toward capital preservation
             issues.push(`Contradictory rules detected (DEFENSIVE): "${approve.text.substring(0, 50)}" vs "${reject.text.substring(0, 50)}" — removing APPROVE rule`);
@@ -2122,6 +2127,7 @@ function generateRuleFingerprint(ruleType, ruleText) {
     .replace(/\+?\d+(?:\.\d+)?%/g, '')  // strip standalone percentages
     .replace(/\(\s*\)/g, '')  // strip empty parens left behind
     .replace(/\s+/g, ' ')
+    .replace(/\s*[-—–]\s*.*$/, '')  // strip trailing commentary after dashes
     .trim();
   return createHash('sha256').update(`${ruleType}:${normalized}`).digest('hex').substring(0, 16);
 }
@@ -2406,10 +2412,12 @@ async function saveLearningRules(analysis, currentStats = null) {
       }
 
       const metrics = extractRuleMetrics(rule.text);
+      const tierMatch = rule.text.match(/\bT([12])\b/);
+      const ruleTier = tierMatch ? parseInt(tierMatch[1]) : null;
       await client.query(`
-        INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at, sample_size, win_rate, avg_pnl, confidence_score)
-        VALUES ($1, $2, true, NOW(), $3, $4, $5, $6)
-      `, [rule.type, rule.text, metrics.sample_size, metrics.win_rate, metrics.avg_pnl, metrics.confidence_score]);
+        INSERT INTO learning_rules (rule_type, rule_text, is_active, created_at, sample_size, win_rate, avg_pnl, confidence_score, tier)
+        VALUES ($1, $2, true, NOW(), $3, $4, $5, $6, $7)
+      `, [rule.type, rule.text, metrics.sample_size, metrics.win_rate, metrics.avg_pnl, metrics.confidence_score, ruleTier]);
       existingFingerprints.add(fp); // Prevent duplication within this batch too
       savedCount++;
 
@@ -2512,6 +2520,17 @@ async function cleanup() {
   `, [CHANGELOG_RETENTION_DAYS]);
   if (changelogResult.rowCount > 0) {
     logger.info(`[Learning] Cleaned ${changelogResult.rowCount} old changelog entries (>${CHANGELOG_RETENTION_DAYS} days)`);
+  }
+
+  // VACUUM ANALYZE high-traffic tables (cannot run inside a transaction)
+  try {
+    await query('VACUUM ANALYZE indicator_snapshots');
+    await query('VACUUM ANALYZE signals');
+    await query('VACUUM ANALYZE decisions');
+    await query('VACUUM ANALYZE learning_rules');
+    logger.info('[Learning] VACUUM ANALYZE completed on high-traffic tables');
+  } catch (err) {
+    logger.warn(`[Learning] VACUUM ANALYZE failed (non-critical): ${err.message}`);
   }
 }
 

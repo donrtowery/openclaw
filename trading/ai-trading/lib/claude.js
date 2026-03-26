@@ -214,7 +214,7 @@ export async function callHaikuBatch(triggeredSignals, config) {
       () => withTimeout(
         anthropic.messages.create({
           model: HAIKU_MODEL,
-          max_tokens: Math.min(512 * triggeredSignals.length, 4096),
+          max_tokens: Math.min(768 * triggeredSignals.length, 4096),
           system: (() => {
             // Split prompt at LEARNING DATA marker for better cache hits
             const marker = '## LEARNING DATA';
