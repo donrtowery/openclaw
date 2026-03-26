@@ -2270,7 +2270,7 @@ function extractRuleMetrics(ruleText) {
 
   // Fallback: "N trades" without a ratio (e.g., "8 trades 63% WR")
   if (!metrics.sample_size) {
-    const simpleTradeMatch = ruleText.match(/(\d+)\s+trades?\b/i);
+    const simpleTradeMatch = ruleText.match(/(?<![T])(\d+)\s+trades?\b/i);
     if (simpleTradeMatch) {
       metrics.sample_size = parseInt(simpleTradeMatch[1]);
     }
@@ -2486,6 +2486,14 @@ async function cleanup() {
   `, [SNAPSHOT_RETENTION_DAYS]);
   if (snapshotResult.rowCount > 0) {
     logger.info(`[Learning] Cleaned ${snapshotResult.rowCount} old indicator snapshots`);
+  }
+
+  // Old BTC correlations (same retention as snapshots)
+  const corrResult = await query(`
+    DELETE FROM btc_correlations WHERE created_at < NOW() - INTERVAL '14 days'
+  `);
+  if (corrResult.rowCount > 0) {
+    logger.info(`[Learning] Cleaned ${corrResult.rowCount} old btc_correlations (>14 days)`);
   }
 
   // Old posted events

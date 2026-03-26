@@ -28,16 +28,19 @@ const apiCostTracker = {
   sonnet_output_tokens: 0,
   haiku_cache_read_tokens: 0,
   sonnet_cache_read_tokens: 0,
+  haiku_cache_create_tokens: 0,
+  sonnet_cache_create_tokens: 0,
   calls: { haiku: 0, sonnet: 0 },
   reset_time: Date.now(),
 };
 
 export function getApiCosts() {
   // Pricing per million tokens (as of 2026)
-  const HAIKU_INPUT = 0.80, HAIKU_OUTPUT = 4.00, HAIKU_CACHE = 0.08;
-  const SONNET_INPUT = 3.00, SONNET_OUTPUT = 15.00, SONNET_CACHE = 0.30;
-  const haikuCost = (apiCostTracker.haiku_input_tokens * HAIKU_INPUT + apiCostTracker.haiku_output_tokens * HAIKU_OUTPUT + apiCostTracker.haiku_cache_read_tokens * HAIKU_CACHE) / 1_000_000;
-  const sonnetCost = (apiCostTracker.sonnet_input_tokens * SONNET_INPUT + apiCostTracker.sonnet_output_tokens * SONNET_OUTPUT + apiCostTracker.sonnet_cache_read_tokens * SONNET_CACHE) / 1_000_000;
+  const HAIKU_INPUT = 0.80, HAIKU_OUTPUT = 4.00, HAIKU_CACHE_READ = 0.08, HAIKU_CACHE_CREATE = 1.00;
+  const SONNET_INPUT = 3.00, SONNET_OUTPUT = 15.00, SONNET_CACHE_READ = 0.30, SONNET_CACHE_CREATE = 3.75;
+  // Correct formula: subtract cache_read from input (API input_tokens includes cache reads)
+  const haikuCost = ((apiCostTracker.haiku_input_tokens - apiCostTracker.haiku_cache_read_tokens) * HAIKU_INPUT + apiCostTracker.haiku_output_tokens * HAIKU_OUTPUT + apiCostTracker.haiku_cache_read_tokens * HAIKU_CACHE_READ + apiCostTracker.haiku_cache_create_tokens * HAIKU_CACHE_CREATE) / 1_000_000;
+  const sonnetCost = ((apiCostTracker.sonnet_input_tokens - apiCostTracker.sonnet_cache_read_tokens) * SONNET_INPUT + apiCostTracker.sonnet_output_tokens * SONNET_OUTPUT + apiCostTracker.sonnet_cache_read_tokens * SONNET_CACHE_READ + apiCostTracker.sonnet_cache_create_tokens * SONNET_CACHE_CREATE) / 1_000_000;
   return {
     haiku: { cost: parseFloat(haikuCost.toFixed(4)), calls: apiCostTracker.calls.haiku },
     sonnet: { cost: parseFloat(sonnetCost.toFixed(4)), calls: apiCostTracker.calls.sonnet },
@@ -53,6 +56,8 @@ export function resetApiCosts() {
   apiCostTracker.sonnet_output_tokens = 0;
   apiCostTracker.haiku_cache_read_tokens = 0;
   apiCostTracker.sonnet_cache_read_tokens = 0;
+  apiCostTracker.haiku_cache_create_tokens = 0;
+  apiCostTracker.sonnet_cache_create_tokens = 0;
   apiCostTracker.calls.haiku = 0;
   apiCostTracker.calls.sonnet = 0;
   apiCostTracker.reset_time = Date.now();
@@ -263,7 +268,8 @@ export async function callHaikuBatch(triggeredSignals, config) {
 
     apiCostTracker.haiku_input_tokens += inputTokens;
     apiCostTracker.haiku_output_tokens += outputTokens;
-    apiCostTracker.haiku_cache_read_tokens += (message.usage.cache_read_input_tokens || 0);
+    apiCostTracker.haiku_cache_read_tokens += cacheRead;
+    apiCostTracker.haiku_cache_create_tokens += cacheCreation;
     apiCostTracker.calls.haiku++;
 
     logger.info(`[Haiku] ${triggeredSignals.length} signal(s) evaluated in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read, ${cacheCreation} created`);
@@ -399,6 +405,7 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
     apiCostTracker.sonnet_input_tokens += inputTokens;
     apiCostTracker.sonnet_output_tokens += outputTokens;
     apiCostTracker.sonnet_cache_read_tokens += cacheRead;
+    apiCostTracker.sonnet_cache_create_tokens += cacheCreation;
     apiCostTracker.calls.sonnet++;
 
     logger.info(`[Sonnet] ${triggeredSignal.symbol} decided in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
@@ -544,6 +551,7 @@ export async function callSonnetBatch(items, portfolioState, learningRules, conf
     apiCostTracker.sonnet_input_tokens += inputTokens;
     apiCostTracker.sonnet_output_tokens += outputTokens;
     apiCostTracker.sonnet_cache_read_tokens += cacheRead;
+    apiCostTracker.sonnet_cache_create_tokens += cacheCreation;
     apiCostTracker.calls.sonnet++;
 
     logger.info(`[Sonnet] Batch ${items.length} signals in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
@@ -569,17 +577,18 @@ export async function callSonnetBatch(items, portfolioState, learningRules, conf
       }));
     }
 
-    // Match results to inputs by symbol name (not positional index)
+    // Match results to inputs by symbol name, consuming each match to prevent double-matching
+    const availableResults = [...parsedArray];
     const results = [];
     for (let i = 0; i < items.length; i++) {
       const { haikuSignal, triggeredSignal } = items[i];
       const expectedSymbol = triggeredSignal.symbol;
 
-      // Always prefer symbol-name match over positional match
-      let parsed = parsedArray.find(p => p.symbol === expectedSymbol);
-      if (!parsed && parsedArray[i]) {
-        logger.warn(`[Sonnet] No symbol match for ${expectedSymbol} — using positional fallback (got ${parsedArray[i].symbol || 'unknown'})`);
-        parsed = parsedArray[i];
+      // Symbol-name match with splice to consume the result (same pattern as Haiku batch)
+      const matchIdx = availableResults.findIndex(p => p.symbol === expectedSymbol);
+      let parsed = matchIdx >= 0 ? availableResults.splice(matchIdx, 1)[0] : null;
+      if (!parsed) {
+        logger.warn(`[Sonnet] No symbol match for ${expectedSymbol} — defaulting to PASS (no positional fallback)`);
       }
 
       if (!parsed) {
@@ -678,6 +687,7 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
     apiCostTracker.sonnet_input_tokens += inputTokens;
     apiCostTracker.sonnet_output_tokens += outputTokens;
     apiCostTracker.sonnet_cache_read_tokens += cacheRead;
+    apiCostTracker.sonnet_cache_create_tokens += cacheCreation;
     apiCostTracker.calls.sonnet++;
 
     logger.info(`[Sonnet-Exit] ${position.symbol} evaluated in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
@@ -1186,6 +1196,7 @@ export async function callSonnetPrediction(symbol, analysis, divergenceData, btc
     apiCostTracker.sonnet_input_tokens += response.usage.input_tokens || 0;
     apiCostTracker.sonnet_output_tokens += response.usage.output_tokens || 0;
     apiCostTracker.sonnet_cache_read_tokens += response.usage.cache_read_input_tokens || 0;
+    apiCostTracker.sonnet_cache_create_tokens += response.usage.cache_creation_input_tokens || 0;
     apiCostTracker.calls.sonnet++;
   }
 

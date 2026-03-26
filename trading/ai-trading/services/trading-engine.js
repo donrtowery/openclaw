@@ -755,11 +755,24 @@ async function executeBuy(decision, triggered) {
   const fillQty = parseFloat(order.executedQty) || estimatedQty;
   const fillCost = parseFloat(order.cummulativeQuoteQty) || (fillPrice * fillQty);
 
-  const positionId = await openPosition(
-    symbol, tier, fillPrice, fillQty, fillCost,
-    decision.reasoning, decision.confidence, decision.decision_id,
-    tradingConfig.account.paper_trading
-  );
+  let positionId;
+  try {
+    positionId = await openPosition(
+      symbol, tier, fillPrice, fillQty, fillCost,
+      decision.reasoning, decision.confidence, decision.decision_id,
+      tradingConfig.account.paper_trading
+    );
+  } catch (dbErr) {
+    logger.error(`[Engine] CRITICAL: BUY order filled but openPosition failed for ${symbol}. Order: ${JSON.stringify({ fillPrice, fillQty, fillCost, orderId: order.orderId })}. Error: ${dbErr.message}`);
+    // Attempt compensating sell to close orphaned position
+    try {
+      await placeOrder(symbol, 'SELL', fillQty);
+      logger.warn(`[Engine] Compensating SELL placed for orphaned BUY on ${symbol}`);
+    } catch (sellErr) {
+      logger.error(`[Engine] CRITICAL: Compensating SELL also failed for ${symbol}: ${sellErr.message}. MANUAL INTERVENTION REQUIRED.`);
+    }
+    throw dbErr;
+  }
 
   await queueEvent('BUY', symbol, {
     position_id: positionId,
@@ -1253,16 +1266,38 @@ async function executePredictiveBuy(symbol, tier, prediction, predictionId, entr
 
     const estimatedPrice = await getCurrentPrice(symbol);
     const estimatedQty = positionSizeUsd / estimatedPrice;
+
+    // Wrap in position lock to prevent race with exit scanner / emergency stop
+    return await withPositionLock(symbol, async () => {
+    // Re-check existing position inside lock (TOCTOU protection)
+    const existingInLock = await getPositionBySymbol(symbol);
+    if (existingInLock) {
+      logger.info(`[Engine] Predictive: ${symbol} acquired lock but position already exists #${existingInLock.id}`);
+      return { executed: false };
+    }
+
     const order = await placeOrder(symbol, 'BUY', estimatedQty);
     const fillPrice = order.price;
     const fillQty = parseFloat(order.executedQty) || estimatedQty;
     const fillCost = parseFloat(order.cummulativeQuoteQty) || (fillPrice * fillQty);
 
-    const positionId = await openPosition(
-      symbol, tier, fillPrice, fillQty, fillCost,
-      `[PREDICTIVE] ${prediction.reasoning}`, prediction.confidence, null,
-      tradingConfig.account.paper_trading, 'LONG', entryMode, predictionId
-    );
+    let positionId;
+    try {
+      positionId = await openPosition(
+        symbol, tier, fillPrice, fillQty, fillCost,
+        `[PREDICTIVE] ${prediction.reasoning}`, prediction.confidence, null,
+        tradingConfig.account.paper_trading, 'LONG', entryMode, predictionId
+      );
+    } catch (dbErr) {
+      logger.error(`[Engine] CRITICAL: Predictive BUY filled but openPosition failed for ${symbol}. Error: ${dbErr.message}`);
+      try {
+        await placeOrder(symbol, 'SELL', fillQty);
+        logger.warn(`[Engine] Compensating SELL placed for orphaned predictive BUY on ${symbol}`);
+      } catch (sellErr) {
+        logger.error(`[Engine] CRITICAL: Compensating SELL also failed for ${symbol}: ${sellErr.message}. MANUAL INTERVENTION REQUIRED.`);
+      }
+      throw dbErr;
+    }
 
     await linkPredictionToPosition(predictionId, positionId);
 
@@ -1282,6 +1317,7 @@ async function executePredictiveBuy(symbol, tier, prediction, predictionId, entr
     logger.info(`[Engine] EXECUTED ${entryMode} BUY: ${symbol} ${fillQty.toFixed(6)} @ $${fillPrice.toFixed(2)} ($${fillCost.toFixed(2)})`);
     sendAlert('BUY', symbol, { price: fillPrice, confidence: prediction.confidence, reasoning: `[${entryMode}] ${prediction.reasoning}` }).catch(() => {});
     return { executed: true };
+    }); // end withPositionLock
   } catch (err) {
     logger.error(`[Engine] Predictive BUY failed for ${symbol}: ${err.message}`);
     return { executed: false };
@@ -1875,22 +1911,23 @@ async function getLearningRules(tier = null) {
   }
   // Fetch APPROVE and REJECT rules separately to ensure both types are represented
   // Filter by tier when provided (NULL tier rules apply to all tiers)
-  const tierFilter = tier ? `AND (tier IS NULL OR tier = ${tier})` : '';
+  const tierClause = tier ? 'AND (tier IS NULL OR tier = $1)' : '';
+  const tierParams = tier ? [tier] : [];
   const [approveResult, rejectResult] = await Promise.all([
     query(`
       SELECT * FROM learning_rules
       WHERE is_active = true AND rule_type = 'sonnet_decision'
-        AND rule_text ~* '^(APPROVE|START)' ${tierFilter}
+        AND rule_text ~* '^(APPROVE|START)' ${tierClause}
       ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
       LIMIT 4
-    `),
+    `, tierParams),
     query(`
       SELECT * FROM learning_rules
       WHERE is_active = true AND rule_type = 'sonnet_decision'
-        AND rule_text ~* '^(REJECT|STOP|REDUCE)' ${tierFilter}
+        AND rule_text ~* '^(REJECT|STOP|REDUCE)' ${tierClause}
       ORDER BY sample_size DESC NULLS LAST, created_at DESC
       LIMIT 4
-    `),
+    `, tierParams),
   ]);
   const combined = [...approveResult.rows, ...rejectResult.rows].slice(0, 8);
   learningRulesCache.set(cacheKey, { data: combined, expiry: Date.now() + 60 * 60 * 1000 });

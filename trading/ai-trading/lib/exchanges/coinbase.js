@@ -164,7 +164,8 @@ export class CoinbaseExchange extends ExchangeInterface {
     const productId = this.normalizeSymbol(symbol);
 
     const end = Math.floor(Date.now() / 1000);
-    const seconds = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '6h': 21600, '1d': 86400 };
+    // Note: '4h' maps to SIX_HOUR (Coinbase has no 4h granularity), so use 21600s to get correct candle count
+    const seconds = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 21600, '6h': 21600, '1d': 86400 };
     const start = end - (seconds[interval] || 300) * limit;
 
     const path = `/api/v3/brokerage/market/products/${productId}/candles?start=${start}&end=${end}&granularity=${granularity}`;

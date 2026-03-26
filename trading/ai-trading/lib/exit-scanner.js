@@ -156,9 +156,9 @@ export function computeExitUrgency(position, analysis, currentPrice, currentTime
   if (partialExits === 0 && pnlPercent >= 5 && score >= 20 && score < 40) {
     score = Math.max(score, 35);
     factors.push(`Auto-partial trigger: +${pnlPercent.toFixed(1)}% profit with moderate urgency — lock partial gains`);
-  }
-  // T2: more aggressive partial threshold (T2 reversals are sharper)
-  if (!isT1 && partialExits === 0 && pnlPercent >= 3 && score >= 15) {
+  } else if (!isT1 && partialExits === 0 && pnlPercent >= 3 && score >= 15) {
+    // T2: more aggressive partial threshold (T2 reversals are sharper)
+    // Only fires if generic auto-partial didn't already trigger
     score = Math.max(score, 35);
     factors.push(`T2 auto-partial: +${pnlPercent.toFixed(1)}% profit — T2 needs faster profit locking`);
   }

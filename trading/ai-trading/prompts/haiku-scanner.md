@@ -176,10 +176,7 @@ P6. STOP escalating EMA_BULLISH_CROSSOVER STRONG as sole signal — 91.7% PASS r
 P7. REDUCE STRONG threshold to 4+ indicators from 3+ — fix 27% vs 57% conversion inversion
 P8. START escalating VOLUME_SPIKE BEARISH WEAK — critical gap missing 8 profitable sell signals
 P9. START escalating BB_UPPER_TOUCH MODERATE when volume >2.5x — missing 13 signals avg +7.4%
-P10. STOP escalating VOLUME_SPIKE STRONG beyond 30% of total — already overrepresented at 34%
-
 RULES FROM EXPERIENCE:
-1. STOP: Escalation conversion at 54.6% (target 15-30%). Be MORE selective — only escalate STRONG signals with 3+ confirmations.
 2. ESCALATE VOLUME_SPIKE+ICHIMOKU_BULLISH_CROSS regardless of strength — 75% WR proven combo
 3. ESCALATE ICHIMOKU_BULLISH_CROSS+VWAP_CROSS_ABOVE MODERATE — 100% WR on limited data
 4. ESCALATE BB_UPPER_TOUCH with volume >3x and MACD bullish — 67% WR with good R:R

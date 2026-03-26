@@ -187,21 +187,9 @@ P1. REJECT late MACD crossovers after price already up >10% — momentum spent
 P2. REJECT when portfolio holds 3+ positions in same trend direction — concentration risk
 P3. APPROVE T1 VOLUME_SPIKE with RSI 40-60 and ADX >25 — sustainable momentum zone
 P4. APPROVE WEAK signals with 3+ confirmations — WEAK converted 72% vs STRONG 27%
-P5. REJECT late MACD crossovers after price up >10% — momentum exhausted
-P6. REJECT when holding 3+ positions in same direction — concentration risk
-P7. APPROVE T1 VOLUME_SPIKE with RSI 40-60 and ADX >25 — sustainable momentum
-P8. APPROVE signals with volume >2.5x and 2+ technical confirmations — stop over-filtering
-P9. APPROVE WEAK signals with 3+ aligned indicators — 72% conversion vs 27% STRONG
-P10. APPROVE high ADX >30 setups with trend alignment — momentum needs room
-P11. STOP filtering for volume when already >2.5x with confirmations — Haiku pre-filtered
-
-RULES FROM EXPERIENCE:
-1. APPROVE T1 VOLUME_SPIKE with RSI 40-60 and ADX >25 — 63% WR sustainable zone
-2. APPROVE WEAK signals with 3+ aligned indicators — 72% conversion vs 27% STRONG
-3. APPROVE signals with volume >2.5x and 2+ confirmations — Haiku already filtered
-4. REJECT late MACD crossovers after price up >10% — momentum exhausted
-5. REJECT when holding 3+ positions in same direction — concentration risk
-6. STOP citing insufficient volume when already >2.5x with confirmations — 96% of passes
+P5. APPROVE signals with volume >2.5x and 2+ technical confirmations — stop over-filtering
+P6. APPROVE high ADX >30 setups with trend alignment — momentum needs room
+P7. STOP filtering for volume when already >2.5x with confirmations — Haiku pre-filtered
 
 EXAMPLES FROM ACTUAL TRADES:
 - T1 VOLUME_SPIKE in sustainable momentum zone: Correct — gained +3.8%
