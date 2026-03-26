@@ -265,48 +265,65 @@ async function runCycle() {
   // 3. Process triggered signals through Haiku (batched)
 
   if (scanResult.triggered.length > 0) {
-    // Pre-filter: skip single-trigger signals and SELL signals for non-held symbols before Haiku
+    // Pre-filter: regime-aware signal gating
     const multiTrigger = [];
     let singleSkipped = 0;
+    let singleAllowedByRegime = 0;
     let sellNoPositionSkipped = 0;
+    let bearishAllowedByRegime = 0;
     const prefetchedPositions = await getOpenPositions();
     const openPositionSymbols = new Set(prefetchedPositions.map(p => p.symbol));
+
+    // Fetch regime BEFORE pre-filter to enable regime-aware gating
+    const regime = await getMarketRegime();
+    const regimeKey = regime.regime || 'NEUTRAL';
+    const regimeOverrides = tradingConfig.regime_overrides?.[regimeKey] || {};
+    const allowedSingleTriggers = new Set(regimeOverrides.single_trigger_allowed || []);
+    const allowBearishNoPosition = regimeOverrides.allow_bearish_no_position === true;
+
     for (const sig of scanResult.triggered) {
+      sig.market_regime = regime;
+      sig.regime_single_trigger_pass = false;
+
       if (sig.thresholds_crossed.length < 2) {
-        singleSkipped++;
-        continue;
+        // Single-trigger: check if regime allows this specific signal type through
+        const hasAllowedTrigger = sig.thresholds_crossed.some(t => allowedSingleTriggers.has(t));
+        if (!hasAllowedTrigger) {
+          singleSkipped++;
+          continue;
+        }
+        sig.regime_single_trigger_pass = true;
+        singleAllowedByRegime++;
       }
-      // Skip bearish signals on symbols we don't hold — exit scanner handles held positions
+
+      // Skip bearish signals on symbols we don't hold — unless regime allows it
       const isBearish = sig.thresholds_crossed.some(t =>
         t.includes('BEARISH') || t === 'BB_LOWER_TOUCH' || t === 'BB_SQUEEZE'
       ) && !sig.thresholds_crossed.some(t =>
         t.includes('BULLISH') || t === 'VOLUME_SPIKE' || t === 'BB_UPPER_TOUCH'
       );
       if (isBearish && !openPositionSymbols.has(sig.symbol)) {
-        sellNoPositionSkipped++;
-        continue;
+        if (!allowBearishNoPosition) {
+          sellNoPositionSkipped++;
+          continue;
+        }
+        bearishAllowedByRegime++;
       }
+
       multiTrigger.push(sig);
     }
-    if (singleSkipped > 0 || sellNoPositionSkipped > 0) {
-      logger.info(`[Engine] Pre-filtered ${singleSkipped} single-trigger, ${sellNoPositionSkipped} bearish-no-position — ${multiTrigger.length} sent to Haiku`);
-    }
+    logger.info(`[Engine] Pre-filtered: ${singleSkipped} single-trigger skipped, ${singleAllowedByRegime} single-trigger ALLOWED (${regimeKey}), ${sellNoPositionSkipped} bearish-no-pos skipped, ${bearishAllowedByRegime} bearish ALLOWED (${regimeKey}) — ${multiTrigger.length} sent to Haiku`);
 
     if (multiTrigger.length === 0) {
-      logger.info(`[Engine] All triggers were single — skipping Haiku batch`);
-    }
-
-    // Inject market regime into triggered signals for Haiku context
-    const regime = await getMarketRegime();
-    for (const sig of multiTrigger) {
-      sig.market_regime = regime;
+      logger.info(`[Engine] All triggers were filtered — skipping Haiku batch`);
     }
 
     const haikuResults = multiTrigger.length > 0 ? await callHaikuBatch(multiTrigger, tradingConfig) : [];
 
     // Filter to escalatable signals first, then process in parallel
     const openPositions = prefetchedPositions;
-    const atMaxPositions = openPositions.length >= tradingConfig.account.max_concurrent_positions;
+    const regimeMaxPositions = regimeOverrides.max_concurrent_positions || tradingConfig.account.max_concurrent_positions;
+    const atMaxPositions = openPositions.length >= regimeMaxPositions;
 
     let toEscalate = [];
     // Mark filtered signals so they don't show as "pending" in the DB
@@ -736,6 +753,19 @@ async function executeBuy(decision, triggered) {
     }
   }
 
+  // Regime-aware position sizing
+  const buyRegime = await getMarketRegime();
+  const buyRegimeOverrides = tradingConfig.regime_overrides?.[buyRegime.regime] || {};
+  if (buyRegimeOverrides.position_sizing_multiplier && buyRegimeOverrides.position_sizing_multiplier < 1.0) {
+    const regimeScaled = Math.round(positionSizeUsd * buyRegimeOverrides.position_sizing_multiplier);
+    logger.info(`[Engine] ${symbol}: Regime sizing (${buyRegime.regime}): $${positionSizeUsd} → $${regimeScaled} (${(buyRegimeOverrides.position_sizing_multiplier * 100).toFixed(0)}%)`);
+    positionSizeUsd = regimeScaled;
+  }
+  if (buyRegimeOverrides.max_position_multiplier && tierConfig?.max_position_usd) {
+    const regimeMax = Math.round(tierConfig.max_position_usd * buyRegimeOverrides.max_position_multiplier);
+    if (positionSizeUsd > regimeMax) positionSizeUsd = regimeMax;
+  }
+
   if (positionSizeUsd < 10) {
     const reason = `BUY rejected — position size too small ($${positionSizeUsd.toFixed(2)})`;
     logger.warn(`[Engine] ${symbol}: ${reason}`);
@@ -860,6 +890,15 @@ async function executeShort(decision, triggered) {
     positionSizeUsd = Math.round(positionSizeUsd * 0.8);
     logger.warn(`[Engine] ${symbol}: SHORT drawdown sizing: 20% reduction (portfolio ${shortPnlPct.toFixed(1)}%)`);
   }
+  // Regime-aware position sizing for SHORT
+  const shortRegime = await getMarketRegime();
+  const shortRegimeOverrides = tradingConfig.regime_overrides?.[shortRegime.regime] || {};
+  if (shortRegimeOverrides.position_sizing_multiplier && shortRegimeOverrides.position_sizing_multiplier < 1.0) {
+    const regimeScaled = Math.round(positionSizeUsd * shortRegimeOverrides.position_sizing_multiplier);
+    logger.info(`[Engine] ${symbol}: SHORT regime sizing (${shortRegime.regime}): $${positionSizeUsd} → $${regimeScaled}`);
+    positionSizeUsd = regimeScaled;
+  }
+
   if (positionSizeUsd < 10) {
     const reason = `SHORT rejected — position size too small ($${positionSizeUsd.toFixed(2)})`;
     logger.warn(`[Engine] ${symbol}: ${reason}`);
@@ -1939,17 +1978,17 @@ async function getLearningRules(tier = null) {
       WHERE is_active = true AND rule_type = 'sonnet_decision'
         AND rule_text ~* '^(APPROVE|START)' ${tierClause}
       ORDER BY win_rate DESC NULLS LAST, sample_size DESC NULLS LAST
-      LIMIT 4
+      LIMIT 6
     `, tierParams),
     query(`
       SELECT * FROM learning_rules
       WHERE is_active = true AND rule_type = 'sonnet_decision'
         AND rule_text ~* '^(REJECT|STOP|REDUCE)' ${tierClause}
       ORDER BY sample_size DESC NULLS LAST, created_at DESC
-      LIMIT 4
+      LIMIT 6
     `, tierParams),
   ]);
-  const combined = [...approveResult.rows, ...rejectResult.rows].slice(0, 8);
+  const combined = [...approveResult.rows, ...rejectResult.rows].slice(0, 10);
   learningRulesCache.set(cacheKey, { data: combined, expiry: Date.now() + 60 * 60 * 1000 });
   return combined;
 }

@@ -80,6 +80,34 @@ T2 coins have lower liquidity, higher slippage, and weaker recovery after drawdo
 - **Max drawdown tolerance**: T2 should exit at -8% to -10%, not -15%. Do not give T2 positions T1-level patience.
 - Position already has 2+ DCAs (max DCA count reached)
 
+## Bear Market Entry Strategy (BEAR/CAUTIOUS regime)
+
+When Market Regime shows BEAR or CAUTIOUS, apply this framework for counter-trend entries:
+
+### Oversold Bounce Entries — Required for BUY in BEAR:
+1. RSI below 30 with volume not declining (selling pressure exhausting)
+2. Price at or near technical support (Fib support, BB lower, SMA50/200)
+3. OBV NOT falling — ideally rising (accumulation) or flat
+4. MACD histogram decelerating (less negative) — selling pressure easing
+5. StochRSI showing bullish cross or K < 20 (oversold momentum)
+
+### Automatic PASS in BEAR:
+- Price >20% below SMA200 — falling knife, no catching
+- MACD histogram still accelerating bearish — momentum has NOT shifted
+- ADX >30 and bearish — strong trend against you, do not counter-trade
+- Volume increasing on selling — no capitulation exhaustion yet
+
+### Bear Market Position Sizing:
+- Use 60% of normal base position size (T1: ~$480, T2: ~$360)
+- Maximum 4 concurrent positions (vs 7 normal)
+- Prefer T1 over T2 for bear bounces — blue chips bounce more reliably
+
+### Bear Market Exit Plan:
+- **Target:** 3-5% gain (mean reversion, not trend continuation)
+- **Timeframe:** 12-48 hours (quick bounces, not multi-day holds)
+- **Stop:** -3% from entry — tight stops in hostile regime
+- Risk assessment should reflect this: "Looking for X% bounce from oversold, exit if breaks support at $Y"
+
 ## Response Format
 
 Valid JSON only:

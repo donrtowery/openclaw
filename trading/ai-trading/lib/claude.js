@@ -910,8 +910,11 @@ function formatHaikuInput(triggeredSignal) {
   if (triggeredSignal.market_regime) {
     const mr = triggeredSignal.market_regime;
     msg += `\nMarket: ${mr.regime} (BTC ${mr.btc_trend}, ADX ${mr.btc_adx}, RSI ${mr.btc_rsi}, MACD ${mr.btc_macd})\n`;
-    if (mr.regime === 'BEAR') msg += `*** BEAR MARKET — reduce escalation, prioritize SELL ***\n`;
-    else if (mr.regime === 'CAUTIOUS') msg += `Caution: BTC showing weakness\n`;
+    if (mr.regime === 'BEAR') msg += `*** BEAR MARKET — reduce escalation, prioritize SELL. For oversold bounce BUYs: require RSI <35, OBV not falling, price within 15% of SMA200. ***\n`;
+    else if (mr.regime === 'CAUTIOUS') msg += `Caution: BTC showing weakness — higher bar for BUY escalation\n`;
+  }
+  if (triggeredSignal.regime_single_trigger_pass) {
+    msg += `*** REGIME SINGLE-TRIGGER PASS: This signal passed through relaxed pre-filter in ${triggeredSignal.market_regime?.regime} market. Apply EXTRA SCRUTINY — only escalate if RSI <35 or price at key support or OBV shows accumulation. Reduce confidence by 0.10 vs normal. ***\n`;
   }
 
   return msg;
@@ -961,10 +964,13 @@ function formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioS
     const mr = portfolioState.market_regime;
     msg += `\nMarket Regime: ${mr.regime} (BTC ${mr.btc_trend}, ADX ${mr.btc_adx}, RSI ${mr.btc_rsi}, MACD ${mr.btc_macd})\n`;
     if (mr.regime === 'BEAR') {
-      msg += `*** BEARISH MARKET — require extra confirmation for BUY signals, prioritize SELL ***\n`;
+      msg += `*** BEARISH MARKET — apply Bear Market Entry Strategy from prompt. Oversold bounces only: RSI <30, support level, OBV not falling. Position sizing at 60%. Target 3-5% gain, -3% stop. ***\n`;
     } else if (mr.regime === 'CAUTIOUS') {
-      msg += `Caution: BTC showing weakness — reduce position sizes, tighten entry criteria\n`;
+      msg += `Caution: BTC showing weakness — reduce position sizes 20%, tighten entry criteria, prefer T1\n`;
     }
+  }
+  if (triggeredSignal.regime_single_trigger_pass) {
+    msg += `*** BEAR MARKET SINGLE-TRIGGER: This signal passed relaxed pre-filter. Apply bear market entry strategy. Reduced sizing per regime rules. ***\n`;
   }
 
   // Trading session context

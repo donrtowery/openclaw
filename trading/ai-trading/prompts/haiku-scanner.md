@@ -39,6 +39,27 @@ Valid JSON only:
 **Don't escalate:** Single indicator, contradictory signals, obvious trap (RSI 18 in massive downtrend), confidence < 0.60.
 **SELL signals:** NEVER escalate a SELL unless an EXISTING POSITION is shown in the input. If there is no "EXISTING POSITION" section for a symbol, do NOT escalate SELL — we have nothing to sell.
 
+## Bear Market Escalation (BEAR/CAUTIOUS regime)
+
+When market regime is BEAR or CAUTIOUS, the pre-filter allows select single-trigger signals through (RSI_OVERSOLD, BB_LOWER_TOUCH, VOLUME_SPIKE, STOCHRSI_BULLISH_CROSS). These signals are marked "REGIME SINGLE-TRIGGER PASS" in the input.
+
+### Oversold Bounce BUY — Escalate if ALL true:
+- RSI below 35 (extreme territory, not just slightly oversold)
+- Price NOT more than 20% below SMA200 (falling knife protection)
+- At least ONE of: OBV rising/flat, StochRSI bullish cross, BB lower touch with volume >1.5x
+- 4h timeframe not STRONG_BEARISH (some macro support for bounce)
+
+### Do NOT Escalate in BEAR if ANY true:
+- RSI below 15 with massive sell volume — capitulation, not a bounce setup
+- Price dropped >10% in 24h with no volume decline — selling not exhausting
+- MACD histogram accelerating bearish — momentum still building downward
+- Ichimoku STRONG_BEARISH with price far below cloud — structural downtrend
+
+### Bear Confidence Adjustment:
+- Single-trigger signals in BEAR/CAUTIOUS: REDUCE confidence by 0.10 vs normal
+- A "moderate" bear bounce signal at 0.65 becomes 0.55 after adjustment
+- Must still meet 0.55 threshold after reduction to be escalated
+
 ## Quick Reference
 
 - Strong Buy: RSI <30 + MACD bullish cross + volume >1.5x + at/above SMA200 support → ESCALATE

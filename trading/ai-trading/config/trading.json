@@ -104,6 +104,36 @@
     "cooldown_minutes": 30,
     "note": "Lowered urgency_threshold from 40 to 30 to cut losers faster. Critical bypasses cooldown."
   },
+  "regime_overrides": {
+    "BEAR": {
+      "single_trigger_allowed": ["RSI_OVERSOLD", "BB_LOWER_TOUCH", "VOLUME_SPIKE", "STOCHRSI_BULLISH_CROSS"],
+      "allow_bearish_no_position": true,
+      "position_sizing_multiplier": 0.60,
+      "max_position_multiplier": 0.50,
+      "max_concurrent_positions": 4,
+      "note": "Bear market: allow select single-trigger oversold bounces, reduce sizing 40%, limit exposure"
+    },
+    "CAUTIOUS": {
+      "single_trigger_allowed": ["RSI_OVERSOLD", "BB_LOWER_TOUCH", "VOLUME_SPIKE"],
+      "allow_bearish_no_position": false,
+      "position_sizing_multiplier": 0.80,
+      "max_position_multiplier": 0.75,
+      "max_concurrent_positions": 5,
+      "note": "Cautious: allow oversold bounces more selectively, reduce sizing 20%"
+    },
+    "BULL": {
+      "single_trigger_allowed": [],
+      "allow_bearish_no_position": false
+    },
+    "FAVORABLE": {
+      "single_trigger_allowed": [],
+      "allow_bearish_no_position": false
+    },
+    "NEUTRAL": {
+      "single_trigger_allowed": [],
+      "allow_bearish_no_position": false
+    }
+  },
   "learning": {
     "snapshot_retention_days": 14,
     "missed_opportunity_threshold_pct": 3.0,
