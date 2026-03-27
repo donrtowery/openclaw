@@ -400,6 +400,7 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
     const inputTokens = message.usage.input_tokens;
     const outputTokens = message.usage.output_tokens;
     const cacheRead = message.usage.cache_read_input_tokens || 0;
+    const cacheCreation = message.usage.cache_creation_input_tokens || 0;
     const duration = Date.now() - startTime;
 
     apiCostTracker.sonnet_input_tokens += inputTokens;
@@ -546,6 +547,7 @@ export async function callSonnetBatch(items, portfolioState, learningRules, conf
     const inputTokens = message.usage.input_tokens;
     const outputTokens = message.usage.output_tokens;
     const cacheRead = message.usage.cache_read_input_tokens || 0;
+    const cacheCreation = message.usage.cache_creation_input_tokens || 0;
     const duration = Date.now() - startTime;
 
     apiCostTracker.sonnet_input_tokens += inputTokens;
@@ -682,6 +684,7 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
     const inputTokens = message.usage.input_tokens;
     const outputTokens = message.usage.output_tokens;
     const cacheRead = message.usage.cache_read_input_tokens || 0;
+    const cacheCreation = message.usage.cache_creation_input_tokens || 0;
     const duration = Date.now() - startTime;
 
     apiCostTracker.sonnet_input_tokens += inputTokens;
