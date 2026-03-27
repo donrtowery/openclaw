@@ -111,7 +111,8 @@
       "position_sizing_multiplier": 0.60,
       "max_position_multiplier": 0.50,
       "max_concurrent_positions": 4,
-      "note": "Bear market: allow select single-trigger oversold bounces, reduce sizing 40%, limit exposure"
+      "confidence_threshold_entry": 0.65,
+      "note": "Bear market: allow oversold bounces, reduce sizing 40%, lower confidence threshold from 0.72 to 0.65"
     },
     "CAUTIOUS": {
       "single_trigger_allowed": ["RSI_OVERSOLD", "BB_LOWER_TOUCH", "VOLUME_SPIKE"],
@@ -119,7 +120,8 @@
       "position_sizing_multiplier": 0.80,
       "max_position_multiplier": 0.75,
       "max_concurrent_positions": 5,
-      "note": "Cautious: allow oversold bounces more selectively, reduce sizing 20%"
+      "confidence_threshold_entry": 0.68,
+      "note": "Cautious: allow oversold bounces, reduce sizing 20%, slightly lower confidence threshold"
     },
     "BULL": {
       "single_trigger_allowed": [],

@@ -434,8 +434,8 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
       parsed.position_details.exit_percent = 50;
     }
 
-    // Enforce confidence safety net
-    parsed = enforceConfidenceThresholds(parsed, config);
+    // Enforce confidence safety net (regime-aware for bear market)
+    parsed = enforceConfidenceThresholds(parsed, config, triggeredSignal.market_regime);
 
     // Log decision with full prompt snapshot (critical for future Haiku training)
     const decisionId = await logDecision(haikuSignal.signal_id, parsed, userMessage, inputTokens + outputTokens);
@@ -609,7 +609,7 @@ export async function callSonnetBatch(items, portfolioState, learningRules, conf
         parsed.position_details.exit_percent = 50;
       }
 
-      parsed = enforceConfidenceThresholds(parsed, config);
+      parsed = enforceConfidenceThresholds(parsed, config, triggeredSignal.market_regime);
       const decisionId = await logDecision(haikuSignal.signal_id, parsed, `[batch ${i + 1}/${items.length}]`, inputTokens + outputTokens);
 
       logger.info(`[Sonnet] ${triggeredSignal.symbol}: ${parsed.action} conf:${parsed.confidence}`);
@@ -1000,7 +1000,7 @@ function formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioS
  * Enforce confidence safety net — downgrades low-confidence actions
  */
 let _confThresholdWarned = false;
-function enforceConfidenceThresholds(decision, config) {
+function enforceConfidenceThresholds(decision, config, regime = null) {
   const thresholds = config.confidence_thresholds;
   if (!thresholds) return decision;
 
@@ -1009,16 +1009,21 @@ function enforceConfidenceThresholds(decision, config) {
     _confThresholdWarned = true;
   }
 
-  if (decision.action === 'BUY' && decision.confidence < thresholds.sonnet_minimum_for_new_entry) {
-    logger.warn(`[Sonnet] BUY confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_new_entry}, downgrading to PASS`);
+  // Regime-aware entry threshold: lower in BEAR/CAUTIOUS for counter-trend bounces
+  const regimeKey = regime?.regime || 'NEUTRAL';
+  const regimeOverrides = config.regime_overrides?.[regimeKey] || {};
+  const entryThreshold = regimeOverrides.confidence_threshold_entry || thresholds.sonnet_minimum_for_new_entry;
+
+  if (decision.action === 'BUY' && decision.confidence < entryThreshold) {
+    logger.warn(`[Sonnet] BUY confidence ${decision.confidence} < ${entryThreshold} (${regimeKey}), downgrading to PASS`);
     decision.action = 'PASS';
-    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${thresholds.sonnet_minimum_for_new_entry} threshold]`;
+    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${entryThreshold} threshold (${regimeKey} regime)]`;
   }
 
-  if (decision.action === 'SHORT' && decision.confidence < thresholds.sonnet_minimum_for_new_entry) {
-    logger.warn(`[Sonnet] SHORT confidence ${decision.confidence} < ${thresholds.sonnet_minimum_for_new_entry}, downgrading to PASS`);
+  if (decision.action === 'SHORT' && decision.confidence < entryThreshold) {
+    logger.warn(`[Sonnet] SHORT confidence ${decision.confidence} < ${entryThreshold} (${regimeKey}), downgrading to PASS`);
     decision.action = 'PASS';
-    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${thresholds.sonnet_minimum_for_new_entry} threshold]`;
+    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${entryThreshold} threshold (${regimeKey} regime)]`;
   }
 
   if (decision.action === 'SELL' && decision.confidence < thresholds.sonnet_minimum_for_exit) {
