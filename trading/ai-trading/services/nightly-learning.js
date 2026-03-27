@@ -890,13 +890,13 @@ async function callOpusForAnalysis(stats, defensiveMode = false, trajectoryRows 
   // Current rules
   const rulesResult = await query('SELECT rule_text, win_rate, sample_size FROM learning_rules WHERE is_active = true');
   if (rulesResult.rows.length > 0) {
-    prompt += `CURRENT RULES:\n`;
+    prompt += `CURRENT ACTIVE RULES (${rulesResult.rows.length} total):\n`;
     for (const r of rulesResult.rows) {
       prompt += `- ${r.rule_text}`;
       if (r.win_rate) prompt += ` (${r.win_rate}% WR, ${r.sample_size} trades)`;
       prompt += '\n';
     }
-    prompt += '\n';
+    prompt += `\n*** CRITICAL: Do NOT generate new rules that restate, rephrase, or duplicate any rule listed above. If the same intent already exists — even with different wording — skip it. Only generate rules for NEW patterns not already covered. ***\n\n`;
   }
 
   // Changelog context — prevents oscillation and gives Opus historical awareness
