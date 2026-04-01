@@ -73,9 +73,9 @@ DCA (Dollar Cost Averaging) means adding to an existing position at a LOWER pric
 
 T2 coins have lower liquidity, higher slippage, and weaker recovery after drawdowns (T2 WR is ~44% vs T1 ~63%). Apply stricter criteria:
 
-- **Require 3+ confirmations** for T2 BUY (vs 2+ for T1). Two indicators agreeing is not enough for T2.
-- **Volume must be >2.5x** average for T2 entries. T1 can enter at 1.5x+ with strong technicals.
-- **StochRSI K>85 = automatic PASS** for T2 BUY signals. T1 blue chips get more leeway (K>90 = caution, not auto-reject).
+- **Require 2+ confirmations** for T2 BUY (same as T1). Quality checks handle the rest.
+- **Volume must be >1.5x** average for T2 entries. Higher volume is better but 1.5x is sufficient with technical confirmation.
+- **StochRSI K>90 = automatic PASS** for T2 BUY signals. T1 blue chips get more leeway (K>92 = reject). K 85-90 is caution territory, not auto-reject.
 - **Prefer partial exits** for T2 winners over holding for larger gains. T2 reversals are sharper.
 - **Max drawdown tolerance**: T2 should exit at -8% to -10%, not -15%. Do not give T2 positions T1-level patience.
 - Position already has 2+ DCAs (max DCA count reached)
@@ -149,7 +149,7 @@ Haiku evaluates volume qualitatively as one of several confirmation factors when
 
 Because volume is not pre-filtered by rigid thresholds, treat it as one input among many:
 - Volume 1.5-3x with 2+ indicator confirmations is adequate for T1 signals
-- For T2 signals, require volume >2.5x with RSI and MACD confirmation — T2 needs more confirmation but not impossibly high thresholds
+- For T2 signals, require volume >1.5x with RSI and MACD confirmation — volume confirms participation but don't over-filter
 - Higher volume increases conviction — it confirms institutional participation and reduces the chance of a false breakout
 - Low volume (<2x) with any signal should reduce your confidence by at least 0.10
 - Do not blanket-reject signals solely on volume — evaluate volume in context with momentum, trend strength, and other confirmations
@@ -197,17 +197,15 @@ Because volume is not pre-filtered by rigid thresholds, treat it as one input am
 
 
 ## LEARNING DATA
-(Updated: 2026-03-24 | 47 trades | 51.1% win rate)
+(Updated: 2026-03-30 | Historical baseline: 48 trades, 51.1% WR, +$231.66 P&L)
 
-PERFORMANCE:
-- 51.1% WR (24W/23L) | PF: 1.49
-- Avg win: +$30.01 | Avg loss: $-21.04
+PERFORMANCE (from prior validated trading period):
+- 51.1% WR (24W/24L) | PF: 1.47
+- Avg win: +$19.26 | Avg loss: -$9.37
 - Hold: Winners 37.3h, Losers 26.8h
-- Best tier: T1 (63% WR)
-
-BAD TRADE PATTERNS (these setups consistently lost money — REJECT or REDUCE):
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
-- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69 (EXCEPTION: sub-pattern wins 63% on 8 trades — approve if RSI <55 and volume >3x)
+- T1: 62.5% WR | T2: 43.8% WR
+- Partial exits: 100% WR — ALWAYS prefer partial exits to lock profits
+- The system IS profitable. Do not be overly conservative. Trade when criteria are met.
 
 PROVEN RULES (validated over multiple trades — do NOT contradict these):
 NOTE: Rules referencing T1 apply ONLY to T1 symbols. Do NOT extrapolate T1 rules to T2 — T2 has lower liquidity, tighter thresholds, and different risk tolerance.
@@ -215,12 +213,25 @@ P1. REJECT late MACD crossovers after price already up >10% — momentum spent
 P2. REJECT when portfolio holds 3+ positions in same trend direction — concentration risk
 P3. APPROVE T1 VOLUME_SPIKE with RSI 40-60 and ADX >25 — sustainable momentum zone
 P4. APPROVE WEAK signals with 3+ confirmations — WEAK converted 72% vs STRONG 27%
-P5. APPROVE signals with volume >2.5x and 2+ technical confirmations — stop over-filtering
+P5. APPROVE signals with volume >1.5x and 2+ technical confirmations — stop over-filtering
 P6. APPROVE high ADX >30 setups with trend alignment — momentum needs room
-P7. STOP filtering for volume when already >2.5x with confirmations — Haiku pre-filtered
+P7. STOP filtering for volume when already >1.5x with confirmations — Haiku pre-filtered
+P8. APPROVE RSI_OVERSOLD single-trigger in BEAR/CAUTIOUS if RSI <30 and OBV not falling — oversold bounce setup. Use 60% position size, target 3-5% gain.
+P9. APPROVE BB_LOWER_TOUCH single-trigger in BEAR/CAUTIOUS if volume >1.5x and price within 15% of SMA200 — support bounce. Quick 3-5% target.
+P10. REJECT bear market BUY if price >20% below SMA200 — falling knife. Structural breakdown overrides tactical oversold setup.
+P11. REDUCE position size 40% for all BEAR regime entries — capital preservation priority. Max 4 concurrent positions.
+
+RULES FROM EXPERIENCE:
+1. APPROVE T1 VOLUME_SPIKE with RSI 40-60 and ADX >25 — momentum zone
+2. APPROVE WEAK signals with 3+ confirmations — 72% conversion rate
+3. APPROVE RSI_OVERSOLD single-trigger in BEAR if RSI <30 and OBV not falling
+4. APPROVE BB_LOWER_TOUCH single-trigger in BEAR if volume >1.5x and near SMA200
+5. REJECT late MACD crossovers after price up >10% — momentum exhausted
+6. REJECT when portfolio holds 3+ positions same direction — concentration risk
+7. REJECT bear market BUY if price >20% below SMA200 — falling knife
 
 EXAMPLES FROM ACTUAL TRADES:
-- T1 VOLUME_SPIKE in sustainable momentum zone: Correct — gained +3.8%
-- Late MACD crossover after extended move: Correct — avoided -4.2% pullback
-- WEAK signal with multiple confirmations: Correct — gained +5.1%
+- Weak signal with multiple confirmations: Correct — multi-confirmation WEAK signals outperform STRONG
+- Late momentum chase: Correct — chasing extended moves loses
+- Bear market falling knife: Correct — catching knives in bear markets fails
 

@@ -49,7 +49,7 @@
   },
   "scanner": {
     "interval_minutes": 10,
-    "signal_cooldown_minutes": 120,
+    "signal_cooldown_minutes": 60,
     "tier_filter": [1, 2],
     "thresholds": {
       "rsi_oversold": 30,

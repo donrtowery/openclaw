@@ -970,6 +970,8 @@ function formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioS
       msg += `*** BEARISH MARKET — apply Bear Market Entry Strategy from prompt. Oversold bounces only: RSI <30, support level, OBV not falling. Position sizing at 60%. Target 3-5% gain, -3% stop. ***\n`;
     } else if (mr.regime === 'CAUTIOUS') {
       msg += `Caution: BTC showing weakness — reduce position sizes 20%, tighten entry criteria, prefer T1\n`;
+    } else if (mr.regime === 'FAVORABLE' || mr.regime === 'BULL') {
+      msg += `Market is ${mr.regime}. Standard entry criteria apply. The system is profitable (51% WR, 1.47 PF). Trade when criteria are met — do not be overly conservative. Look for trend-following entries with volume >1.5x.\n`;
     }
   }
   if (triggeredSignal.regime_single_trigger_pass) {
