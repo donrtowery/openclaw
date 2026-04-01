@@ -678,24 +678,20 @@ async function executeBuy(decision, triggered) {
     return { escalated: true, executed: false, reason };
   }
 
-  // Hard overbought gate: reject buys when StochRSI K extremely overbought
-  // T2: K > 90, T1: K > 92 (loosened from T2=85 to allow trending entries)
+  // StochRSI overbought: logged for awareness but no longer a hard gate.
+  // Sonnet has StochRSI data in its prompt and can factor it into its decision.
+  // In trending markets, StochRSI stays elevated (K>80) for extended periods — hard gates miss valid entries.
   try {
     const snapResult = await query(
       'SELECT stoch_rsi_k FROM indicator_snapshots WHERE symbol = $1 ORDER BY created_at DESC LIMIT 1',
       [symbol]
     );
     const stochK = snapResult.rows[0] ? parseFloat(snapResult.rows[0].stoch_rsi_k) : null;
-    if (stochK !== null) {
-      const stochLimit = tier >= 2 ? 90 : 92;
-      if (stochK > stochLimit) {
-        const reason = `BUY rejected — StochRSI K ${stochK.toFixed(1)} > ${stochLimit} (T${tier} overbought gate)`;
-        logger.warn(`[Engine] ${symbol}: ${reason}`);
-        return { escalated: true, executed: false, reason };
-      }
+    if (stochK !== null && stochK > 90) {
+      logger.info(`[Engine] ${symbol}: StochRSI K ${stochK.toFixed(1)} (overbought) — Sonnet approved, proceeding`);
     }
-  } catch (err) {
-    logger.warn(`[Engine] ${symbol}: StochRSI gate check failed: ${err.message} — allowing trade`);
+  } catch {
+    // Non-critical — proceed with trade
   }
 
   // Determine position size — use Sonnet's recommendation or tier default

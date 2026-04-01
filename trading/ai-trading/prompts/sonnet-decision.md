@@ -75,7 +75,7 @@ T2 coins have lower liquidity, higher slippage, and weaker recovery after drawdo
 
 - **Require 2+ confirmations** for T2 BUY (same as T1). Quality checks handle the rest.
 - **Volume must be >1.5x** average for T2 entries. Higher volume is better but 1.5x is sufficient with technical confirmation.
-- **StochRSI K>90 = automatic PASS** for T2 BUY signals. T1 blue chips get more leeway (K>92 = reject). K 85-90 is caution territory, not auto-reject.
+- **StochRSI K>90 = high caution** for T2 BUY signals. Not an automatic reject, but require strong trend confirmation (ADX >25, volume >1.5x, MACD bullish) to justify buying at overbought levels. In strong trends, StochRSI stays elevated.
 - **Prefer partial exits** for T2 winners over holding for larger gains. T2 reversals are sharper.
 - **Max drawdown tolerance**: T2 should exit at -8% to -10%, not -15%. Do not give T2 positions T1-level patience.
 - Position already has 2+ DCAs (max DCA count reached)
