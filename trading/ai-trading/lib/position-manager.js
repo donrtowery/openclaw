@@ -16,7 +16,7 @@ let symbolExchangeMap = null;
 async function getFeeRate(symbol) {
   if (!symbolExchangeMap) {
     try {
-      const result = await query('SELECT symbol, exchange FROM symbols WHERE active = true');
+      const result = await query('SELECT symbol, exchange FROM symbols WHERE is_active = true');
       symbolExchangeMap = new Map(result.rows.map(r => [r.symbol, r.exchange]));
     } catch { return DEFAULT_FEE_RATE; }
   }

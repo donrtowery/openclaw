@@ -165,7 +165,6 @@ Because volume is not pre-filtered by rigid thresholds, treat it as one input am
 **StochRSI (Stochastic RSI)** — More sensitive momentum oscillator than RSI.
 - OVERSOLD (K<20, D<20): Strong buying opportunity IF confirmed by MACD bullish + ADX not weak. Better entry timing than RSI alone.
 - OVERBOUGHT (K>80, D>80): Consider taking profits, especially with bearish MACD. But in strong ADX trends, StochRSI can stay overbought.
-- **T2 ENTRY GATE: StochRSI K>85 = PASS for T2 BUY signals.** T2 coins lack the liquidity to sustain overbought momentum — entering at K>85 is buying the peak. T1 blue chips get more leeway (K>90 = caution, not auto-reject).
 - BULLISH_CROSS (K>D, K<30): Early reversal signal — strongest when RSI is also recovering from oversold.
 - BEARISH_CROSS (K<D, K>70): Early exhaustion signal — strongest with declining volume.
 - Use StochRSI to TIME entries/exits that other indicators have already confirmed.

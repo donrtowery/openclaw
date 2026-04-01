@@ -915,11 +915,23 @@ async function executeShort(decision, triggered) {
   const fillQty = parseFloat(order.executedQty) || estimatedQty;
   const fillCost = parseFloat(order.cummulativeQuoteQty) || (fillPrice * fillQty);
 
-  const positionId = await openPosition(
-    symbol, tier, fillPrice, fillQty, fillCost,
-    decision.reasoning, decision.confidence, decision.decision_id,
-    tradingConfig.account.paper_trading, 'SHORT'
-  );
+  let positionId;
+  try {
+    positionId = await openPosition(
+      symbol, tier, fillPrice, fillQty, fillCost,
+      decision.reasoning, decision.confidence, decision.decision_id,
+      tradingConfig.account.paper_trading, 'SHORT'
+    );
+  } catch (dbErr) {
+    logger.error(`[Engine] CRITICAL: SHORT order filled but openPosition failed for ${symbol}. Order: ${JSON.stringify({ fillPrice, fillQty, fillCost, orderId: order.orderId })}. Error: ${dbErr.message}`);
+    try {
+      await placeOrder(symbol, 'BUY', fillQty);
+      logger.warn(`[Engine] Compensating BUY placed for orphaned SHORT on ${symbol}`);
+    } catch (buyErr) {
+      logger.error(`[Engine] CRITICAL: Compensating BUY also failed for ${symbol}: ${buyErr.message}. MANUAL INTERVENTION REQUIRED.`);
+    }
+    throw dbErr;
+  }
 
   await queueEvent('SHORT', symbol, {
     position_id: positionId,
@@ -1138,7 +1150,7 @@ async function executeDCA(decision, triggered) {
   const dcaResult = await addToPosition(
     position.id, fillPrice, fillQty, fillCost,
     decision.reasoning, decision.confidence,
-    tradingConfig.account.paper_trading
+    tradingConfig.account.paper_trading, position.symbol
   );
 
   await queueEvent('DCA', symbol, {
@@ -1941,7 +1953,7 @@ async function getEscalationConfidenceFloor() {
     if (convRate > targetMax) {
       const overshootRatio = (convRate - targetMax) / targetMax;
       const boost = Math.min(overshootRatio * 0.20, 0.07);
-      floor = baseFloor + boost;
+      floor = Math.min(baseFloor + boost, 0.62); // Hard cap prevents silent increase if baseFloor changes
       elevated = true;
       logger.info(`[Engine] Escalation confidence floor ELEVATED: ${floor.toFixed(2)} (conversion ${convRate.toFixed(1)}% > ${targetMax}% target, boost +${boost.toFixed(2)})`);
     }

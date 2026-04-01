@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { readFileSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, statSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { query } from '../db/connection.js';
 import { formatForClaude } from './technical-analysis.js';
 import logger from './logger.js';
@@ -61,6 +63,37 @@ export function resetApiCosts() {
   apiCostTracker.calls.haiku = 0;
   apiCostTracker.calls.sonnet = 0;
   apiCostTracker.reset_time = Date.now();
+  persistCosts();
+}
+
+const COSTS_FILE = join(dirname(fileURLToPath(import.meta.url)), '..', 'logs', 'api-costs.json');
+
+/**
+ * Write current costs to a shared file so dashboard-api can read engine costs.
+ */
+function persistCosts() {
+  try {
+    writeFileSync(COSTS_FILE, JSON.stringify({
+      haiku: {
+        input: apiCostTracker.haiku_input_tokens,
+        output: apiCostTracker.haiku_output_tokens,
+        cache_read: apiCostTracker.haiku_cache_read_tokens,
+        cache_create: apiCostTracker.haiku_cache_create_tokens,
+        calls: apiCostTracker.calls.haiku,
+      },
+      sonnet: {
+        input: apiCostTracker.sonnet_input_tokens,
+        output: apiCostTracker.sonnet_output_tokens,
+        cache_read: apiCostTracker.sonnet_cache_read_tokens,
+        cache_create: apiCostTracker.sonnet_cache_create_tokens,
+        calls: apiCostTracker.calls.sonnet,
+      },
+      reset_time: apiCostTracker.reset_time,
+      updated_at: Date.now(),
+    }));
+  } catch {
+    // Non-critical — dashboard just shows stale data
+  }
 }
 
 /**
@@ -271,6 +304,7 @@ export async function callHaikuBatch(triggeredSignals, config) {
     apiCostTracker.haiku_cache_read_tokens += cacheRead;
     apiCostTracker.haiku_cache_create_tokens += cacheCreation;
     apiCostTracker.calls.haiku++;
+    persistCosts();
 
     logger.info(`[Haiku] ${triggeredSignals.length} signal(s) evaluated in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read, ${cacheCreation} created`);
 
@@ -408,6 +442,7 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
     apiCostTracker.sonnet_cache_read_tokens += cacheRead;
     apiCostTracker.sonnet_cache_create_tokens += cacheCreation;
     apiCostTracker.calls.sonnet++;
+    persistCosts();
 
     logger.info(`[Sonnet] ${triggeredSignal.symbol} decided in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
 
@@ -435,7 +470,7 @@ export async function callSonnet(haikuSignal, triggeredSignal, newsContext, port
     }
 
     // Enforce confidence safety net (regime-aware for bear market)
-    parsed = enforceConfidenceThresholds(parsed, config, triggeredSignal.market_regime);
+    parsed = enforceConfidenceThresholds(parsed, config);
 
     // Log decision with full prompt snapshot (critical for future Haiku training)
     const decisionId = await logDecision(haikuSignal.signal_id, parsed, userMessage, inputTokens + outputTokens);
@@ -555,6 +590,7 @@ export async function callSonnetBatch(items, portfolioState, learningRules, conf
     apiCostTracker.sonnet_cache_read_tokens += cacheRead;
     apiCostTracker.sonnet_cache_create_tokens += cacheCreation;
     apiCostTracker.calls.sonnet++;
+    persistCosts();
 
     logger.info(`[Sonnet] Batch ${items.length} signals in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
 
@@ -609,7 +645,7 @@ export async function callSonnetBatch(items, portfolioState, learningRules, conf
         parsed.position_details.exit_percent = 50;
       }
 
-      parsed = enforceConfidenceThresholds(parsed, config, triggeredSignal.market_regime);
+      parsed = enforceConfidenceThresholds(parsed, config);
       const decisionId = await logDecision(haikuSignal.signal_id, parsed, `[batch ${i + 1}/${items.length}]`, inputTokens + outputTokens);
 
       logger.info(`[Sonnet] ${triggeredSignal.symbol}: ${parsed.action} conf:${parsed.confidence}`);
@@ -692,6 +728,7 @@ export async function callSonnetExitEval(position, analysis, urgency, newsContex
     apiCostTracker.sonnet_cache_read_tokens += cacheRead;
     apiCostTracker.sonnet_cache_create_tokens += cacheCreation;
     apiCostTracker.calls.sonnet++;
+    persistCosts();
 
     logger.info(`[Sonnet-Exit] ${position.symbol} evaluated in ${duration}ms | tokens: ${inputTokens}in/${outputTokens}out | cache: ${cacheRead} read`);
 
@@ -1002,7 +1039,7 @@ function formatSonnetInput(haikuSignal, triggeredSignal, newsContext, portfolioS
  * Enforce confidence safety net — downgrades low-confidence actions
  */
 let _confThresholdWarned = false;
-function enforceConfidenceThresholds(decision, config, regime = null) {
+function enforceConfidenceThresholds(decision, config) {
   const thresholds = config.confidence_thresholds;
   if (!thresholds) return decision;
 
@@ -1011,21 +1048,18 @@ function enforceConfidenceThresholds(decision, config, regime = null) {
     _confThresholdWarned = true;
   }
 
-  // Regime-aware entry threshold: lower in BEAR/CAUTIOUS for counter-trend bounces
-  const regimeKey = regime?.regime || 'NEUTRAL';
-  const regimeOverrides = config.regime_overrides?.[regimeKey] || {};
-  const entryThreshold = regimeOverrides.confidence_threshold_entry || thresholds.sonnet_minimum_for_new_entry;
+  const entryThreshold = thresholds.sonnet_minimum_for_new_entry;
 
   if (decision.action === 'BUY' && decision.confidence < entryThreshold) {
-    logger.warn(`[Sonnet] BUY confidence ${decision.confidence} < ${entryThreshold} (${regimeKey}), downgrading to PASS`);
+    logger.warn(`[Sonnet] BUY confidence ${decision.confidence} < ${entryThreshold}, downgrading to PASS`);
     decision.action = 'PASS';
-    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${entryThreshold} threshold (${regimeKey} regime)]`;
+    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${entryThreshold} threshold]`;
   }
 
   if (decision.action === 'SHORT' && decision.confidence < entryThreshold) {
-    logger.warn(`[Sonnet] SHORT confidence ${decision.confidence} < ${entryThreshold} (${regimeKey}), downgrading to PASS`);
+    logger.warn(`[Sonnet] SHORT confidence ${decision.confidence} < ${entryThreshold}, downgrading to PASS`);
     decision.action = 'PASS';
-    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${entryThreshold} threshold (${regimeKey} regime)]`;
+    decision.reasoning = (decision.reasoning || '') + ` [Auto-downgraded: confidence below ${entryThreshold} threshold]`;
   }
 
   if (decision.action === 'SELL' && decision.confidence < thresholds.sonnet_minimum_for_exit) {
@@ -1214,6 +1248,7 @@ export async function callSonnetPrediction(symbol, analysis, divergenceData, btc
     apiCostTracker.sonnet_cache_read_tokens += response.usage.cache_read_input_tokens || 0;
     apiCostTracker.sonnet_cache_create_tokens += response.usage.cache_creation_input_tokens || 0;
     apiCostTracker.calls.sonnet++;
+    persistCosts();
   }
 
   const text = response.content?.[0]?.text || '';

@@ -845,36 +845,49 @@ async function handleAction(action, params) {
     }
 
     case 'get_api_costs': {
-      const costs = getApiCosts();
-      // Also get historical cost estimate from decisions table
-      const decisionCosts = await query(`
-        SELECT
-          COUNT(*) FILTER (WHERE action != 'HOLD') as sonnet_calls,
-          COUNT(*) FILTER (WHERE signal_id IN (SELECT id FROM signals WHERE triggered_by IS NOT NULL)) as haiku_signals,
-          MIN(created_at) as first_decision,
-          MAX(created_at) as last_decision
-        FROM decisions
-      `);
-      const d = decisionCosts.rows[0];
-      const daysSinceStart = d.first_decision
-        ? Math.max(1, (Date.now() - new Date(d.first_decision).getTime()) / (1000 * 60 * 60 * 24))
-        : 1;
+      // Read engine costs from shared file (engine writes after each API call)
+      const HAIKU_INPUT = 0.80, HAIKU_OUTPUT = 4.00, HAIKU_CACHE_READ = 0.08, HAIKU_CACHE_CREATE = 1.00;
+      const SONNET_INPUT = 3.00, SONNET_OUTPUT = 15.00, SONNET_CACHE_READ = 0.30, SONNET_CACHE_CREATE = 3.75;
+
+      let engineCosts = { haiku: { cost: 0, calls: 0 }, sonnet: { cost: 0, calls: 0 }, total_cost: 0, since: new Date().toISOString() };
+      try {
+        const { readFileSync } = await import('fs');
+        const raw = JSON.parse(readFileSync('logs/api-costs.json', 'utf8'));
+        const h = raw.haiku;
+        const s = raw.sonnet;
+        const haikuCost = ((h.input - h.cache_read) * HAIKU_INPUT + h.output * HAIKU_OUTPUT + h.cache_read * HAIKU_CACHE_READ + h.cache_create * HAIKU_CACHE_CREATE) / 1_000_000;
+        const sonnetCost = ((s.input - s.cache_read) * SONNET_INPUT + s.output * SONNET_OUTPUT + s.cache_read * SONNET_CACHE_READ + s.cache_create * SONNET_CACHE_CREATE) / 1_000_000;
+        engineCosts = {
+          haiku: { cost: parseFloat(haikuCost.toFixed(4)), calls: h.calls },
+          sonnet: { cost: parseFloat(sonnetCost.toFixed(4)), calls: s.calls },
+          total_cost: parseFloat((haikuCost + sonnetCost).toFixed(4)),
+          since: new Date(raw.reset_time).toISOString(),
+        };
+      } catch { /* File may not exist yet — use zeros */ }
+
+      const sessionHours = Math.max(0.1, (Date.now() - new Date(engineCosts.since).getTime()) / (1000 * 60 * 60));
+      const dailyMultiplier = 24 / sessionHours;
+
+      const decisionCosts = await query("SELECT COUNT(*) FILTER (WHERE action != 'HOLD') as sonnet_calls FROM decisions");
       return {
         data: {
-          current_session: costs,
+          current_session: engineCosts,
           estimated_daily: {
-            haiku: parseFloat((costs.haiku.cost / Math.max(1, (Date.now() - new Date(costs.since).getTime()) / (1000 * 60 * 60 * 24))).toFixed(4)),
-            sonnet: parseFloat((costs.sonnet.cost / Math.max(1, (Date.now() - new Date(costs.since).getTime()) / (1000 * 60 * 60 * 24))).toFixed(4)),
+            haiku: parseFloat((engineCosts.haiku.cost * dailyMultiplier).toFixed(4)),
+            sonnet: parseFloat((engineCosts.sonnet.cost * dailyMultiplier).toFixed(4)),
           },
-          total_decisions: parseInt(d.sonnet_calls) || 0,
-          days_active: parseFloat(daysSinceStart.toFixed(1)),
+          total_decisions: parseInt(decisionCosts.rows[0]?.sonnet_calls) || 0,
         },
       };
     }
 
     case 'reset_api_costs': {
-      resetApiCosts();
-      return { success: true, message: 'API cost tracker reset' };
+      // Engine resets on restart — just delete the file
+      try {
+        const { unlinkSync } = await import('fs');
+        unlinkSync('logs/api-costs.json');
+      } catch { /* File may not exist */ }
+      return { success: true, message: 'Cost file cleared — engine will recreate on next API call' };
     }
 
     default:

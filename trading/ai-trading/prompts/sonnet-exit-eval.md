@@ -146,22 +146,12 @@ When evaluating a SHORT position, all signals are inverted from LONG:
 The exit scanner already inverts urgency scoring for SHORT positions. Your job is to confirm or override that assessment using the same inverted logic.
 
 ## LEARNING DATA
-(Updated: 2026-03-24 | 47 trades | 51.1% win rate)
+(Updated: 2026-04-01 | Historical baseline: 48 trades, 51.1% WR, +$231.66 P&L)
 
-EXIT TIMING ANALYSIS:
-- slow_loss_cut: 21 trades, avg P&L -3.7%, avg max gain 5.6%, avg hold 22.7h
-- late_exit_winner: 4 trades, avg P&L 0.9%, avg max gain 5.6%, avg hold 41.8h
-- other: 4 trades, avg P&L 6.5%, avg max gain 10.1%, avg hold 23.5h
-- good_exit: 14 trades, avg P&L 9.2%, avg max gain 7.5%, avg hold 37.7h
-- winner_turned_loser: 2 trades, avg P&L -0.6%, avg max gain 4.2%, avg hold 69.5h
-
-HOLD TIME COMPARISON:
-- Winners: 37.3h avg hold
-- Losers: 26.8h avg hold
-
-BAD TRADE PATTERNS (these setups consistently lost money — exit faster if held):
-- EMA_BULLISH_CROSSOVER+VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-41.76
-- VOLUME_SPIKE (BULLISH) STRONG: 3/3 lost, avg $-35.69
+EXIT PERFORMANCE (from prior validated trading period):
+- Partial exits: 100% WR (20/20 positions with partials won). ALWAYS prefer partial exits.
+- Winners held avg 37.3h, Losers held avg 26.8h — cut losers faster
+- Slow loss cuts: 21 trades, avg -3.7% — the system's biggest weakness
 
 PROVEN EXIT RULES (validated over multiple trades — do NOT contradict these):
 P1. EXIT T2 positions at -8% with bearish MACD cross — thesis invalidation
@@ -169,10 +159,14 @@ P2. EXIT winners when RSI >75 with volume declining >30% — exhaustion signal
 P3. HOLD T1 through -15% if ADX >25 and volume maintains — blue chips need room
 P4. PARTIAL_EXIT 30% at +12% for T2 held >36h — lock some profit
 P5. TRAIL stop 7% below high for T1 >+20% — protect large gains
+P6. EXIT bear market bounce trades at +3-5% gain — do not hold for trend continuation in BEAR. Quick profits, small targets.
+P7. EXIT bear market positions at -3% loss from entry — tight stops in hostile regime. Do not give bear trades normal patience.
 
 EXIT RULES FROM EXPERIENCE:
-1. EXIT T2 positions at -8% with bearish MACD cross — thesis invalidated
-2. EXIT winners when RSI >75 with volume declining >30% — exhaustion signal
-3. HOLD T1 through -15% if ADX >25 and volume maintains — blue chips need room
-4. PARTIAL_EXIT 30% at +12% for T2 held >36h — lock some profit
-5. TRAIL stop 7% below high for T1 >+20% — protect large gains
+1. EXIT T2 positions at -8% with bearish MACD cross — thesis broken
+2. EXIT winners when RSI >75 with volume declining >30% — exhaustion
+3. EXIT bear bounce trades at +3-5% gain — quick profits only
+4. EXIT bear positions at -3% loss — tight stops in hostile regime
+5. HOLD T1 through -15% if ADX >25 and volume maintains — room to work
+6. PARTIAL_EXIT 30% at +12% for T2 held >36h — lock profits
+7. TRAIL stop 7% below high for T1 >+20% — protect large gains
