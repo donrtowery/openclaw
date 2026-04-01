@@ -416,13 +416,14 @@ async function runCycle() {
       const rollingEscRate = rollingTotal > 20 ? (rollingEscalated / rollingTotal * 100) : 0;
 
       // Skip throttle during stagnation — don't tighten when we're already not trading
+      // Trigger at 50% (was 35%) — only fire in genuinely runaway escalation scenarios
       const isStagnating = escConfFloorCache.stats?.stagnation === true;
-      if (rollingEscRate > 35 && !isStagnating) {
+      if (rollingEscRate > 50 && !isStagnating) {
         const minConf = 0.75;
         const beforeCount = toEscalate.length;
         toEscalate = toEscalate.filter(s => s.haikuResult.confidence >= minConf);
         if (toEscalate.length < beforeCount) {
-          logger.warn(`[Engine] Escalation throttle: filtered ${beforeCount - toEscalate.length} signals (24h rate ${rollingEscRate.toFixed(1)}% > 35%, min conf raised to ${minConf})`);
+          logger.warn(`[Engine] Escalation throttle: filtered ${beforeCount - toEscalate.length} signals (24h rate ${rollingEscRate.toFixed(1)}% > 50%, min conf raised to ${minConf})`);
         }
       }
     } catch (throttleErr) {
@@ -1897,16 +1898,16 @@ async function getEscalationConfidenceFloor() {
   const targetMax = tradingConfig.learning?.escalation_conversion_target_max || 30;
 
   try {
-    // Stagnation detection: if no entries in the last 12 hours, force floor to baseline.
-    // This breaks the death spiral where high conversion → high floor → no trades → conversion stays high.
+    // Stagnation detection: if no entries in the last 6 hours, force floor to baseline.
+    // Catches death spirals faster (was 12h — too slow to react).
     const recentEntries = await query(`
       SELECT COUNT(*) as cnt FROM trades
-      WHERE trade_type IN ('ENTRY', 'DCA') AND executed_at > NOW() - INTERVAL '12 hours'
+      WHERE trade_type IN ('ENTRY', 'DCA') AND executed_at > NOW() - INTERVAL '6 hours'
     `);
-    const entriesLast12h = parseInt(recentEntries.rows[0].cnt) || 0;
+    const entriesLast6h = parseInt(recentEntries.rows[0].cnt) || 0;
 
-    if (entriesLast12h === 0) {
-      logger.info(`[Engine] Escalation floor RESET to baseline ${baseFloor} — stagnation detected (0 entries in 12h)`);
+    if (entriesLast6h === 0) {
+      logger.info(`[Engine] Escalation floor RESET to baseline ${baseFloor} — stagnation detected (0 entries in 6h)`);
       escConfFloorCache = { floor: baseFloor, stats: { convRate: 0, totalNum: 0, tradedNum: 0, elevated: false, stagnation: true }, expiry: Date.now() + 30 * 60 * 1000 };
       return escConfFloorCache;
     }
@@ -1939,7 +1940,7 @@ async function getEscalationConfidenceFloor() {
     let elevated = false;
     if (convRate > targetMax) {
       const overshootRatio = (convRate - targetMax) / targetMax;
-      const boost = Math.min(overshootRatio * 0.30, 0.15);
+      const boost = Math.min(overshootRatio * 0.20, 0.07);
       floor = baseFloor + boost;
       elevated = true;
       logger.info(`[Engine] Escalation confidence floor ELEVATED: ${floor.toFixed(2)} (conversion ${convRate.toFixed(1)}% > ${targetMax}% target, boost +${boost.toFixed(2)})`);
