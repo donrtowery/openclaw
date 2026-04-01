@@ -30,6 +30,7 @@ async function loadTabData(tab) {
       case 'signals': await loadSignals(); break;
       case 'learning': await loadLearning(); break;
       case 'history': await Promise.all([loadHistory(false), loadTradeLog()]); break;
+      case 'costs': await loadCosts(); break;
       case 'controls': await loadControls(); break;
     }
     document.getElementById('last-refresh').textContent = new Date().toLocaleTimeString();
@@ -634,6 +635,57 @@ async function loadTradeLog() {
 }
 
 // ── Controls Tab ───────────────────────────────────────────
+
+async function loadCosts() {
+  const result = await apiCall('get_api_costs');
+  const d = result.data;
+  const session = d.current_session;
+  const dailyEst = d.estimated_daily;
+  const monthlyHaiku = (dailyEst.haiku * 30);
+  const monthlySonnet = (dailyEst.sonnet * 30);
+  const monthlyTotal = monthlyHaiku + monthlySonnet;
+
+  document.getElementById('cost-session-total').textContent = `$${session.total_cost.toFixed(4)}`;
+  document.getElementById('cost-daily-estimate').textContent = `$${(dailyEst.haiku + dailyEst.sonnet).toFixed(2)}`;
+  document.getElementById('cost-monthly-estimate').textContent = `$${monthlyTotal.toFixed(2)}`;
+  document.getElementById('cost-total-decisions').textContent = d.total_decisions;
+
+  const tbody = document.getElementById('cost-table-body');
+  tbody.innerHTML = `
+    <tr>
+      <td>Haiku (triage)</td>
+      <td>${session.haiku.calls}</td>
+      <td>$${session.haiku.cost.toFixed(4)}</td>
+      <td>$${dailyEst.haiku.toFixed(4)}</td>
+      <td>$${monthlyHaiku.toFixed(2)}</td>
+    </tr>
+    <tr>
+      <td>Sonnet (decisions)</td>
+      <td>${session.sonnet.calls}</td>
+      <td>$${session.sonnet.cost.toFixed(4)}</td>
+      <td>$${dailyEst.sonnet.toFixed(4)}</td>
+      <td>$${monthlySonnet.toFixed(2)}</td>
+    </tr>
+    <tr style="font-weight:bold; border-top: 2px solid var(--border)">
+      <td>Total</td>
+      <td>${session.haiku.calls + session.sonnet.calls}</td>
+      <td>$${session.total_cost.toFixed(4)}</td>
+      <td>$${(dailyEst.haiku + dailyEst.sonnet).toFixed(4)}</td>
+      <td>$${monthlyTotal.toFixed(2)}</td>
+    </tr>
+  `;
+
+  // Session start time
+  const since = new Date(session.since);
+  const hoursRunning = ((Date.now() - since.getTime()) / (1000 * 60 * 60)).toFixed(1);
+
+  // Reset button handler
+  const resetBtn = document.getElementById('reset-costs-btn');
+  resetBtn.onclick = async () => {
+    await apiCall('reset_api_costs');
+    loadCosts();
+  };
+}
 
 async function loadControls() {
   const [engine, settings, positions] = await Promise.all([

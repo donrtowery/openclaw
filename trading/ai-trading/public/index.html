@@ -41,6 +41,7 @@
   <button class="tab" data-tab="signals">Signals</button>
   <button class="tab" data-tab="learning">Learning</button>
   <button class="tab" data-tab="history">Trade History</button>
+  <button class="tab" data-tab="costs">API Costs</button>
   <button class="tab" data-tab="controls">Controls</button>
 </nav>
 
@@ -264,6 +265,49 @@
       </table>
       <p class="empty-msg" id="trade-log-empty" style="display:none">No trades yet</p>
     </div>
+  </div>
+</section>
+
+<!-- Tab: API Costs -->
+<section id="tab-costs" class="tab-content">
+  <div class="stat-cards">
+    <div class="stat-card">
+      <div class="stat-label">Session Cost</div>
+      <div class="stat-value" id="cost-session-total">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Est. Daily Cost</div>
+      <div class="stat-value" id="cost-daily-estimate">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Est. Monthly Cost</div>
+      <div class="stat-value" id="cost-monthly-estimate">--</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Decisions</div>
+      <div class="stat-value" id="cost-total-decisions">--</div>
+    </div>
+  </div>
+  <div class="section" style="margin-top: 1.5rem">
+    <h3>Cost Breakdown</h3>
+    <div class="table-wrapper">
+      <table id="cost-table">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Calls</th>
+            <th>Session Cost</th>
+            <th>Est. Daily</th>
+            <th>Est. Monthly</th>
+          </tr>
+        </thead>
+        <tbody id="cost-table-body"></tbody>
+      </table>
+    </div>
+    <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.5rem">
+      Session costs track since last engine restart. Estimates based on current session rate.
+    </p>
+    <button class="btn btn-secondary" id="reset-costs-btn" style="margin-top: 0.5rem">Reset Session Counter</button>
   </div>
 </section>
 

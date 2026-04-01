@@ -10,7 +10,7 @@ import { getOpenPositions, getClosedPositions, getPortfolioSummary, closePositio
 import { getPendingEvents, markEventsPosted, getEventStats, queueEvent } from '../lib/events.js';
 import { getCurrentPrice, placeOrder } from '../lib/binance.js';
 import { getNewsContext } from '../lib/brave-search.js';
-import { anthropic, SONNET_MODEL, HAIKU_MODEL, extractJSON } from '../lib/claude.js';
+import { anthropic, SONNET_MODEL, HAIKU_MODEL, extractJSON, getApiCosts, resetApiCosts } from '../lib/claude.js';
 import { analyzeSymbol, formatForClaude } from '../lib/technical-analysis.js';
 import logger from '../lib/logger.js';
 
@@ -842,6 +842,39 @@ async function handleAction(action, params) {
         ORDER BY symbol, created_at DESC
       `);
       return { data: result.rows.sort((a, b) => parseFloat(b.beta) - parseFloat(a.beta)) };
+    }
+
+    case 'get_api_costs': {
+      const costs = getApiCosts();
+      // Also get historical cost estimate from decisions table
+      const decisionCosts = await query(`
+        SELECT
+          COUNT(*) FILTER (WHERE action != 'HOLD') as sonnet_calls,
+          COUNT(*) FILTER (WHERE signal_id IN (SELECT id FROM signals WHERE triggered_by IS NOT NULL)) as haiku_signals,
+          MIN(created_at) as first_decision,
+          MAX(created_at) as last_decision
+        FROM decisions
+      `);
+      const d = decisionCosts.rows[0];
+      const daysSinceStart = d.first_decision
+        ? Math.max(1, (Date.now() - new Date(d.first_decision).getTime()) / (1000 * 60 * 60 * 24))
+        : 1;
+      return {
+        data: {
+          current_session: costs,
+          estimated_daily: {
+            haiku: parseFloat((costs.haiku.cost / Math.max(1, (Date.now() - new Date(costs.since).getTime()) / (1000 * 60 * 60 * 24))).toFixed(4)),
+            sonnet: parseFloat((costs.sonnet.cost / Math.max(1, (Date.now() - new Date(costs.since).getTime()) / (1000 * 60 * 60 * 24))).toFixed(4)),
+          },
+          total_decisions: parseInt(d.sonnet_calls) || 0,
+          days_active: parseFloat(daysSinceStart.toFixed(1)),
+        },
+      };
+    }
+
+    case 'reset_api_costs': {
+      resetApiCosts();
+      return { success: true, message: 'API cost tracker reset' };
     }
 
     default:
